@@ -23,11 +23,10 @@ export default class PlayerController {
     this.physicsWorld = physicsWorld;
 
     // --- Configuration ------------------------------------------------------
-    this.moveSpeed = 40;     // impulse strength for walking
+    this.moveSpeed = 6;        // m/s walk speed
     this.sprintMultiplier = 1.8;
     this.jumpImpulse = 7;
-    this.maxSpeed = 8;       // clamp horizontal velocity (m/s)
-    this.playerHeight = 1.7; // eye height above feet
+    this.playerHeight = 1.7;   // eye height above feet
     this.playerRadius = 0.4;
 
     // --- Physics body (capsule approximated as a sphere + cylinder) ---------
@@ -45,13 +44,18 @@ export default class PlayerController {
 
     // --- Ground contact tracking -------------------------------------------
     this.canJump = false;
+    this._contactNormal = new CANNON.Vec3(); // reusable for collision checks
     this.body.addEventListener('collide', (e) => {
-      // Simple heuristic: if the contact normal points mostly up, we're grounded.
       const contact = e.contact;
-      const normal = contact.ni;
-      // Determine which normal points away from this body.
-      const up = contact.bi === this.body ? normal : new CANNON.Vec3(-normal.x, -normal.y, -normal.z);
-      if (up.y > 0.5) {
+      // Get the world-space normal pointing FROM other body TOWARDS this body.
+      if (contact.bi === this.body) {
+        // ni points from bi (this) to bj (other) — we want the opposite.
+        this._contactNormal.set(-contact.ni.x, -contact.ni.y, -contact.ni.z);
+      } else {
+        // ni points from bi (other) to bj (this) — already correct.
+        this._contactNormal.copy(contact.ni);
+      }
+      if (this._contactNormal.y > 0.5) {
         this.canJump = true;
       }
     });
@@ -88,14 +92,14 @@ export default class PlayerController {
     let moveX = 0;
     let moveZ = 0;
 
-    if (keys['KeyW'] || keys['ArrowUp'])    moveZ -= 1;
-    if (keys['KeyS'] || keys['ArrowDown'])  moveZ += 1;
-    if (keys['KeyA'] || keys['ArrowLeft'])  moveX -= 1;
-    if (keys['KeyD'] || keys['ArrowRight']) moveX += 1;
+    if (keys['KeyW']) moveZ -= 1;
+    if (keys['KeyS']) moveZ += 1;
+    if (keys['KeyA']) moveX -= 1;
+    if (keys['KeyD']) moveX += 1;
 
-    if (moveX !== 0 || moveZ !== 0) {
-      // Build a direction vector in world space using the camera yaw.
-      if (this.cameraPivot) {
+    if (this.cameraPivot) {
+      if (moveX !== 0 || moveZ !== 0) {
+        // Build a direction vector in world space using the camera yaw.
         this._forward.set(0, 0, -1).applyQuaternion(this.cameraPivot.quaternion);
         this._forward.y = 0;
         this._forward.normalize();
@@ -104,8 +108,17 @@ export default class PlayerController {
         const dirX = this._right.x * moveX + this._forward.x * -moveZ;
         const dirZ = this._right.z * moveX + this._forward.z * -moveZ;
 
-        this._impulse.set(dirX * speed * dt, 0, dirZ * speed * dt);
-        this.body.applyImpulse(this._impulse);
+        // Normalise diagonal movement.
+        const len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+        if (len > 0) {
+          // Direct velocity control — responsive and predictable.
+          this.body.velocity.x = (dirX / len) * speed;
+          this.body.velocity.z = (dirZ / len) * speed;
+        }
+      } else {
+        // Stop horizontal movement when no keys are held.
+        this.body.velocity.x = 0;
+        this.body.velocity.z = 0;
       }
     }
 
@@ -113,16 +126,6 @@ export default class PlayerController {
     if ((keys['Space']) && this.canJump) {
       this.body.velocity.y = this.jumpImpulse;
       this.canJump = false;
-    }
-
-    // --- Clamp horizontal speed --------------------------------------------
-    const vx = this.body.velocity.x;
-    const vz = this.body.velocity.z;
-    const hSpeed = Math.sqrt(vx * vx + vz * vz);
-    if (hSpeed > this.maxSpeed) {
-      const scale = this.maxSpeed / hSpeed;
-      this.body.velocity.x *= scale;
-      this.body.velocity.z *= scale;
     }
   }
 

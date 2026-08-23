@@ -20,6 +20,7 @@ export default class CameraController {
   constructor(scene, input) {
     this.input = input;
     this.sensitivity = 0.002;
+    this.keyTurnSpeed = 2.5;  // radians/second for arrow-key turning
     this.pitchLimit = Math.PI / 2 - 0.05; // prevent flipping
 
     // --- Camera -------------------------------------------------------------
@@ -63,6 +64,19 @@ export default class CameraController {
         -this.pitchLimit,
         this.pitchLimit
       );
+    }
+
+    // --- Arrow key turning (works without pointer lock) ---------------------
+    const keys = this.input.keys;
+    if (keys['ArrowLeft'])  this.yawObject.rotation.y += this.keyTurnSpeed * dt;
+    if (keys['ArrowRight']) this.yawObject.rotation.y -= this.keyTurnSpeed * dt;
+    if (keys['ArrowUp']) {
+      this.pitchObject.rotation.x += this.keyTurnSpeed * dt;
+      this.pitchObject.rotation.x = Math.min(this.pitchObject.rotation.x, this.pitchLimit);
+    }
+    if (keys['ArrowDown']) {
+      this.pitchObject.rotation.x -= this.keyTurnSpeed * dt;
+      this.pitchObject.rotation.x = Math.max(this.pitchObject.rotation.x, -this.pitchLimit);
     }
 
     // --- Position camera at player eyes ------------------------------------

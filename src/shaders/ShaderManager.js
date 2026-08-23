@@ -23,26 +23,99 @@ export default class ShaderManager {
     this._time = 0;
     this._lights = [];
     this._activeShaders = [];
+    this._flickerLights = []; // lights whose intensity pulses each frame
   }
 
   // ── Lighting presets ───────────────────────────────────────────────────
 
-  /** Level 1: clean, cool white lighting. */
+  /** Level 1: clean, cool white lighting — pristine station. */
   applyLevel1Lighting() {
     this._clearLights();
-    // TODO (Person C): Implement cool white ambient + directional lights.
+    this._flickerLights = [];
+
+    // Cool white ambient — well-lit, no harsh shadows.
+    this._addLight(new THREE.AmbientLight(0xddeeff, 0.5));
+
+    // Main directional light (overhead fluorescents feel).
+    const main = new THREE.DirectionalLight(0xffffff, 1.0);
+    main.position.set(5, 15, 5);
+    main.castShadow = true;
+    main.shadow.mapSize.set(1024, 1024);
+    main.shadow.camera.near = 0.5;
+    main.shadow.camera.far = 50;
+    main.shadow.camera.left = -25;
+    main.shadow.camera.right = 25;
+    main.shadow.camera.top = 25;
+    main.shadow.camera.bottom = -25;
+    this._addLight(main);
+
+    // Fill light from the opposite side.
+    const fill = new THREE.DirectionalLight(0xccddff, 0.3);
+    fill.position.set(-8, 10, -8);
+    this._addLight(fill);
+
+    // Update fog and background to match cool station palette.
+    this.scene.background = new THREE.Color(0x0a0e14);
+    this.scene.fog = new THREE.Fog(0x0a0e14, 25, 90);
   }
 
-  /** Level 2: flickering amber. Intensity should pulse with sin(time). */
+  /** Level 2: flickering amber — station failing, lights unstable. */
   applyLevel2Lighting() {
     this._clearLights();
-    // TODO (Person C): Implement flickering amber point lights.
+    this._flickerLights = [];
+
+    // Dim amber ambient.
+    this._addLight(new THREE.AmbientLight(0x553311, 0.3));
+
+    // Flickering point lights (simulating failing fixtures).
+    const positions = [
+      [6, 4, 0], [-6, 4, 0], [0, 4, 8], [0, 4, -8],
+    ];
+    for (const [x, y, z] of positions) {
+      const light = new THREE.PointLight(0xffaa44, 1.2, 20, 2);
+      light.position.set(x, y, z);
+      light.castShadow = false; // keep perf in check
+      this._addLight(light);
+      this._flickerLights.push({ light, baseIntensity: 1.2, speed: 2 + Math.random() * 3 });
+    }
+
+    // Warm directional fill.
+    const fill = new THREE.DirectionalLight(0xff8833, 0.4);
+    fill.position.set(3, 10, 5);
+    this._addLight(fill);
+
+    this.scene.background = new THREE.Color(0x120a04);
+    this.scene.fog = new THREE.Fog(0x120a04, 15, 60);
   }
 
-  /** Level 3: red emergency lighting, pulsing. */
+  /** Level 3: red emergency lighting — meltdown, pulsing. */
   applyLevel3Lighting() {
     this._clearLights();
-    // TODO (Person C): Implement pulsing red emergency lights.
+    this._flickerLights = [];
+
+    // Dark red ambient.
+    this._addLight(new THREE.AmbientLight(0x330000, 0.4));
+
+    // Pulsing red point lights.
+    const positions = [
+      [5, 5, 5], [-5, 5, -5], [5, 5, -5], [-5, 5, 5],
+    ];
+    for (const [x, y, z] of positions) {
+      const light = new THREE.PointLight(0xff2200, 1.5, 18, 2);
+      light.position.set(x, y, z);
+      this._addLight(light);
+      this._flickerLights.push({ light, baseIntensity: 1.5, speed: 1.5 + Math.random() * 2 });
+    }
+
+    // Harsh directional from above (emergency spotlights).
+    const spot = new THREE.DirectionalLight(0xff1100, 0.8);
+    spot.position.set(0, 15, 0);
+    spot.castShadow = true;
+    spot.shadow.mapSize.set(1024, 1024);
+    this._addLight(spot);
+
+    this.scene.background = new THREE.Color(0x0a0000);
+    this.scene.fog = new THREE.Fog(0x0a0000, 10, 45);
   }
 
   // ── Custom shaders ─────────────────────────────────────────────────────
@@ -150,7 +223,10 @@ export default class ShaderManager {
         mat.uniforms.uTime.value = this._time;
       }
     }
-    // TODO (Person C): Update flickering light intensities, etc.
+    // Pulse flicker lights each frame (Level 2 + 3).
+    for (const { light, baseIntensity, speed } of this._flickerLights) {
+      light.intensity = baseIntensity * (0.5 + 0.5 * Math.sin(this._time * speed));
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────

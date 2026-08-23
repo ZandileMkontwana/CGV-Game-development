@@ -5,6 +5,9 @@ import PhysicsWorld from './PhysicsWorld.js';
 import PlayerController from './PlayerController.js';
 import CameraController from './CameraController.js';
 import GameState from './GameState.js';
+import LevelManager from '../levels/LevelManager.js';
+import ShaderManager from '../shaders/ShaderManager.js';
+import UIManager from '../ui/UIManager.js';
 
 /**
  * Game — top-level orchestrator.
@@ -38,9 +41,19 @@ export default class Game {
     this.camera = new CameraController(this.scene, this.input);
     this.player = new PlayerController(this.scene, this.physics, this.input);
     this.gameState = new GameState();
+    this.levels = new LevelManager(this.scene, this.physics);
+    this.shaders = new ShaderManager(this.scene);
+    this.ui = new UIManager();
 
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
+
+    // --- Spawn points per level (Person B can adjust these) -----------------
+    this._spawnPoints = {
+      1: { x: 0, y: 2, z: -7 },
+      2: { x: 0, y: 2, z: 0 },
+      3: { x: 0, y: 2, z: 0 },
+    };
 
     // --- Resize handler for renderer ----------------------------------------
     window.addEventListener('resize', () => {
@@ -49,6 +62,7 @@ export default class Game {
 
     // --- FPS counter --------------------------------------------------------
     this._fpsEl = document.getElementById('fps');
+    this._debugKeysEl = document.getElementById('debug-keys');
     this._frameCount = 0;
     this._fpsTime = 0;
 
@@ -58,17 +72,18 @@ export default class Game {
     // --- Game state hooks ---------------------------------------------------
     this.gameState.onChange((newState, oldState) => {
       if (newState === 'playing' && oldState === 'menu') {
-        // Fresh start — spawn player at level 1 origin.
-        this.player.spawn(0, 2, 0);
+        // Fresh start — load level 1 geometry, lighting, and spawn player.
+        this._loadLevel(1);
       }
       if (newState === 'playing' && oldState === 'levelTransition') {
-        // TODO (Person B): reposition player to new level spawn.
-        this.player.spawn(0, 2, 0);
+        // Load the next level after transition.
+        this._loadLevel(this.gameState.currentLevel);
+      }
+      if (newState === 'menu' || newState === 'gameover') {
+        // Tear down level content when returning to menu.
+        this.levels._teardown();
       }
     });
-
-    // --- Placeholder scene content (remove when Person B adds levels) ------
-    this._addPlaceholderScene();
   }
 
   /** Kick off the game. */
@@ -95,13 +110,21 @@ export default class Game {
       this._fpsTime = 0;
     }
 
+    // Debug: show active keys.
+    if (this._debugKeysEl) {
+      const activeKeys = Object.keys(this.input.keys).filter(k => this.input.keys[k]);
+      this._debugKeysEl.textContent = activeKeys.length
+        ? 'Keys: ' + activeKeys.join(', ')
+        : 'Keys: none';
+    }
+
     // Only update simulation while playing.
     if (this.gameState.isPlaying) {
       this.player.update(dt);
       this.camera.update(dt, this.player.eyePosition);
       this.physics.step(dt);
-
-      // TODO (Person B/C): update level-specific logic, shader uniforms, etc.
+      this.shaders.update(dt);
+      this.ui.update(dt);
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.eyePosition);
@@ -111,53 +134,46 @@ export default class Game {
     this.renderer.render(this.scene, this.camera.camera);
   };
 
-  // --- Placeholder geometry (delete when real levels arrive) ----------------
-  _addPlaceholderScene() {
-    // Ground plane.
-    const groundGeo = new THREE.PlaneGeometry(60, 60);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x333333,
-      roughness: 0.8,
-      metalness: 0.2,
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
+  // --- Level loading --------------------------------------------------------
 
-    // A few boxes so you can see lighting and movement.
-    const boxGeo = new THREE.BoxGeometry(2, 2, 2);
-    const boxMat = new THREE.MeshStandardMaterial({ color: 0x556677, metalness: 0.6, roughness: 0.3 });
-    for (let i = 0; i < 6; i++) {
-      const box = new THREE.Mesh(boxGeo, boxMat);
-      box.position.set(Math.cos(i) * 8, 1, Math.sin(i) * 8);
-      box.castShadow = true;
-      box.receiveShadow = true;
-      this.scene.add(box);
+  /**
+   * Load a level: geometry (Person B), lighting (Person C), spawn player.
+   * Called automatically on state transitions — Person B/C don't call this.
+   * @param {number} levelNum 1, 2, or 3
+   */
+  _loadLevel(levelNum) {
+    // 1. Build level geometry and physics (Person B's LevelManager).
+    this.levels.load(levelNum);
 
-      // Matching physics body so the player can bump into them.
-      const body = this.physics.createBox(
-        0, // static
-        1, 1, 1,
-        new CANNON.Vec3(box.position.x, box.position.y, box.position.z)
-      );
-      this.physics.addSyncPair(body, box);
+    // 2. Apply level-specific lighting and shaders (Person C's ShaderManager).
+    switch (levelNum) {
+      case 1: this.shaders.applyLevel1Lighting(); break;
+      case 2: this.shaders.applyLevel2Lighting(); break;
+      case 3: this.shaders.applyLevel3Lighting(); break;
     }
 
-    // Ambient + directional light.
-    const ambient = new THREE.AmbientLight(0xffffff, 0.3);
-    this.scene.add(ambient);
+    // 3. Spawn the player at the level's spawn point.
+    const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
+    this.player.spawn(sp.x, sp.y, sp.z);
+  }
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(10, 20, 10);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    sun.shadow.camera.near = 0.5;
-    sun.shadow.camera.far = 60;
-    sun.shadow.camera.left = -30;
-    sun.shadow.camera.right = 30;
-    sun.shadow.camera.top = 30;
-    sun.shadow.camera.bottom = -30;
-    this.scene.add(sun);
+  /**
+   * Call this from level gameplay code when the player completes the
+   * current level objective (e.g. reach exit, defeat boss).
+   * Advances to the next level or triggers game over.
+   */
+  completeLevel() {
+    this.gameState.nextLevel();
+  }
+
+  /**
+   * Update a level's spawn point. Call from LevelManager or during setup.
+   * @param {number} levelNum
+   * @param {number} x
+   * @param {number} y
+   * @param {number} z
+   */
+  setSpawnPoint(levelNum, x, y, z) {
+    this._spawnPoints[levelNum] = { x, y, z };
   }
 }
