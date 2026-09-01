@@ -42,7 +42,7 @@ Each level reuses the WASD movement controls but changes **what is being tested*
 
 ```
 src/
-├── core/                  ← Person A (engine, controls, camera, physics, game state)
+├── core/                  ← Zandile (engine, controls, camera, physics, game state)
 │   ├── Game.js            — main loop, renderer, orchestrator
 │   ├── InputManager.js    — keyboard + mouse + pointer lock
 │   ├── PlayerController.js — WASD movement, sprint, jump, physics body
@@ -50,13 +50,13 @@ src/
 │   ├── PhysicsWorld.js    — cannon-es world, ground, body helpers
 │   └── GameState.js       — menu, pause, restart, level transitions, game over
 │
-├── levels/                ← Person B (geometry, scene hierarchy, level content)
+├── levels/                ← Mlungisi (geometry, scene hierarchy, level content)
 │   └── LevelManager.js    — builds and tears down levels, spawn points, props
 │
-├── shaders/               ← Person C (lighting, materials, custom GLSL)
+├── shaders/               ← Kutloano (lighting, materials, custom GLSL)
 │   └── ShaderManager.js   — per-level lighting, heat-haze shader, dissolve shader
 │
-├── ui/                    ← Person D (HUD, menus, sound, credits, trailer, deployment)
+├── ui/                    ← Ronie (HUD, menus, sound, credits, trailer, deployment)
 │   └── UIManager.js       — HUD updates, sound triggers, credits screen
 │
 ├── assets/                ← shared (models, textures, audio — credit everything)
@@ -114,40 +114,40 @@ src/
 
 | Deliverable | Status |
 |---|---|
-| Three.js running in browser | ✅ Done |
-| Player movement (WASD + arrow keys + sprint + jump) | ✅ Done |
-| First-person camera with mouse look | ✅ Done |
-| Physics collisions (walls, ground) | ✅ Done |
-| Level 1 corridor prototype (walkable station) | ✅ Done |
-| Three lighting presets (cool / amber / red) | ✅ Done |
-| Both custom shaders (basic versions) | ✅ Done |
-| Menu system (start, pause, restart) | ✅ Done |
-| Talking points for each rubric category | ✅ Done |
-| **Deployed and playable from dev server** | ✅ Done |
+| Three.js running in browser | Done |
+| Player movement (WASD + arrow keys + sprint + jump) | Done |
+| First-person camera with mouse look | Done |
+| Physics collisions (walls, ground) | Done |
+| Level 1 corridor prototype (walkable station) | Done |
+| Three lighting presets (cool / amber / red) | Done |
+| Both custom shaders (basic versions) | Done |
+| Menu system (start, pause, restart) | Done |
+| Talking points for each rubric category | Done |
+| **Deployed and playable from dev server** | Done |
 
-### Beta (Graded — ~3 weeks from brief)
+### Beta (Graded — 16 October 2026)
 
 | Deliverable | Owner | Status |
 |---|---|---|
-| Full Level 1 geometry (modular corridors, rooms, props) | Person B | Not started |
-| Full Level 2 geometry (damaged corridors, hazards) | Person B | Not started |
-| Full Level 3 geometry (boss arena, collapse) | Person B | Not started |
-| PBR textures (diffuse, normal, roughness maps) | Person C | Not started |
-| Refined heat-haze shader (proper UV distortion) | Person C | Not started |
-| Refined dissolve shader (3D noise, edge glow) | Person C | Not started |
-| Skybox (space through station windows) | Person C | Not started |
-| Bump maps on station surfaces | Person C | Not started |
-| HUD (health bar, objective text, timer) | Person D | Not started |
-| Sound effects + ambient music (Howler.js) | Person D | Not started |
-| Credits screen (all libraries, assets, licenses) | Person D | Not started |
-| Loading screen with real asset progress | Person D | Not started |
-| Level transition screens | Person D | Not started |
-| Boss encounter logic (Level 3) | Person A + B | Not started |
-| Win/lose conditions per level | Person A | Not started |
-| Level 2 hazards (coolant vents, rotating blades) | Person A + B | Not started |
-| Screen shake during Level 3 | Person A | ✅ Framework ready |
-| Game trailer (max 2 min, YouTube) | Person D | Not started |
-| **Deployed on LAMP server and verified** | Person D | Not started |
+| Full Level 1 geometry (modular corridors, rooms, props) | Mlungisi | Not started |
+| Full Level 2 geometry (damaged corridors, hazards) | Mlungisi | Not started |
+| Full Level 3 geometry (boss arena, collapse) | Mlungisi | Not started |
+| PBR textures (diffuse, normal, roughness maps) | Kutloano | Not started |
+| Refined heat-haze shader (proper UV distortion) | Kutloano | Not started |
+| Refined dissolve shader (3D noise, edge glow) | Kutloano | Not started |
+| Skybox (space through station windows) | Kutloano | Not started |
+| Bump maps on station surfaces | Kutloano | Not started |
+| HUD (health bar, objective text, timer) | Ronie | Not started |
+| Sound effects + ambient music (Howler.js) | Ronie | Not started |
+| Credits screen (all libraries, assets, licenses) | Ronie | Not started |
+| Loading screen with real asset progress | Ronie | Not started |
+| Level transition screens | Ronie | Not started |
+| Boss encounter logic (Level 3) | Zandile + Mlungisi | Not started |
+| Win/lose conditions per level | Zandile | Not started |
+| Level 2 hazards (coolant vents, rotating blades) | Zandile + Mlungisi | Not started |
+| Screen shake during Level 3 | Zandile | Framework ready |
+| Game trailer (max 2 min, YouTube) | Ronie | Not started |
+| **Deployed on LAMP server and verified** | Ronie | Not started |
 
 ### Final (Graded — End of Teaching Term)
 
@@ -155,7 +155,7 @@ src/
 |---|---|---|
 | All beta items polished and bug-free | All | — |
 | Devlog video | All | Not started |
-| Custom Blender models (innovation) | Person B / C | Not started |
+| Custom Blender models (innovation) | Mlungisi/ Kutloano | Not started |
 | Optional: multiplayer or networking (innovation) | TBD | Not started |
 | Final LAMP deployment verified | Person D | Not started |
 | Individual contribution reports on Moodle | Each member | Not started |
@@ -164,7 +164,7 @@ src/
 
 ## 6. Task Assignments
 
-### Person A — Engine & Controls
+### Zandile — Engine & Controls
 - [x] Project scaffold (Vite + Three.js + cannon-es)
 - [x] InputManager (keyboard + mouse + pointer lock)
 - [x] PlayerController (WASD, sprint, jump, physics body)
@@ -179,7 +179,7 @@ src/
 - [ ] Integration testing with teammates' code
 - [ ] Performance profiling (Chrome DevTools)
 
-### Person B — Level Builder
+### Mlungisi — Level Builder
 - [ ] Modular corridor pieces (straight, T-junction, corner, room)
 - [ ] Level 1 — clean station corridors, control room, reactor hall
 - [ ] Level 2 — damaged geometry, hazard placements, shader zone markers
@@ -189,7 +189,7 @@ src/
 - [ ] Props: control panels, pipes, doors, machinery
 - [ ] Optional: custom Blender models for innovation marks
 
-### Person C — Visuals & Shaders
+### Kutloano — Visuals & Shaders
 - [x] Basic lighting presets (cool white, flickering amber, red emergency)
 - [x] Basic heat-haze and dissolve shader stubs
 - [ ] Refined heat-haze shader (proper sine-wave UV distortion, sampling)
@@ -201,7 +201,7 @@ src/
 - [ ] Shadow configuration (limit casters, constrain shadow camera)
 - [ ] Post-processing (bloom on reactor, vignette during meltdown)
 
-### Person D — UI, Polish, Sound & Deployment
+### Ronie — UI, Polish, Sound & Deployment
 - [ ] HUD: health bar, objective text, level timer
 - [ ] Sound effects: ambient station hum, alarms, sparks, meltdown SFX
 - [ ] Music: calm (L1), tense (L2), intense (L3)
@@ -222,10 +222,10 @@ src/
 ### Git Branching
 ```
 main           ← always deployable
-├── person-a/  ← engine + controls
-├── person-b/  ← levels + geometry
-├── person-c/  ← shaders + lighting
-└── person-d/  ← UI + sound + deploy
+├── Zandile/  ← engine + controls
+├── Mlungisi/  ← levels + geometry
+├── Kutloano/  ← shaders + lighting
+└── Ronie/  ← UI + sound + deploy
 ```
 - Each person works on their own branch
 - Merge into `main` via pull requests (at least one other person glances at it)
@@ -240,14 +240,12 @@ main           ← always deployable
 - **File formats:** `.glb` for models, `.jpg` for textures (`.png` only if transparency needed)
 
 ### Communication
-- Discord/WhatsApp group for quick questions
+- WhatsApp group for quick questions
 - GitHub Issues for tracking tasks and bugs
-- Daily 15-min standup (what did you do, what's next, are you blocked)
-- Day 5 of each sprint: full integration session, everyone together
 
 ---
 
-## 8. Deployment Checklist (Person D)
+## 8. Deployment Checklist (Ronie)
 
 ```bash
 # 1. Verify vite config has relative base
