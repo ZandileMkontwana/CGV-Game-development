@@ -1,4 +1,4 @@
-# The Core — Reactor Station
+# Containment Breach — Lab Facility
 ## CGV Group Project Plan
 
 ---
@@ -18,21 +18,42 @@
 
 ## 2. Game Concept
 
-**The Core** is a first-person 3D exploration/survival game set in an orbital reactor station. The player is an engineer navigating the facility as it progressively fails.
+**Containment Breach** is a first-person / third-person 3D survival horror game set in a research lab facility. A scientist's experiment to grow a creature goes wrong — the creature breaks free, bites the scientist, and mutates them into a monster. The player is an engineer trying to escape the monster and the collapsing building.
 
 ### Three Levels — Each Genuinely Different
 
 | Level | Theme | Challenge Type | Visual Identity | Custom Shader |
 |---|---|---|---|---|
-| **1 — Exploration** | Pristine, fully operational station | Free exploration, learn the world | Cool white lighting, clean metallic surfaces | — |
-| **2 — Failing Systems** | Station breaking down | Timing/survival — dodge coolant vents and rotating hazards | Flickering amber lights, heat distortion | **Heat-haze / ripple** (time + proximity driven) |
-| **3 — Meltdown** | Reactor mid-meltdown | Boss confrontation — fight/escape a hostile core | Red emergency lighting, pulsing, screen shake | **Dissolve / noise** (game-state driven) |
+| **1 — The Experiment** | Clean lab, everything normal | Exploration — learn the facility, witness the breach | Cool white lighting, clean lab surfaces | — |
+| **2 — The Hunt** | Damaged facility, monster prowling | Stealth + evasion — avoid the monster, navigate damaged corridors | Flickering amber lights, heat distortion | **Heat-haze / ripple** (time + proximity driven) |
+| **3 — The Collapse** | Building self-destructing, monster enraged | Boss fight + timed escape — defeat the monster, run for the exit | Red emergency lighting, pulsing, screen shake | **Dissolve / noise** (game-state driven) |
 
 ### Core Progression
 ```
-Exploration → Timing/Survival → Confrontation
+Witness → Evade → Fight / Escape
 ```
 Each level reuses the WASD movement controls but changes **what is being tested**.
+
+### Story
+A scientist is working in a research lab on an experiment to grow a creature in a containment tube. Something goes wrong — the creature breaks free and bites the scientist, mutating them into a monster. The facility's automated failsafe protocol activates, starting a controlled demolition to contain the threat. The player (an engineer) must escape the monster and the collapsing building.
+
+### Win Conditions
+| Level | How You Win |
+|---|---|
+| **1** | Reach the emergency control room before lockdown doors seal you in |
+| **2** | Sneak past the patrolling monster and reach the emergency exit |
+| **3** | Defeat the monster (shoot weak points), then sprint through the collapsing building to the exit |
+
+### The Pulse Tool
+The player carries an engineering pulse device — a handheld tool that fires energy bursts.
+- **Level 1:** Activate terminals, open power couplings, interact with lab equipment
+- **Level 2:** Disable malfunctioning hazards (shoot conduits to stop sparks, valves to stop steam)
+- **Level 3:** Weapon — shoot the monster's glowing weak points, destroy security drones
+
+### Camera
+- **First-person:** Eye-level view, maximum tension (stealth, shooting, precision)
+- **Third-person:** Behind-the-player view, see the character model (exploration, awareness)
+- Press **V** to toggle between views at any time
 
 ---
 
@@ -46,9 +67,11 @@ src/
 │   ├── Game.js            — main loop, renderer, orchestrator
 │   ├── InputManager.js    — keyboard + mouse + pointer lock
 │   ├── PlayerController.js — WASD movement, sprint, jump, physics body
-│   ├── CameraController.js — first-person camera, mouse look, arrow keys, screen shake
+│   ├── CameraController.js — FPS + third-person camera toggle, mouse look, screen shake
 │   ├── PhysicsWorld.js    — cannon-es world, ground, body helpers
-│   └── GameState.js       — menu, pause, restart, level transitions, game over
+│   ├── GameState.js       — menu, pause, restart, level transitions, game over
+│   ├── PulseTool.js       — raycasting, energy system, fire/cooldown logic
+│   └── MonsterAI.js       — patrol, chase, attack state machine
 │
 ├── levels/                ← Mlungisi (geometry, scene hierarchy, level content)
 │   └── LevelManager.js    — builds and tears down levels, spawn points, props
@@ -60,7 +83,7 @@ src/
 │   └── UIManager.js       — HUD updates, sound triggers, credits screen
 │
 ├── assets/                ← shared (models, textures, audio — credit everything)
-│   ├── models/
+│   ├── models/            — Blender exports (.glb)
 │   ├── textures/
 │   └── audio/
 │
@@ -84,6 +107,8 @@ src/
 | Arrow Up / Down | Look up / down |
 | Shift | Sprint (~11 m/s vs 6 m/s walk) |
 | Space | Jump |
+| V | Toggle first-person / third-person camera |
+| F or Left Click | Fire pulse tool |
 | Mouse (after click) | Free look (pointer lock) |
 | Escape | Pause / Resume |
 
@@ -95,14 +120,14 @@ src/
 
 | Category | Weight | Implementation |
 |---|---|---|
-| **Viewing** | 10% | First-person camera with mouse-look and arrow-key turning. Camera follows player through the world. Planned: minimap or picture-in-picture security camera view. |
-| **Control & Playability** | 25% | Smooth WASD + mouse controls. Sprint and jump. Physics-based collisions. Three levels with distinct objectives (explore → survive → fight). Win/fail conditions per level. |
+| **Viewing** | 10% | First-person + third-person camera toggle (V key). Camera follows player through the world. Animated character model visible in third person. Planned: minimap or security camera view. |
+| **Control & Playability** | 25% | Smooth WASD + mouse controls. Sprint, jump, and shoot (pulse tool). Physics-based collisions. Three levels with distinct objectives (explore → evade → fight/escape). Monster AI creates dynamic encounters. Win/fail conditions per level. |
 | **3D Effects** | 25% | Antialiasing, PCF soft shadow maps, multiple light sources per level, PBR metallic materials (roughness + metalness), fog (colour changes per level), ACES filmic tone mapping. Planned: bump/normal maps, skybox, reflections, procedural textures. |
-| **Shaders** | 10% | Two custom GLSL shaders: (1) Heat-haze ripple — sin-wave UV distortion with `uTime` + `uIntensity` uniforms. (2) Dissolve/noise — 3D hash noise with `uDissolveAmount` + edge glow. Both are time-driven and game-state-driven. |
-| **Gameplay & Experience** | 25% | Three distinct levels with escalating tension. Environmental storytelling (pristine → failing → meltdown). Lighting colour shifts tell the story. Sound design enhances immersion. |
-| **Polish** | 10% | Main menu, pause menu, restart without page refresh. FPS counter. Loading screen. HUD with level indicator. Planned: options menu, sound settings, smooth transitions. |
-| **Innovation** | 10% | Dynamic lighting that shifts per level. Two custom shaders integrated into gameplay (not bolted on). Environmental degradation as visual narrative. Planned: security camera second view, custom Blender models. |
-| **Game Trailer** | 10% | Max 2 min YouTube video. Visual progression (clean → meltdown) makes compelling footage. Recorded after beta polish pass. |
+| **Shaders** | 10% | Three custom GLSL shaders: (1) Heat-haze ripple — sin-wave UV distortion. (2) Dissolve/noise — 3D hash noise + edge glow. (3) Pulse projectile glow — energy bolt shader with trail. All time-driven and game-state-driven. |
+| **Gameplay & Experience** | 25% | Three distinct levels with escalating tension. Story-driven (experiment gone wrong → monster hunt → building collapse). Monster AI creates dynamic stealth/chase encounters. Environmental storytelling through terminal logs and PA announcements. Sound design enhances immersion. |
+| **Polish** | 10% | Main menu, pause menu, restart without page refresh. FPS counter. Loading screen. HUD with health, energy, objective, level indicator. Planned: options menu, sound settings, smooth transitions. |
+| **Innovation** | 10% | Custom Blender models (player character, monster, scientist NPC, lab equipment). First/third-person toggle. Monster AI with patrol/chase/attack states. Pulse tool that evolves per level. Dynamic lighting shifts. Three custom shaders. |
+| **Game Trailer** | 10% | Max 2 min YouTube video. Story progression (normal lab → monster hunt → collapse) makes compelling footage. Chase sequences and boss fight are trailer highlights. |
 
 ---
 
@@ -129,23 +154,29 @@ src/
 
 | Deliverable | Owner | Status |
 |---|---|---|
-| Full Level 1 geometry (modular corridors, rooms, props) | Mlungisi | Not started |
-| Full Level 2 geometry (damaged corridors, hazards) | Mlungisi | Not started |
-| Full Level 3 geometry (boss arena, collapse) | Mlungisi | Not started |
+| Full Level 1 geometry (lab corridors, experiment room, control room) | Mlungisi | Not started |
+| Full Level 2 geometry (damaged corridors, hiding spots, monster patrol paths) | Mlungisi | Not started |
+| Full Level 3 geometry (boss arena, collapsing sections, escape route) | Mlungisi | Not started |
+| Blender models: player character, monster, scientist NPC, lab equipment | Mlungisi | Not started |
+| Monster AI system (patrol, chase, attack states) | Zandile | Not started |
+| Pulse tool (raycasting, energy, cooldown, fire) | Zandile | Not started |
+| Third-person camera rig + V key toggle | Zandile | Not started |
+| Win/lose conditions per level | Zandile | Not started |
+| Level 2 stealth mechanic (detection range, chase trigger) | Zandile + Mlungisi | Not started |
+| Level 3 boss fight logic (weak points, health, phases) | Zandile + Mlungisi | Not started |
 | PBR textures (diffuse, normal, roughness maps) | Kutloano | Not started |
 | Refined heat-haze shader (proper UV distortion) | Kutloano | Not started |
 | Refined dissolve shader (3D noise, edge glow) | Kutloano | Not started |
-| Skybox (space through station windows) | Kutloano | Not started |
-| Bump maps on station surfaces | Kutloano | Not started |
-| HUD (health bar, objective text, timer) | Ronie | Not started |
-| Sound effects + ambient music (Howler.js) | Ronie | Not started |
+| Pulse projectile glow shader (energy bolt + trail) | Kutloano | Not started |
+| Monster weak-point glow effects | Kutloano | Not started |
+| Bump maps on lab surfaces | Kutloano | Not started |
+| Skybox (lab interior / exterior) | Kutloano | Not started |
+| HUD (health bar, energy bar, objective text, timer) | Ronie | Not started |
+| Sound effects: monster (growls, footsteps, screams), lab ambience, pulse fire, collapse | Ronie | Not started |
+| Music: calm (L1), tense/horror (L2), intense (L3) | Ronie | Not started |
+| PA announcement system (countdown, warnings) | Ronie | Not started |
 | Credits screen (all libraries, assets, licenses) | Ronie | Not started |
 | Loading screen with real asset progress | Ronie | Not started |
-| Level transition screens | Ronie | Not started |
-| Boss encounter logic (Level 3) | Zandile + Mlungisi | Not started |
-| Win/lose conditions per level | Zandile | Not started |
-| Level 2 hazards (coolant vents, rotating blades) | Zandile + Mlungisi | Not started |
-| Screen shake during Level 3 | Zandile | Framework ready |
 | Game trailer (max 2 min, YouTube) | Ronie | Not started |
 | **Deployed on LAMP server and verified** | Ronie | Not started |
 
@@ -155,9 +186,9 @@ src/
 |---|---|---|
 | All beta items polished and bug-free | All | — |
 | Devlog video | All | Not started |
-| Custom Blender models (innovation) | Mlungisi/ Kutloano | Not started |
-| Optional: multiplayer or networking (innovation) | TBD | Not started |
-| Final LAMP deployment verified | Person D | Not started |
+| Post-processing (bloom on reactor, vignette during collapse) | Kutloano | Not started |
+| Optional: local co-op mode (shared keyboard) | Zandile | Not started |
+| Final LAMP deployment verified | Ronie | Not started |
 | Individual contribution reports on Moodle | Each member | Not started |
 
 ---
@@ -173,38 +204,49 @@ src/
 - [x] GameState (menu, pause, restart, level transitions)
 - [x] Game.js orchestrator (main loop, subsystem wiring)
 - [x] Level 1 prototype corridors for alpha
-- [ ] Level 2 hazard mechanics (timed vents, rotating blades)
-- [ ] Level 3 boss encounter (AI, health, destruction sequence)
+- [ ] Third-person camera rig + V key toggle
+- [ ] PulseTool.js (raycasting, energy, cooldown, fire)
+- [ ] MonsterAI.js (patrol, chase, attack state machine)
+- [ ] Level 2 stealth mechanic (detection range, chase trigger)
+- [ ] Level 3 boss fight logic (weak points, health, phases)
 - [ ] Win/lose trigger system per level
 - [ ] Integration testing with teammates' code
 - [ ] Performance profiling (Chrome DevTools)
 
-### Mlungisi — Level Builder
+### Mlungisi — Level Builder & Blender Models
 - [ ] Modular corridor pieces (straight, T-junction, corner, room)
-- [ ] Level 1 — clean station corridors, control room, reactor hall
-- [ ] Level 2 — damaged geometry, hazard placements, shader zone markers
-- [ ] Level 3 — boss arena, collapsed sections, escape route
+- [ ] Level 1 — clean lab corridors, experiment room, control room
+- [ ] Level 2 — damaged corridors, hiding spots, monster patrol paths
+- [ ] Level 3 — boss arena, collapsing sections, escape route
+- [ ] Blender: player character model (engineer)
+- [ ] Blender: monster model (mutated scientist)
+- [ ] Blender: scientist NPC model (pre-mutation)
+- [ ] Blender: lab equipment (containment tube, computers, consoles)
 - [ ] Scene graph hierarchy (explainable parent-child relationships)
 - [ ] Collision physics bodies for all walls/obstacles
-- [ ] Props: control panels, pipes, doors, machinery
-- [ ] Optional: custom Blender models for innovation marks
+- [ ] Shootable target markers (conduits, valves, boss weak points)
 
 ### Kutloano — Visuals & Shaders
 - [x] Basic lighting presets (cool white, flickering amber, red emergency)
 - [x] Basic heat-haze and dissolve shader stubs
 - [ ] Refined heat-haze shader (proper sine-wave UV distortion, sampling)
 - [ ] Refined dissolve shader (3D simplex noise, animated edge glow)
+- [ ] Pulse projectile glow shader (energy bolt + trail)
+- [ ] Monster weak-point glow material (emissive, pulsing)
 - [ ] PBR materials with diffuse + normal + roughness maps
-- [ ] Bump maps on station walls and floors
-- [ ] Skybox (space / station interior)
+- [ ] Bump maps on lab walls and floors
+- [ ] Skybox (lab interior / exterior)
 - [ ] Flickering light animation (sin-driven intensity per frame)
 - [ ] Shadow configuration (limit casters, constrain shadow camera)
-- [ ] Post-processing (bloom on reactor, vignette during meltdown)
+- [ ] Post-processing (bloom, vignette during collapse) — final only
 
 ### Ronie — UI, Polish, Sound & Deployment
-- [ ] HUD: health bar, objective text, level timer
-- [ ] Sound effects: ambient station hum, alarms, sparks, meltdown SFX
-- [ ] Music: calm (L1), tense (L2), intense (L3)
+- [ ] HUD: health bar, energy bar, objective text, level timer
+- [ ] Sound: monster (growls, footsteps, screams, heartbeat when near)
+- [ ] Sound: pulse tool (fire, impact, recharge)
+- [ ] Sound: ambience (lab hum L1, alarms L2, collapse L3)
+- [ ] Music: calm (L1), tense/horror (L2), intense (L3)
+- [ ] PA announcement system (failsafe countdown, warnings)
 - [ ] Credits screen (all libraries, assets, tutorials, licenses)
 - [ ] Loading screen with real progress tracking
 - [ ] Level transition overlay screens
