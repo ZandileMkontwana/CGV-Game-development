@@ -3,14 +3,18 @@ import * as CANNON from 'cannon-es';
 import InputManager from './InputManager.js';
 
 /**
- * PlayerController — first-person movement and physics body.
+ * PlayerController — first/third-person movement and physics body.
  *
  * Movement is impulse-based through cannon-es so that collisions,
  * slopes and gravity "just work".  The controller:
  *   - reads WASD / arrow keys from InputManager,
  *   - applies horizontal impulses relative to the camera yaw,
  *   - handles jumping via ground-contact detection,
- *   - exposes the player body position for the camera to follow.
+ *   - exposes the player body position for the camera to follow,
+ *   - manages a placeholder character model (hidden in first-person).
+ *
+ * TODO (Person B): Replace the placeholder capsule/sphere model with
+ * the real Blender engineer GLB once the asset is available.
  */
 export default class PlayerController {
   /**
@@ -69,6 +73,31 @@ export default class PlayerController {
     // --- Camera yaw reference (set by CameraController) --------------------
     /** @type {THREE.Object3D|null} set externally so movement is camera-relative */
     this.cameraPivot = null;
+
+    // --- Placeholder character model (visible in third-person only) --------
+    // TODO (Person B): Replace with GLTFLoader'd engineer model.
+    this.scene = scene;
+    this.playerModel = new THREE.Group();
+
+    // Body — capsule (cylinder + hemisphere caps).
+    const bodyGeo = new THREE.CapsuleGeometry(0.3, 0.8, 4, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3366aa });
+    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+    bodyMesh.position.y = 0.8; // feet to mid-torso
+    bodyMesh.castShadow = true;
+    this.playerModel.add(bodyMesh);
+
+    // Head — sphere.
+    const headGeo = new THREE.SphereGeometry(0.2, 8, 8);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0xe8b87a });
+    const headMesh = new THREE.Mesh(headGeo, headMat);
+    headMesh.position.y = 1.55; // sits on top of the capsule
+    headMesh.castShadow = true;
+    this.playerModel.add(headMesh);
+
+    // Hidden by default — starts in first-person mode.
+    this.playerModel.visible = false;
+    scene.add(this.playerModel);
   }
 
   /** Reset to a spawn position. */
@@ -132,6 +161,28 @@ export default class PlayerController {
   /** World-space position of the player's feet. */
   get position() {
     return this.body.position;
+  }
+
+  /**
+   * Sync the placeholder character model with the physics body.
+   * Call once per frame from the game loop so the model tracks
+   * position and yaw regardless of who is driving the update.
+   */
+  syncModel() {
+    this.playerModel.position.set(
+      this.body.position.x,
+      this.body.position.y,
+      this.body.position.z
+    );
+    // Rotate the model to face the camera yaw direction.
+    if (this.cameraPivot) {
+      this.playerModel.rotation.y = this.cameraPivot.rotation.y;
+    }
+  }
+
+  /** Show or hide the character model (called by CameraController). */
+  setModelVisible(visible) {
+    this.playerModel.visible = visible;
   }
 
   /** Eye position (feet + height). Reuses an internal vector — no allocation. */
