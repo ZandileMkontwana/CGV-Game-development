@@ -59,7 +59,7 @@ export default class Game {
     // --- Spawn points per level (Person B can adjust these) -----------------
     this._spawnPoints = {
       1: { x: 0, y: 2, z: -7 },
-      2: { x: 0, y: 2, z: 0 },
+      2: { x: 0, y: 2, z: 5 },
       3: { x: 0, y: 2, z: 0 },
     };
 
@@ -78,6 +78,12 @@ export default class Game {
     this._debugKeysEl = document.getElementById('debug-keys');
     this._energyFillEl = document.getElementById('energy-bar-fill');
     this._energyWrapEl = document.getElementById('energy-bar-wrap');
+
+    // --- Stealth HUD -------------------------------------------------------
+    this._stealthVignetteEl = document.getElementById('stealth-vignette');
+    this._stealthWarningEl = document.getElementById('stealth-warning');
+    this._stealthHiddenEl = document.getElementById('stealth-hidden');
+
     this._frameCount = 0;
     this._fpsTime = 0;
 
@@ -170,6 +176,18 @@ export default class Game {
       // Monster AI — update if active.
       if (this.monster.isActive) {
         this.monster.update(dt, this.player.position);
+        this._updateStealthHUD();
+
+        // Level 2 win check: reach the exit trigger zone.
+        if (this.gameState.currentLevel === 2 && this.levels.exitTrigger) {
+          const pPos = this.player.position;
+          const ePos = this.levels.exitTrigger.position;
+          const dx = pPos.x - ePos.x;
+          const dz = pPos.z - ePos.z;
+          if (Math.sqrt(dx * dx + dz * dz) < 3) {
+            this.completeLevel();
+          }
+        }
       }
 
       // Update health bar HUD.
@@ -185,6 +203,8 @@ export default class Game {
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.position);
+      // Clear stealth HUD when monster isn't active.
+      this._clearStealthHUD();
     }
 
     this.input.endFrame();
@@ -239,16 +259,93 @@ export default class Game {
           { x: -3, y: 0, z: -32 },
           { x: -3, y: 0, z: -28 },
         ]);
+        this.monster.setOccluders([]); // no LOS blocking in L1 (open hall)
+        this.monster.detectionRange = 12;
+        this.monster.escapeTimeout = 10;
         this.monster.setActive(true);
         break;
       case 2:
-        // TODO (Person B): Set waypoints for damaged corridor patrol.
-        this.monster.setActive(false);
+        // Stealth: monster patrols the damaged corridor.
+        // Narrower detection range + higher escape timeout for stealth gameplay.
+        this.monster.spawn(3, 2, -25);
+        this.monster.setPatrolWaypoints([
+          { x:  4, y: 0, z: -5  },
+          { x:  4, y: 0, z: -20 },
+          { x: -4, y: 0, z: -20 },
+          { x: -4, y: 0, z: -40 },
+          { x:  4, y: 0, z: -40 },
+          { x:  4, y: 0, z: -5  },
+        ]);
+        // Pass level occluders for line-of-sight raycasting.
+        this.monster.setOccluders(this.levels.occluders);
+        // Tuning: harder to spot player, gives time to hide.
+        this.monster.detectionRange = 10;  // narrower than L1
+        this.monster.escapeTimeout = 6;    // gives up chase faster
+        this.monster.setActive(true);
         break;
       case 3:
         // TODO (Person B): Boss fight arena setup.
         this.monster.setActive(false);
         break;
+    }
+  }
+
+  /**
+   * Update the stealth HUD overlay: vignette, warning, hidden indicator.
+   * Called every frame while monster is active. Zero allocation — reads
+   * monster getters and sets CSS properties directly.
+   */
+  _updateStealthHUD() {
+    const m = this.monster;
+    const threat = m.threatLevel;      // 0..1 proximity
+    const seeing = m.canSeePlayer;     // LOS to player
+    const chasing = m.state === 'chase' || m.state === 'attack';
+
+    // --- Vignette: red border pulses when monster is near ----------------
+    if (this._stealthVignetteEl) {
+      if (threat > 0.1) {
+        const base = Math.min(threat * 0.7, 0.6);
+        this._stealthVignetteEl.style.setProperty('--vignette-base', base);
+        this._stealthVignetteEl.style.opacity = base;
+        this._stealthVignetteEl.classList.add('pulse');
+      } else {
+        this._stealthVignetteEl.style.opacity = 0;
+        this._stealthVignetteEl.classList.remove('pulse');
+      }
+    }
+
+    // --- Warning: "! DETECTED !" flashes when monster sees + chases ------
+    if (this._stealthWarningEl) {
+      if (seeing && chasing) {
+        this._stealthWarningEl.classList.add('active');
+      } else {
+        this._stealthWarningEl.classList.remove('active');
+        this._stealthWarningEl.style.opacity = 0;
+      }
+    }
+
+    // --- Hidden indicator: "[ HIDDEN ]" when behind cover while near ----
+    if (this._stealthHiddenEl) {
+      if (!seeing && threat > 0.2) {
+        this._stealthHiddenEl.style.opacity = 1;
+      } else {
+        this._stealthHiddenEl.style.opacity = 0;
+      }
+    }
+  }
+
+  /** Reset all stealth HUD elements to their hidden/inactive state. */
+  _clearStealthHUD() {
+    if (this._stealthVignetteEl) {
+      this._stealthVignetteEl.style.opacity = 0;
+      this._stealthVignetteEl.classList.remove('pulse');
+    }
+    if (this._stealthWarningEl) {
+      this._stealthWarningEl.classList.remove('active');
+      this._stealthWarningEl.style.opacity = 0;
+    }
+    if (this._stealthHiddenEl) {
+      this._stealthHiddenEl.style.opacity = 0;
     }
   }
 

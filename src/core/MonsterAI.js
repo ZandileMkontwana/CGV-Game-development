@@ -57,8 +57,16 @@ export default class MonsterAI {
     this._health = 3;          // number of remaining weak points
     this._phaseSpeedBonus = 0; // added to chase speed as weak points are destroyed
 
+    // --- Stealth: line-of-sight raycast ------------------------------------
+    this._occluders = [];       // meshes that block line of sight (walls, props)
+    this._losRaycaster = new THREE.Raycaster();
+    this._losOrigin = new THREE.Vector3();
+    this._losDir = new THREE.Vector3();
+    this._canSeePlayer = false; // updated each frame via LOS raycast
+    this._distToPlayer = Infinity; // horizontal distance to player
+
     // --- Event listeners ----------------------------------------------------
-    this._listeners = { damage: [], death: [], attack: [], stateChange: [] };
+    this._listeners = { damage: [], death: [], attack: [], stateChange: [], spotted: [], hidden: [] };
 
     // --- Physics body -------------------------------------------------------
     this.body = new CANNON.Body({
@@ -200,8 +208,25 @@ export default class MonsterAI {
     }
   }
 
+  /** Set meshes that block line-of-sight (walls, props, hiding spots). */
+  setOccluders(meshes) {
+    this._occluders = meshes;
+  }
+
   /** Current health (remaining weak points). */
   get health() { return this._health; }
+
+  /** Horizontal distance to the player (updated each frame). */
+  get distToPlayer() { return this._distToPlayer; }
+
+  /** Whether the monster has unobstructed line of sight to the player. */
+  get canSeePlayer() { return this._canSeePlayer; }
+
+  /** Normalised threat level 0..1 (1 = monster right on top of player). */
+  get threatLevel() {
+    if (this._distToPlayer >= this.detectionRange) return 0;
+    return 1 - this._distToPlayer / this.detectionRange;
+  }
 
   /** World position of the monster's feet. */
   get position() { return this.body.position; }
@@ -221,11 +246,45 @@ export default class MonsterAI {
     const dx = this._playerPos.x - this.body.position.x;
     const dz = this._playerPos.z - this.body.position.z;
     const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+    this._distToPlayer = distToPlayer;
+
+    // --- Line-of-sight check (no per-frame alloc) ---------------------------
+    // Cast a ray from monster eye height to player eye height.
+    // If an occluder mesh is in between, the monster can't see the player.
+    this._losOrigin.set(
+      this.body.position.x,
+      this.body.position.y + 1.8, // monster eye height
+      this.body.position.z
+    );
+    this._losDir.set(
+      this._playerPos.x - this._losOrigin.x,
+      (this._playerPos.y + 1.5) - this._losOrigin.y, // player eye height
+      this._playerPos.z - this._losOrigin.z
+    );
+    const losDist = this._losDir.length();
+    this._losDir.normalize();
+    this._losRaycaster.set(this._losOrigin, this._losDir);
+    this._losRaycaster.far = losDist;
+
+    const losHits = this._losRaycaster.intersectObjects(this._occluders, false);
+    const wasSeeing = this._canSeePlayer;
+    this._canSeePlayer = losHits.length === 0; // no obstruction = visible
+
+    // Fire spotted/hidden events on transitions.
+    if (this._canSeePlayer && !wasSeeing && distToPlayer < this.detectionRange) {
+      this._emit('spotted');
+    } else if (!this._canSeePlayer && wasSeeing) {
+      this._emit('hidden');
+    }
 
     // --- State transitions --------------------------------------------------
+    // Player can only be detected if the monster has line of sight AND
+    // is within detection range.  Hiding behind objects breaks detection.
+    const detected = this._canSeePlayer && distToPlayer < this.detectionRange;
+
     switch (this.state) {
       case State.PATROL:
-        if (distToPlayer < this.detectionRange) {
+        if (detected) {
           this._setState(State.CHASE);
           this._escapeTimer = 0;
         }
@@ -234,15 +293,15 @@ export default class MonsterAI {
       case State.CHASE:
         if (distToPlayer < this.attackRange) {
           this._setState(State.ATTACK);
-        } else if (distToPlayer > this.detectionRange) {
-          // Player escaped detection range — start escape timer.
+        } else if (!detected) {
+          // Player hidden or out of range — start escape timer.
           this._escapeTimer += dt;
           if (this._escapeTimer >= this.escapeTimeout) {
             this._setState(State.PATROL);
             this._escapeTimer = 0;
           }
         } else {
-          // Player still in range — reset escape timer.
+          // Player still detected — reset escape timer.
           this._escapeTimer = 0;
         }
         break;

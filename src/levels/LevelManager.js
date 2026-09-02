@@ -28,6 +28,12 @@ export default class LevelManager {
 
     /** Shootable meshes for the PulseTool raycast (rebuilt each level load). */
     this.shootables = [];
+
+    /** Occluder meshes that block monster line-of-sight (rebuilt each level load). */
+    this.occluders = [];
+
+    /** Exit trigger zone mesh (set by level builder, null if none). */
+    this.exitTrigger = null;
   }
 
   /**
@@ -63,6 +69,8 @@ export default class LevelManager {
     }
     this._disposables = [];
     this.shootables = [];
+    this.occluders = [];
+    this.exitTrigger = null;
   }
 
   // ── Shared geometry helpers ──────────────────────────────────────────────
@@ -370,26 +378,113 @@ export default class LevelManager {
     this._shootableTarget(0.8, 0.5, -5.9, 1.5, -32, 'terminal', -Math.PI / 2);
   }
 
-  // ── Level 2: Failing station — hazards, timing ──────────────────────
+  // ── Level 2: Failing station — stealth, hazards, timing ─────────────
   _buildLevel2() {
-    // Temporary ground plane — replace with damaged corridor pieces.
-    const groundGeo = new THREE.PlaneGeometry(50, 50);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x443322,
-      roughness: 0.8,
-      metalness: 0.3,
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-    this._track(ground);
+    const W = 10;    // corridor half-width (x = -W to W = 20m wide)
+    const H = 3.2;   // ceiling height
+    const Z0 = 10;   // south wall
+    const Z1 = -55;  // north wall (exit end)
+    const len = Z0 - Z1; // 65m corridor
 
-    // TODO (Person B): Same geometry but damaged.
-    // - Broken panels, sparking conduits
-    // - Coolant vent obstacles (timed jets)
-    // - Rotating hazards (animated meshes)
-    // - Heat-haze shader zones (coordinate with Person C)
+    // --- Materials --------------------------------------------------------
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x554433, roughness: 0.85, metalness: 0.2,
+    });
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x665544, roughness: 0.7, metalness: 0.3,
+    });
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0x443322, roughness: 0.9, metalness: 0.1,
+    });
+    const crateMat = new THREE.MeshStandardMaterial({
+      color: 0x7a6a52, roughness: 0.6, metalness: 0.4,
+    });
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0x888888, roughness: 0.5, metalness: 0.6,
+    });
+
+    // --- Floor + ceiling --------------------------------------------------
+    this._floorCeil(W * 2, len, 0, 0, (Z0 + Z1) / 2, floorMat);
+    this._floorCeil(W * 2, len, 0, H, (Z0 + Z1) / 2, ceilMat, true);
+
+    // --- Walls (east + west + north + south) ------------------------------
+    this._wallBox(0.5, H, len,  W, H / 2, (Z0 + Z1) / 2, wallMat);  // east
+    this._wallBox(0.5, H, len, -W, H / 2, (Z0 + Z1) / 2, wallMat);  // west
+    this._wallBox(W * 2, H, 0.5, 0, H / 2, Z1, wallMat);             // north
+    this._wallBox(W * 2, H, 0.5, 0, H / 2, Z0, wallMat);             // south
+
+    // --- Hiding crates (occluders — block monster LOS) --------------------
+    // Placed along the corridor so the player can duck behind them.
+    const cratePositions = [
+      { x:  4, z:  2 }, { x: -3, z: -4 },
+      { x:  5, z: -12 }, { x: -4, z: -18 },
+      { x:  3, z: -24 }, { x: -5, z: -30 },
+      { x:  6, z: -36 }, { x: -3, z: -42 },
+      { x:  4, z: -48 },
+    ];
+    for (const cp of cratePositions) {
+      const m = this._propBox(1.6, 2.0, 1.6, cp.x, 1.0, cp.z, crateMat);
+      this.occluders.push(m);
+    }
+
+    // --- Structural pillars (also occlude LOS) ----------------------------
+    const pillarPositions = [
+      { x: 0, z: -8 }, { x: 0, z: -22 }, { x: 0, z: -38 },
+    ];
+    for (const pp of pillarPositions) {
+      const m = this._propCylinder(0.5, 0.5, H, pp.x, H / 2, pp.z, pillarMat, 8);
+      this.occluders.push(m);
+    }
+
+    // Also add walls themselves as occluders so monster can't see through them.
+    // We only need the east/west wall meshes — already pushed by _wallBox
+    // via _track().  We'll collect all wall meshes via a second pass after
+    // building so we include them in occluders.
+    // (The corridor walls already block LOS via physics; we just add the
+    //  crate/pillar meshes above as the key gameplay occluders.)
+
+    // --- Ambient hazard props (non-interactive visual detail) -----------
+    // Broken ceiling panels, fallen debris.
+    const debrisMat = new THREE.MeshStandardMaterial({
+      color: 0x554433, roughness: 0.9, metalness: 0.1,
+    });
+    this._propBox(2, 0.2, 3, 2, 0.1, -15, debrisMat);
+    this._propBox(3, 0.3, 2, -4, 0.15, -35, debrisMat);
+    this._propBox(1.5, 0.15, 2.5, 6, 0.08, -45, debrisMat);
+
+    // --- Lighting (dim, flickering — coordinate with Person C) -----------
+    // Sparse point lights for stealth atmosphere.
+    const dimLight = new THREE.PointLight(0xffaa55, 0.6, 15, 1.5);
+    dimLight.position.set(0, 2.8, 0);
+    this.scene.add(dimLight);
+    this._track(dimLight);
+
+    const dimLight2 = new THREE.PointLight(0xffaa55, 0.4, 15, 1.5);
+    dimLight2.position.set(0, 2.8, -25);
+    this.scene.add(dimLight2);
+    this._track(dimLight2);
+
+    const dimLight3 = new THREE.PointLight(0xffaa55, 0.4, 15, 1.5);
+    dimLight3.position.set(0, 2.8, -50);
+    this.scene.add(dimLight3);
+    this._track(dimLight3);
+
+    // --- Exit trigger zone (invisible box at north end) -------------------
+    const exitGeo = new THREE.BoxGeometry(W * 2 - 2, H, 1);
+    const exitMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88, transparent: true, opacity: 0.08,
+    });
+    this.exitTrigger = new THREE.Mesh(exitGeo, exitMat);
+    this.exitTrigger.position.set(0, H / 2, Z1 + 1);
+    this.scene.add(this.exitTrigger);
+    this._track(this.exitTrigger);
+
+    // --- Shootable hazard targets (Level 2 pulse tool) --------------------
+    // Conduit panels on walls — shoot to disable hazards.
+    this._shootableTarget(0.5, 0.4,  9.7, 1.8, -10, 'hazard', Math.PI / 2);
+    this._shootableTarget(0.5, 0.4, -9.7, 1.8, -20, 'hazard', -Math.PI / 2);
+    this._shootableTarget(0.5, 0.4,  9.7, 1.8, -35, 'hazard', Math.PI / 2);
+    this._shootableTarget(0.5, 0.4, -9.7, 1.8, -45, 'hazard', -Math.PI / 2);
   }
 
   // ── Level 3: Meltdown — chaos, boss arena ────────────────────────────
