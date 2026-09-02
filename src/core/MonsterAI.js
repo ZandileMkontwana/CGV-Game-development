@@ -56,6 +56,8 @@ export default class MonsterAI {
     this._escapeTimer = 0;
     this._health = 3;          // number of remaining weak points
     this._phaseSpeedBonus = 0; // added to chase speed as weak points are destroyed
+    this._phaseDamageBonus = 0;  // added to attack damage per destroyed weak point
+    this._phaseAttackBonus = 0;  // subtracted from attack cooldown per destroyed WP
 
     // --- Stealth: line-of-sight raycast ------------------------------------
     this._occluders = [];       // meshes that block line of sight (walls, props)
@@ -66,7 +68,7 @@ export default class MonsterAI {
     this._distToPlayer = Infinity; // horizontal distance to player
 
     // --- Event listeners ----------------------------------------------------
-    this._listeners = { damage: [], death: [], attack: [], stateChange: [], spotted: [], hidden: [] };
+    this._listeners = { damage: [], death: [], attack: [], stateChange: [], spotted: [], hidden: [], phaseChange: [] };
 
     // --- Physics body -------------------------------------------------------
     this.body = new CANNON.Body({
@@ -170,6 +172,8 @@ export default class MonsterAI {
     this._escapeTimer = 0;
     this._health = 3;
     this._phaseSpeedBonus = 0;
+    this._phaseDamageBonus = 0;
+    this._phaseAttackBonus = 0;
     // Reset weak points.
     for (const wp of this.weakPoints) {
       wp.userData.destroyed = false;
@@ -198,8 +202,16 @@ export default class MonsterAI {
     wpMesh.userData.destroyed = true;
     wpMesh.visible = false;
     this._health--;
-    this._phaseSpeedBonus += 1.5; // faster with each weak point destroyed
+
+    // Phase bonuses: monster gets faster, hits harder, attacks more often.
+    this._phaseSpeedBonus  += 1.5;  // +1.5 m/s chase speed
+    this._phaseDamageBonus += 5;    // +5 attack damage
+    this._phaseAttackBonus += 0.3;  // -0.3s attack cooldown
+
+    const phase = 3 - this._health; // 1, 2, or 3
+    this._emit('phaseChange', phase);
     this._emit('damage', this._health);
+
     if (this._health <= 0) {
       this.state = State.DEAD;
       this.body.velocity.setZero();
@@ -215,6 +227,12 @@ export default class MonsterAI {
 
   /** Current health (remaining weak points). */
   get health() { return this._health; }
+
+  /** Current boss phase (0 = full health, 1–3 = weak points destroyed). */
+  get phase() { return 3 - this._health; }
+
+  /** Whether the monster is dead. */
+  get isDead() { return this.state === State.DEAD; }
 
   /** Horizontal distance to the player (updated each frame). */
   get distToPlayer() { return this._distToPlayer; }
@@ -386,9 +404,10 @@ export default class MonsterAI {
     this.body.velocity.z = 0;
 
     this._attackTimer -= dt;
+    const cooldown = Math.max(0.5, this.attackCooldown - this._phaseAttackBonus);
     if (this._attackTimer <= 0) {
-      this._attackTimer = this.attackCooldown;
-      this._emit('attack', this.attackDamage);
+      this._attackTimer = cooldown;
+      this._emit('attack', this.attackDamage + this._phaseDamageBonus);
     }
   }
 

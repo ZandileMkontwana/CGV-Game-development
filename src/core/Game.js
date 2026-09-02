@@ -60,7 +60,7 @@ export default class Game {
     this._spawnPoints = {
       1: { x: 0, y: 2, z: -7 },
       2: { x: 0, y: 2, z: 5 },
-      3: { x: 0, y: 2, z: 0 },
+      3: { x: 0, y: 2, z: -2 },
     };
 
     // --- Resize handler for renderer ----------------------------------------
@@ -84,6 +84,15 @@ export default class Game {
     this._stealthWarningEl = document.getElementById('stealth-warning');
     this._stealthHiddenEl = document.getElementById('stealth-hidden');
 
+    // --- Collapse timer (Level 3 escape sequence) -------------------------
+    this._collapseTimerEl = document.getElementById('collapse-timer');
+    this._collapseTimerValueEl = document.getElementById('collapse-timer-value');
+    this._bossPhaseEl = document.getElementById('boss-phase');
+    this._collapseTime = 0;          // seconds remaining (0 = not active)
+    this._collapseActive = false;    // is the failsafe countdown running?
+    this._escapeDoorOpen = false;    // has the exit door been opened?
+    this._collapseDuration = 90;     // total seconds for escape sequence
+
     this._frameCount = 0;
     this._fpsTime = 0;
 
@@ -102,6 +111,36 @@ export default class Game {
     this.monster.on('stateChange', (newState, oldState) => {
       // TODO (Person D): Trigger monster sound effects per state.
       // console.log(`Monster: ${oldState} → ${newState}`);
+    });
+
+    this.monster.on('death', () => {
+      // Monster defeated → start the failsafe collapse countdown.
+      if (this.gameState.currentLevel === 3) {
+        this._startCollapseSequence();
+      }
+    });
+
+    this.monster.on('phaseChange', (phase) => {
+      // Update boss phase HUD.
+      if (this._bossPhaseEl) {
+        const labels = ['', 'PHASE 2 — ENRAGED', 'PHASE 3 — CRITICAL'];
+        this._bossPhaseEl.textContent = labels[phase] || '';
+        this._bossPhaseEl.style.opacity = phase > 0 ? 1 : 0;
+        this.camera.shake(0.3); // screen shake on phase transition
+      }
+    });
+
+    // Pulse Tool hit → check for weak point targets and damage monster.
+    this.pulseTool.on('hit', (target) => {
+      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive) {
+        // Find the matching weak point mesh on the monster.
+        for (const wp of this.monster.weakPoints) {
+          if (wp === target) {
+            this.monster.damageWeakPoint(wp);
+            break;
+          }
+        }
+      }
     });
 
     // --- Game state hooks ---------------------------------------------------
@@ -190,6 +229,22 @@ export default class Game {
         }
       }
 
+      // Collapse timer countdown (Level 3 escape sequence).
+      if (this._collapseActive) {
+        this._updateCollapseTimer(dt);
+
+        // Level 3 win check: reach exit trigger after door opens.
+        if (this._escapeDoorOpen && this.levels.exitTrigger) {
+          const pPos = this.player.position;
+          const ePos = this.levels.exitTrigger.position;
+          const dx = pPos.x - ePos.x;
+          const dz = pPos.z - ePos.z;
+          if (Math.sqrt(dx * dx + dz * dz) < 4) {
+            this.completeLevel();
+          }
+        }
+      }
+
       // Update health bar HUD.
       if (this._healthFillEl) {
         const pct = (this.playerHealth / this.playerMaxHealth) * 100;
@@ -239,6 +294,19 @@ export default class Game {
     // 5. Configure monster for this level.
     this.playerHealth = this.playerMaxHealth;
     this._setupMonster(levelNum);
+
+    // 6. Reset collapse / escape state.
+    this._collapseActive = false;
+    this._collapseTime = 0;
+    this._escapeDoorOpen = false;
+    if (this._collapseTimerEl) {
+      this._collapseTimerEl.classList.remove('active');
+    }
+    if (this._bossPhaseEl) {
+      this._bossPhaseEl.style.opacity = 0;
+      this._bossPhaseEl.style.color = '#ff8844';
+      this._bossPhaseEl.style.textShadow = '0 0 10px #f80';
+    }
   }
 
   /**
@@ -262,6 +330,8 @@ export default class Game {
         this.monster.setOccluders([]); // no LOS blocking in L1 (open hall)
         this.monster.detectionRange = 12;
         this.monster.escapeTimeout = 10;
+        this.monster.chaseSpeed = 5.5;
+        this.monster.attackDamage = 20;
         this.monster.setActive(true);
         break;
       case 2:
@@ -281,11 +351,25 @@ export default class Game {
         // Tuning: harder to spot player, gives time to hide.
         this.monster.detectionRange = 10;  // narrower than L1
         this.monster.escapeTimeout = 6;    // gives up chase faster
+        this.monster.chaseSpeed = 5.5;
+        this.monster.attackDamage = 20;
         this.monster.setActive(true);
         break;
       case 3:
-        // TODO (Person B): Boss fight arena setup.
-        this.monster.setActive(false);
+        // Boss fight in the arena — aggressive, wide detection, no escape timeout.
+        this.monster.spawn(0, 2, -20);
+        this.monster.setPatrolWaypoints([
+          { x:  6, y: 0, z: -15 },
+          { x:  6, y: 0, z: -25 },
+          { x: -6, y: 0, z: -25 },
+          { x: -6, y: 0, z: -15 },
+        ]);
+        this.monster.setOccluders(this.levels.occluders);
+        this.monster.detectionRange = 25;  // arena-wide detection
+        this.monster.escapeTimeout = 999;  // never gives up chase in boss fight
+        this.monster.chaseSpeed = 5.0;
+        this.monster.attackDamage = 25;
+        this.monster.setActive(true);
         break;
     }
   }
@@ -346,6 +430,80 @@ export default class Game {
     }
     if (this._stealthHiddenEl) {
       this._stealthHiddenEl.style.opacity = 0;
+    }
+  }
+
+  // --- Collapse / Escape sequence (Level 3) ───────────────────────────────
+
+  /**
+   * Start the failsafe collapse countdown.
+   * Called when the monster is defeated in Level 3.
+   * Opens the exit door and starts a 90s timer.
+   */
+  _startCollapseSequence() {
+    this._collapseActive = true;
+    this._collapseTime = this._collapseDuration;
+    this._escapeDoorOpen = true;
+
+    // Open the exit door (remove physics body + hide mesh).
+    if (this.levels._exitDoor) {
+      this.levels._exitDoor.visible = false;
+      // Remove the door's physics body so player can walk through.
+      const idx = this.levels._disposables.findIndex(
+        d => d.mesh === this.levels._exitDoor
+      );
+      if (idx >= 0 && this.levels._disposables[idx].body) {
+        this.physics.world.removeBody(this.levels._disposables[idx].body);
+        this.levels._disposables[idx].body = null;
+      }
+    }
+
+    // Show the collapse timer HUD.
+    if (this._collapseTimerEl) {
+      this._collapseTimerEl.classList.add('active');
+    }
+
+    // Screen shake for dramatic effect.
+    this.camera.shake(0.5);
+
+    // Hide boss phase indicator.
+    if (this._bossPhaseEl) {
+      this._bossPhaseEl.textContent = 'ESCAPE — RUN!';
+      this._bossPhaseEl.style.opacity = 1;
+      this._bossPhaseEl.style.color = '#0f0';
+      this._bossPhaseEl.style.textShadow = '0 0 10px #0f0';
+    }
+
+    // Clear stealth HUD (monster is dead).
+    this._clearStealthHUD();
+  }
+
+  /**
+   * Tick the collapse timer. If it hits 0 → game over.
+   * @param {number} dt
+   */
+  _updateCollapseTimer(dt) {
+    this._collapseTime -= dt;
+
+    // Update HUD.
+    if (this._collapseTimerValueEl) {
+      const secs = Math.max(0, Math.ceil(this._collapseTime));
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      this._collapseTimerValueEl.textContent = m + ':' + String(s).padStart(2, '0');
+    }
+
+    // Intensify screen shake as time runs out.
+    if (this._collapseTime < 30 && this._collapseTime > 0) {
+      const intensity = (1 - this._collapseTime / 30) * 0.15;
+      this.camera.shake(intensity);
+    }
+
+    // Time's up — game over.
+    if (this._collapseTime <= 0) {
+      this._collapseTime = 0;
+      this._collapseActive = false;
+      this.gameState.gameOver();
     }
   }
 

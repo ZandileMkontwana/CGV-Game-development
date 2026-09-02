@@ -487,27 +487,111 @@ export default class LevelManager {
     this._shootableTarget(0.5, 0.4, -9.7, 1.8, -45, 'hazard', -Math.PI / 2);
   }
 
-  // ── Level 3: Meltdown — chaos, boss arena ────────────────────────────
+  // ── Level 3: Meltdown — boss arena + escape sequence ──────────────────
   _buildLevel3() {
-    // Temporary ground plane — replace with collapsed station arena.
-    const groundGeo = new THREE.PlaneGeometry(50, 50);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x331111,
-      roughness: 0.9,
-      metalness: 0.2,
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-    this._track(ground);
+    const AW = 15;   // arena half-width  (30m wide)
+    const AD = 15;   // arena half-depth  (30m deep)
+    const H  = 4.0;  // ceiling height
+    const CX = 0;    // arena centre x
+    const CZ = -20;   // arena centre z
 
-    // TODO (Person B): Structural collapse + boss encounter.
-    // - Debris, collapsed ceiling sections
-    // - Boss entity (malfunctioning core or security drone)
-    //   - Animated, with hit points or destruction sequence
-    // - Dissolve shader targets (coordinate with Person C)
-    // - Escape route geometry
+    // --- Materials --------------------------------------------------------
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x331111, roughness: 0.85, metalness: 0.2,
+    });
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x553333, roughness: 0.6, metalness: 0.4,
+    });
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0x221111, roughness: 0.9, metalness: 0.1,
+    });
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0x888888, roughness: 0.5, metalness: 0.6,
+    });
+    const debrisMat = new THREE.MeshStandardMaterial({
+      color: 0x443322, roughness: 0.9, metalness: 0.1,
+    });
+    const doorMat = new THREE.MeshStandardMaterial({
+      color: 0x666666, roughness: 0.4, metalness: 0.8,
+    });
+
+    // --- Arena floor + ceiling -------------------------------------------
+    this._floorCeil(AW * 2, AD * 2, CX, 0, CZ, floorMat);
+    this._floorCeil(AW * 2, AD * 2, CX, H, CZ, ceilMat, true);
+
+    // --- Arena walls (4 sides, with gap for exit on north wall) ----------
+    // South wall (with entry corridor gap).
+    this._wallBox(AW - 3, H, 0.5, CX - (AW + 3) / 2, H / 2, CZ + AD, wallMat);
+    this._wallBox(AW - 3, H, 0.5, CX + (AW + 3) / 2, H / 2, CZ + AD, wallMat);
+    // East wall.
+    this._wallBox(0.5, H, AD * 2, CX + AW, H / 2, CZ, wallMat);
+    // West wall.
+    this._wallBox(0.5, H, AD * 2, CX - AW, H / 2, CZ, wallMat);
+    // North wall (with exit door gap in the centre).
+    this._wallBox(AW - 2, H, 0.5, CX - (AW + 2) / 2, H / 2, CZ - AD, wallMat);
+    this._wallBox(AW - 2, H, 0.5, CX + (AW + 2) / 2, H / 2, CZ - AD, wallMat);
+
+    // --- Exit door (sealed until monster is defeated) --------------------
+    this._exitDoor = this._propBox(4, H, 0.4, CX, H / 2, CZ - AD, doorMat);
+
+    // --- Entry corridor (south of arena) ---------------------------------
+    const corrW = 3;
+    const corrLen = 12;
+    const corrZ0 = CZ + AD;
+    const corrZ1 = corrZ0 + corrLen;
+    this._floorCeil(corrW * 2, corrLen, CX, 0, corrZ0 + corrLen / 2, floorMat);
+    this._floorCeil(corrW * 2, corrLen, CX, H, corrZ0 + corrLen / 2, ceilMat, true);
+    this._wallBox(0.5, H, corrLen, CX + corrW, H / 2, corrZ0 + corrLen / 2, wallMat);
+    this._wallBox(0.5, H, corrLen, CX - corrW, H / 2, corrZ0 + corrLen / 2, wallMat);
+    this._wallBox(corrW * 2, H, 0.5, CX, H / 2, corrZ1, wallMat); // back wall
+
+    // --- Structural pillars (cover during boss fight) --------------------
+    const pillarPositions = [
+      { x: -6, z: CZ - 4 }, { x:  6, z: CZ - 4 },
+      { x: -6, z: CZ + 4 }, { x:  6, z: CZ + 4 },
+      { x:  0, z: CZ - 8 }, { x:  0, z: CZ + 8 },
+    ];
+    for (const pp of pillarPositions) {
+      const m = this._propCylinder(0.6, 0.6, H, pp.x, H / 2, pp.z, pillarMat, 8);
+      this.occluders.push(m);
+    }
+
+    // --- Debris (fallen ceiling panels, destroyed lab equipment) ---------
+    this._propBox(3, 0.3, 2, -8, 0.15, CZ + 2, debrisMat);
+    this._propBox(2, 0.2, 4, 7, 0.1, CZ - 6, debrisMat);
+    this._propBox(1.5, 0.25, 3, -3, 0.12, CZ + 7, debrisMat);
+    this._propBox(2.5, 0.2, 1.5, 10, 0.1, CZ - 10, debrisMat);
+
+    // --- Red emergency lighting (failsafe protocol active) ---------------
+    const redLight1 = new THREE.PointLight(0xff2200, 0.8, 25, 1.5);
+    redLight1.position.set(CX, H - 0.2, CZ);
+    this.scene.add(redLight1);
+    this._track(redLight1);
+
+    const redLight2 = new THREE.PointLight(0xff3300, 0.5, 20, 1.5);
+    redLight2.position.set(-10, H - 0.2, CZ - 5);
+    this.scene.add(redLight2);
+    this._track(redLight2);
+
+    const redLight3 = new THREE.PointLight(0xff3300, 0.5, 20, 1.5);
+    redLight3.position.set(10, H - 0.2, CZ + 5);
+    this.scene.add(redLight3);
+    this._track(redLight3);
+
+    // --- Exit trigger zone (behind the sealed door) -----------------------
+    const exitGeo = new THREE.BoxGeometry(4, H, 2);
+    const exitMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88, transparent: true, opacity: 0.08,
+    });
+    this.exitTrigger = new THREE.Mesh(exitGeo, exitMat);
+    this.exitTrigger.position.set(CX, H / 2, CZ - AD - 2);
+    this.scene.add(this.exitTrigger);
+    this._track(this.exitTrigger);
+
+    // --- Shootable weak-point targets (boss fight — on arena walls) ------
+    this._shootableTarget(0.8, 0.6,  AW - 0.3, 2.0, CZ, 'weakpoint', Math.PI / 2);
+    this._shootableTarget(0.8, 0.6, -AW + 0.3, 2.0, CZ, 'weakpoint', -Math.PI / 2);
+    this._shootableTarget(0.8, 0.6, CX, 2.0, CZ - AD + 0.3, 'weakpoint');
   }
 
   /**

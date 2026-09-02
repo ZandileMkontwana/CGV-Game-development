@@ -282,6 +282,51 @@
         pointer-events: none;
         transition: opacity 0.3s;
       }
+
+      /* Collapse timer — large countdown at top-centre */
+      #collapse-timer {
+        position: absolute;
+        top: 50px; left: 50%;
+        transform: translateX(-50%);
+        font-size: 36px;
+        font-weight: bold;
+        color: #f44;
+        letter-spacing: 4px;
+        text-shadow: 0 0 15px #f00, 0 0 30px #f00;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+      #collapse-timer.active {
+        opacity: 1;
+        animation: timer-pulse 1s ease-in-out infinite;
+      }
+      @keyframes timer-pulse {
+        0%, 100% { transform: translateX(-50%) scale(1); }
+        50%      { transform: translateX(-50%) scale(1.08); }
+      }
+      #collapse-timer .timer-label {
+        display: block;
+        font-size: 10px;
+        letter-spacing: 6px;
+        color: #f88;
+        text-align: center;
+        margin-bottom: 2px;
+      }
+
+      /* Boss phase indicator */
+      #boss-phase {
+        position: absolute;
+        top: 100px; left: 50%;
+        transform: translateX(-50%);
+        font-size: 14px;
+        letter-spacing: 4px;
+        color: #ff8844;
+        text-shadow: 0 0 10px #f80;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.5s;
+      }
     </style>
   </head>
   <body>
@@ -315,6 +360,15 @@
       <div id="stealth-vignette"></div>
       <div id="stealth-warning">! DETECTED !</div>
       <div id="stealth-hidden">[ HIDDEN ]</div>
+
+      <!-- Collapse timer (Level 3) -->
+      <div id="collapse-timer">
+        <span class="timer-label">FAILSAFE DETONATION</span>
+        <span id="collapse-timer-value">0:00</span>
+      </div>
+
+      <!-- Boss phase indicator (Level 3) -->
+      <div id="boss-phase"></div>
     </div>
 
     <!-- Main menu -->
