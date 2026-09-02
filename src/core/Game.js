@@ -9,6 +9,7 @@ import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
 import UIManager from '../ui/UIManager.js';
 import PulseTool from './PulseTool.js';
+import MonsterAI from './MonsterAI.js';
 
 /**
  * Game — top-level orchestrator.
@@ -49,6 +50,9 @@ export default class Game {
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
 
+    // Monster AI — enemy with PATROL/CHASE/ATTACK state machine.
+    this.monster = new MonsterAI(this.scene, this.physics);
+
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
 
@@ -64,6 +68,11 @@ export default class Game {
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
+    // --- Player health ------------------------------------------------------
+    this.playerHealth = 100;
+    this.playerMaxHealth = 100;
+    this._healthFillEl = document.getElementById('health-bar-fill');
+
     // --- FPS counter --------------------------------------------------------
     this._fpsEl = document.getElementById('fps');
     this._debugKeysEl = document.getElementById('debug-keys');
@@ -74,6 +83,20 @@ export default class Game {
 
     // --- Clock --------------------------------------------------------------
     this._clock = new THREE.Clock();
+
+    // --- Monster AI events --------------------------------------------------
+    this.monster.on('attack', (damage) => {
+      this.playerHealth = Math.max(0, this.playerHealth - damage);
+      this.camera.shake(0.2); // screen shake on hit
+      if (this.playerHealth <= 0) {
+        this.gameState.gameOver();
+      }
+    });
+
+    this.monster.on('stateChange', (newState, oldState) => {
+      // TODO (Person D): Trigger monster sound effects per state.
+      // console.log(`Monster: ${oldState} → ${newState}`);
+    });
 
     // --- Game state hooks ---------------------------------------------------
     this.gameState.onChange((newState, oldState) => {
@@ -143,6 +166,17 @@ export default class Game {
       if (this._energyWrapEl) {
         this._energyWrapEl.classList.toggle('cooldown', this.pulseTool._cooldownTimer > 0);
       }
+
+      // Monster AI — update if active.
+      if (this.monster.isActive) {
+        this.monster.update(dt, this.player.position);
+      }
+
+      // Update health bar HUD.
+      if (this._healthFillEl) {
+        const pct = (this.playerHealth / this.playerMaxHealth) * 100;
+        this._healthFillEl.style.width = pct + '%';
+      }
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.eyePosition);
@@ -176,6 +210,41 @@ export default class Game {
 
     // 4. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
+
+    // 5. Configure monster for this level.
+    this.playerHealth = this.playerMaxHealth;
+    this._setupMonster(levelNum);
+  }
+
+  /**
+   * Configure and spawn the monster for a given level.
+   * Level 1: monster patrols the reactor hall (for testing).
+   * Level 2: monster hunts the player through damaged corridors.
+   * Level 3: boss fight in the arena.
+   * @param {number} levelNum
+   */
+  _setupMonster(levelNum) {
+    switch (levelNum) {
+      case 1:
+        // Test patrol in the reactor hall.
+        this.monster.spawn(0, 2, -30);
+        this.monster.setPatrolWaypoints([
+          { x: 3, y: 0, z: -28 },
+          { x: 3, y: 0, z: -32 },
+          { x: -3, y: 0, z: -32 },
+          { x: -3, y: 0, z: -28 },
+        ]);
+        this.monster.setActive(true);
+        break;
+      case 2:
+        // TODO (Person B): Set waypoints for damaged corridor patrol.
+        this.monster.setActive(false);
+        break;
+      case 3:
+        // TODO (Person B): Boss fight arena setup.
+        this.monster.setActive(false);
+        break;
+    }
   }
 
   /**
