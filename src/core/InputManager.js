@@ -28,6 +28,7 @@ export default class InputManager {
     // --- Keyboard -----------------------------------------------------------
     window.addEventListener('keydown', (e) => {
       if (!this.keys[e.code]) {
+        // First keydown event for this key — mark as just pressed.
         this._pressedThisFrame[e.code] = true;
       }
       this.keys[e.code] = true;

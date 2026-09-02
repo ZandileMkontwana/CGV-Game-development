@@ -150,7 +150,7 @@ export default class Game {
     // Only update simulation while playing.
     if (this.gameState.isPlaying) {
       this.player.update(dt);
-      this.camera.update(dt, this.player.eyePosition);
+      this.camera.update(dt, this.player.position);
       this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
@@ -177,9 +177,14 @@ export default class Game {
         const pct = (this.playerHealth / this.playerMaxHealth) * 100;
         this._healthFillEl.style.width = pct + '%';
       }
+
+      // Sync the third-person character model every frame.
+      this.player.syncModel();
+      // Hide model in first-person, show in third-person.
+      this.player.setModelVisible(!this.camera.isFirstPerson);
     } else {
       // Still update camera so the menu background isn't frozen.
-      this.camera.update(dt, this.player.eyePosition);
+      this.camera.update(dt, this.player.position);
     }
 
     this.input.endFrame();
