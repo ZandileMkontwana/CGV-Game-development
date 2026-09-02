@@ -8,6 +8,7 @@ import GameState from './GameState.js';
 import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
 import UIManager from '../ui/UIManager.js';
+import PulseTool from './PulseTool.js';
 
 /**
  * Game — top-level orchestrator.
@@ -45,6 +46,9 @@ export default class Game {
     this.shaders = new ShaderManager(this.scene);
     this.ui = new UIManager();
 
+    // Pulse Tool — energy-based shooting device.
+    this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
+
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
 
@@ -63,6 +67,8 @@ export default class Game {
     // --- FPS counter --------------------------------------------------------
     this._fpsEl = document.getElementById('fps');
     this._debugKeysEl = document.getElementById('debug-keys');
+    this._energyFillEl = document.getElementById('energy-bar-fill');
+    this._energyWrapEl = document.getElementById('energy-bar-wrap');
     this._frameCount = 0;
     this._fpsTime = 0;
 
@@ -125,6 +131,18 @@ export default class Game {
       this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
+
+      // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
+      this.pulseTool.update(dt, this.levels.shootables);
+
+      // Update energy bar HUD.
+      if (this._energyFillEl) {
+        const pct = (this.pulseTool.energy / this.pulseTool.maxEnergy) * 100;
+        this._energyFillEl.style.width = pct + '%';
+      }
+      if (this._energyWrapEl) {
+        this._energyWrapEl.classList.toggle('cooldown', this.pulseTool._cooldownTimer > 0);
+      }
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.eyePosition);
@@ -155,6 +173,9 @@ export default class Game {
     // 3. Spawn the player at the level's spawn point.
     const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
     this.player.spawn(sp.x, sp.y, sp.z);
+
+    // 4. Configure the Pulse Tool for this level's targets.
+    this.pulseTool.setLevel(levelNum);
   }
 
   /**

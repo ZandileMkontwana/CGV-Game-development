@@ -4,14 +4,21 @@
  * Handles pointer-lock for mouse-look and tracks key state so that
  * other systems can poll `keys` and `mouse` each frame without
  * subscribing to raw DOM events themselves.
+ *
+ * `mouse.clicked` is true on the frame a left-click fires (pointer-locked only).
+ * `justPressed(code)` is true only on the first frame a key goes down.
+ * Both are cleared automatically in `endFrame()`.
  */
 export default class InputManager {
   constructor(canvas) {
     /** @type {Object<string, boolean>} currently held keys */
     this.keys = {};
 
-    /** Mouse state (deltas reset every frame after consumption) */
-    this.mouse = { dx: 0, dy: 0, locked: false };
+    /** @private keys that transitioned from up→down this frame */
+    this._pressedThisFrame = {};
+
+    /** Mouse state (deltas + clicked reset every frame after consumption) */
+    this.mouse = { dx: 0, dy: 0, locked: false, clicked: false };
 
     this._canvas = canvas;
     this._bind();
@@ -20,6 +27,9 @@ export default class InputManager {
   _bind() {
     // --- Keyboard -----------------------------------------------------------
     window.addEventListener('keydown', (e) => {
+      if (!this.keys[e.code]) {
+        this._pressedThisFrame[e.code] = true;
+      }
       this.keys[e.code] = true;
     });
 
@@ -27,7 +37,7 @@ export default class InputManager {
       this.keys[e.code] = false;
     });
 
-    // --- Pointer lock -------------------------------------------------------
+    // --- Pointer lock + click tracking ------------------------------------
     this._canvas.addEventListener('click', () => {
       if (!this.mouse.locked) {
         this._canvas.requestPointerLock();
@@ -44,16 +54,31 @@ export default class InputManager {
       this.mouse.dy += e.movementY;
     });
 
+    // Left-click while pointer-locked → mark as fire click.
+    this._canvas.addEventListener('mousedown', (e) => {
+      if (this.mouse.locked && e.button === 0) {
+        this.mouse.clicked = true;
+      }
+    });
+
     // --- Lose focus → release all keys so nothing sticks --------------------
     window.addEventListener('blur', () => {
       this.keys = {};
+      this._pressedThisFrame = {};
     });
+  }
+
+  /** True only on the first frame a key goes down (not while held). */
+  justPressed(code) {
+    return !!this._pressedThisFrame[code];
   }
 
   /** Call once per frame AFTER the consumer has read mouse.dx / mouse.dy */
   endFrame() {
     this.mouse.dx = 0;
     this.mouse.dy = 0;
+    this.mouse.clicked = false;
+    this._pressedThisFrame = {};
   }
 
   /** Convenience: is any of the given key codes held? */

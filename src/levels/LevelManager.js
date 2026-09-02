@@ -25,6 +25,9 @@ export default class LevelManager {
 
     /** Currently loaded level objects — dispose before loading a new level. */
     this._disposables = [];
+
+    /** Shootable meshes for the PulseTool raycast (rebuilt each level load). */
+    this.shootables = [];
   }
 
   /**
@@ -59,6 +62,7 @@ export default class LevelManager {
       }
     }
     this._disposables = [];
+    this.shootables = [];
   }
 
   // ── Shared geometry helpers ──────────────────────────────────────────────
@@ -132,6 +136,46 @@ export default class LevelManager {
     );
     this.physics.addSyncPair(body, mesh);
     this._track(mesh, body);
+    return mesh;
+  }
+
+  /**
+   * Place a shootable target panel (terminal, conduit, hazard).
+   * Tagged with userData so PulseTool raycast can identify it.
+   *
+   * @param {number} w  width
+   * @param {number} h  height
+   * @param {number} x  centre x
+   * @param {number} y  centre y
+   * @param {number} z  centre z
+   * @param {string} type  pulseType value ('terminal', 'conduit', 'hazard', 'weakpoint')
+   * @param {number} rotY  Y-axis rotation (radians) — face the player
+   * @returns {THREE.Mesh}
+   */
+  _shootableTarget(w, h, x, y, z, type, rotY = 0) {
+    const colors = {
+      terminal: 0x00ff88,
+      conduit:  0x44aaff,
+      hazard:   0xffaa00,
+      weakpoint: 0xff3333,
+    };
+    const mat = new THREE.MeshStandardMaterial({
+      color: colors[type] || 0x00ff88,
+      emissive: colors[type] || 0x00ff88,
+      emissiveIntensity: 0.6,
+      roughness: 0.3,
+      metalness: 0.7,
+    });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.08), mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.y = rotY;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.userData.pulseTarget = true;
+    mesh.userData.pulseType = type;
+    this.scene.add(mesh);
+    this._track(mesh);
+    this.shootables.push(mesh);
     return mesh;
   }
 
@@ -307,6 +351,23 @@ export default class LevelManager {
     this._propBox(16, 0.12, 0.12, 0, 2.75, -33, pipeMat);
     this._propBox(0.12, 0.12, 12, 4, 2.85, -30, pipeMat);
     this._propBox(0.12, 0.12, 12, -4, 2.85, -30, pipeMat);
+
+    // ======================================================================
+    // PULSE TOOL TARGETS — Level 1 (terminals & conduits)
+    // ======================================================================
+    // Control room — wall terminals (face inward toward the player).
+    this._shootableTarget(0.6, 0.4, 4.85, 1.6, -10, 'terminal', Math.PI / 2);  // east wall
+    this._shootableTarget(0.6, 0.4, 4.85, 1.6, -13, 'terminal', Math.PI / 2);
+    this._shootableTarget(0.6, 0.4, -4.85, 1.6, -10, 'terminal', -Math.PI / 2); // west wall
+    this._shootableTarget(0.6, 0.4, -4.85, 1.6, -13, 'terminal', -Math.PI / 2);
+
+    // Corridor — ceiling conduit panels.
+    this._shootableTarget(0.4, 0.3, 1.5, 2.6, -18, 'conduit');
+    this._shootableTarget(0.4, 0.3, -1.5, 2.6, -22, 'conduit');
+
+    // Reactor hall — machinery bank terminals.
+    this._shootableTarget(0.8, 0.5, 5.9, 1.5, -28, 'terminal', Math.PI / 2);
+    this._shootableTarget(0.8, 0.5, -5.9, 1.5, -32, 'terminal', -Math.PI / 2);
   }
 
   // ── Level 2: Failing station — hazards, timing ──────────────────────
