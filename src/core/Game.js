@@ -217,8 +217,10 @@ export default class Game {
         this.monster.update(dt, this.player.position);
         this._updateStealthHUD();
 
-        // Level 2 win check: reach the exit trigger zone.
-        if (this.gameState.currentLevel === 2 && this.levels.exitTrigger) {
+        // Level 1 & 2 win check: reach the exit trigger zone.
+        // (Level 3 requires the escape door to open first — handled below.)
+        const lvl = this.gameState.currentLevel;
+        if ((lvl === 1 || lvl === 2) && this.levels.exitTrigger) {
           const pPos = this.player.position;
           const ePos = this.levels.exitTrigger.position;
           const dx = pPos.x - ePos.x;

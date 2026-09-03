@@ -376,6 +376,16 @@ export default class LevelManager {
     // Reactor hall — machinery bank terminals.
     this._shootableTarget(0.8, 0.5, 5.9, 1.5, -28, 'terminal', Math.PI / 2);
     this._shootableTarget(0.8, 0.5, -5.9, 1.5, -32, 'terminal', -Math.PI / 2);
+
+    // --- Exit trigger zone (north end of reactor hall) --------------------
+    const exitGeo = new THREE.BoxGeometry(6, 3, 2);
+    const exitMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88, transparent: true, opacity: 0.06,
+    });
+    this.exitTrigger = new THREE.Mesh(exitGeo, exitMat);
+    this.exitTrigger.position.set(0, 1.5, -35);
+    this.scene.add(this.exitTrigger);
+    this._track(this.exitTrigger);
   }
 
   // ── Level 2: Failing station — stealth, hazards, timing ─────────────
