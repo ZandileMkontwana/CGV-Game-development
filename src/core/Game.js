@@ -53,6 +53,10 @@ export default class Game {
     // Monster AI — enemy with PATROL/CHASE/ATTACK state machine.
     this.monster = new MonsterAI(this.scene, this.physics);
 
+    // Combined PulseTool raycast list: level shootables + monster weak points.
+    // Rebuilt once per level load (not per frame — zero-allocation rule).
+    this._shootables = [];
+
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
 
@@ -84,6 +88,9 @@ export default class Game {
     this._stealthWarningEl = document.getElementById('stealth-warning');
     this._stealthHiddenEl = document.getElementById('stealth-hidden');
 
+    // --- Objective HUD -----------------------------------------------------
+    this._objectiveEl = document.getElementById('objective');
+
     // --- Collapse timer (Level 3 escape sequence) -------------------------
     this._collapseTimerEl = document.getElementById('collapse-timer');
     this._collapseTimerValueEl = document.getElementById('collapse-timer-value');
@@ -114,6 +121,19 @@ export default class Game {
     });
 
     this.monster.on('death', () => {
+      // Monster defeated → clear the stealth HUD (frozen vignette otherwise).
+      this._clearStealthHUD();
+
+      // Drop the monster's meshes from the raycast list — they're invisible
+      // now, but the raycaster doesn't skip invisible objects.
+      this._shootables = this.levels.shootables.slice();
+
+      // Kill feedback + next objective.
+      this.camera.shake(0.4);
+      if (this.gameState.currentLevel !== 3) {
+        this._setObjective('THREAT NEUTRALIZED — REACH THE GREEN EXIT');
+      }
+
       // Monster defeated → start the failsafe collapse countdown.
       if (this.gameState.currentLevel === 3) {
         this._startCollapseSequence();
@@ -131,12 +151,18 @@ export default class Game {
     });
 
     // Pulse Tool hit → check for weak point targets and damage monster.
+    // ('monsterBody' hits need no handling — the impact flash already shows
+    //  where the shot landed; only weak points deal damage.)
     this.pulseTool.on('hit', (target) => {
       if (target.userData.pulseType === 'weakpoint' && this.monster.isActive) {
         // Find the matching weak point mesh on the monster.
         for (const wp of this.monster.weakPoints) {
           if (wp === target) {
             this.monster.damageWeakPoint(wp);
+            // Remove the destroyed weak point from the raycast list so
+            // later shots pass through instead of hitting an invisible mesh.
+            const idx = this._shootables.indexOf(wp);
+            if (idx >= 0) this._shootables.splice(idx, 1);
             break;
           }
         }
@@ -152,6 +178,11 @@ export default class Game {
       if (newState === 'playing' && oldState === 'levelTransition') {
         // Load the next level after transition.
         this._loadLevel(this.gameState.currentLevel);
+      }
+      if (newState === 'playing' && (oldState === 'gameover' || oldState === 'victory')) {
+        // Retry from the end screen — the level was torn down on game over,
+        // so rebuild it from level 1.
+        this._loadLevel(1);
       }
       if (newState === 'menu' || newState === 'gameover') {
         // Tear down level content when returning to menu.
@@ -200,19 +231,9 @@ export default class Game {
       this.shaders.update(dt);
       this.ui.update(dt);
 
-      // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
-      this.pulseTool.update(dt, this.levels.shootables);
-
-      // Update energy bar HUD.
-      if (this._energyFillEl) {
-        const pct = (this.pulseTool.energy / this.pulseTool.maxEnergy) * 100;
-        this._energyFillEl.style.width = pct + '%';
-      }
-      if (this._energyWrapEl) {
-        this._energyWrapEl.classList.toggle('cooldown', this.pulseTool._cooldownTimer > 0);
-      }
-
-      // Monster AI — update if active.
+      // Monster AI — update BEFORE the PulseTool so this frame's raycast
+      // tests against the monster's CURRENT position (MonsterAI.update
+      // refreshes its world matrices at the end for exactly this reason).
       if (this.monster.isActive) {
         this.monster.update(dt, this.player.position);
         this._updateStealthHUD();
@@ -229,6 +250,19 @@ export default class Game {
             this.completeLevel();
           }
         }
+      }
+
+      // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
+      // Raycast list includes the monster's body + weak points (see _loadLevel).
+      this.pulseTool.update(dt, this._shootables);
+
+      // Update energy bar HUD.
+      if (this._energyFillEl) {
+        const pct = (this.pulseTool.energy / this.pulseTool.maxEnergy) * 100;
+        this._energyFillEl.style.width = pct + '%';
+      }
+      if (this._energyWrapEl) {
+        this._energyWrapEl.classList.toggle('cooldown', this.pulseTool._cooldownTimer > 0);
       }
 
       // Collapse timer countdown (Level 3 escape sequence).
@@ -309,6 +343,28 @@ export default class Game {
       this._bossPhaseEl.style.color = '#ff8844';
       this._bossPhaseEl.style.textShadow = '0 0 10px #f80';
     }
+
+    // 7. Build the combined PulseTool raycast list: level targets plus the
+    //    monster's body meshes (impact feedback on torso shots) and weak
+    //    points (damage).
+    this._shootables = this.levels.shootables
+      .concat(this.monster.hitMeshes, this.monster.weakPoints);
+
+    // 8. Show this level's objective so the player knows what to do.
+    const objectives = {
+      1: 'OBJECTIVE: REACH THE GREEN EXIT — NORTH END OF THE REACTOR HALL',
+      2: 'OBJECTIVE: SNEAK PAST THE MONSTER TO THE EMERGENCY EXIT — HIDE BEHIND CRATES',
+      3: 'OBJECTIVE: DESTROY THE MONSTER\u2019S 3 GLOWING WEAK POINTS',
+    };
+    this._setObjective(objectives[levelNum] || '');
+  }
+
+  /**
+   * Update the objective HUD text (top-left corner).
+   * @param {string} text
+   */
+  _setObjective(text) {
+    if (this._objectiveEl) this._objectiveEl.textContent = text;
   }
 
   /**
@@ -478,6 +534,9 @@ export default class Game {
 
     // Clear stealth HUD (monster is dead).
     this._clearStealthHUD();
+
+    // Update the objective for the escape run.
+    this._setObjective('ESCAPE — RUN TO THE GREEN EXIT');
   }
 
   /**

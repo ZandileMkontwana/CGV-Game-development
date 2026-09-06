@@ -64,6 +64,18 @@
         pointer-events: none;
       }
 
+      /* Objective text — tells the player what to do */
+      #objective {
+        position: absolute;
+        top: 34px; left: 10px;
+        font-size: 11px;
+        letter-spacing: 2px;
+        color: #8fdcaa;
+        text-shadow: 0 0 6px rgba(0, 255, 100, 0.3);
+        pointer-events: none;
+        max-width: 45%;
+      }
+
       /* Menu overlay — covers the screen */
       #menu-overlay {
         position: absolute;
@@ -382,6 +394,7 @@
       <div id="fps">-- FPS</div>
       <div id="debug-keys">Keys: none</div>
       <div id="level-indicator">LEVEL 1</div>
+      <div id="objective"></div>
 
       <!-- Pulse Tool energy bar -->
       <div id="energy-bar-wrap">

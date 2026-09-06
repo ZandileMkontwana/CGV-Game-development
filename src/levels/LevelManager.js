@@ -148,6 +148,47 @@ export default class LevelManager {
   }
 
   /**
+   * Exit trigger + green beacon so the player can SEE where to go.
+   * Creates: trigger volume (faint), point light (glow), floor strip (marker).
+   *
+   * @param {number} x  centre x
+   * @param {number} y  centre y
+   * @param {number} z  centre z
+   * @param {number} w  trigger width
+   * @param {number} h  trigger height
+   * @returns {THREE.Mesh} the trigger mesh (use .position for win checks)
+   */
+  _exitBeacon(x, y, z, w = 4, h = 3) {
+    // Trigger volume — faint green box.
+    const geo = new THREE.BoxGeometry(w, h, 2);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88, transparent: true, opacity: 0.1,
+    });
+    this.exitTrigger = new THREE.Mesh(geo, mat);
+    this.exitTrigger.position.set(x, y, z);
+    this.scene.add(this.exitTrigger);
+    this._track(this.exitTrigger);
+
+    // Beacon light — visible from across the room.
+    const light = new THREE.PointLight(0x00ff88, 1.5, 14, 1.5);
+    light.position.set(x, h - 0.3, z);
+    this.scene.add(light);
+    this._track(light);
+
+    // Glowing floor strip — marks the exit line on the ground.
+    const stripGeo = new THREE.BoxGeometry(w, 0.06, 1);
+    const stripMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88, transparent: true, opacity: 0.55,
+    });
+    const strip = new THREE.Mesh(stripGeo, stripMat);
+    strip.position.set(x, 0.04, z);
+    this.scene.add(strip);
+    this._track(strip);
+
+    return this.exitTrigger;
+  }
+
+  /**
    * Place a shootable target panel (terminal, conduit, hazard).
    * Tagged with userData so PulseTool raycast can identify it.
    *
@@ -377,15 +418,8 @@ export default class LevelManager {
     this._shootableTarget(0.8, 0.5, 5.9, 1.5, -28, 'terminal', Math.PI / 2);
     this._shootableTarget(0.8, 0.5, -5.9, 1.5, -32, 'terminal', -Math.PI / 2);
 
-    // --- Exit trigger zone (north end of reactor hall) --------------------
-    const exitGeo = new THREE.BoxGeometry(6, 3, 2);
-    const exitMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88, transparent: true, opacity: 0.06,
-    });
-    this.exitTrigger = new THREE.Mesh(exitGeo, exitMat);
-    this.exitTrigger.position.set(0, 1.5, -35);
-    this.scene.add(this.exitTrigger);
-    this._track(this.exitTrigger);
+    // --- Exit (north end of reactor hall) — glowing beacon marks the goal --
+    this._exitBeacon(0, 1.5, -35, 6, 3);
   }
 
   // ── Level 2: Failing station — stealth, hazards, timing ─────────────
@@ -479,15 +513,8 @@ export default class LevelManager {
     this.scene.add(dimLight3);
     this._track(dimLight3);
 
-    // --- Exit trigger zone (invisible box at north end) -------------------
-    const exitGeo = new THREE.BoxGeometry(W * 2 - 2, H, 1);
-    const exitMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88, transparent: true, opacity: 0.08,
-    });
-    this.exitTrigger = new THREE.Mesh(exitGeo, exitMat);
-    this.exitTrigger.position.set(0, H / 2, Z1 + 1);
-    this.scene.add(this.exitTrigger);
-    this._track(this.exitTrigger);
+    // --- Exit (north end) — glowing beacon marks the goal -----------------
+    this._exitBeacon(0, H / 2, Z1 + 1.5, W * 2 - 4, H);
 
     // --- Shootable hazard targets (Level 2 pulse tool) --------------------
     // Conduit panels on walls — shoot to disable hazards.
@@ -588,20 +615,12 @@ export default class LevelManager {
     this.scene.add(redLight3);
     this._track(redLight3);
 
-    // --- Exit trigger zone (behind the sealed door) -----------------------
-    const exitGeo = new THREE.BoxGeometry(4, H, 2);
-    const exitMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88, transparent: true, opacity: 0.08,
-    });
-    this.exitTrigger = new THREE.Mesh(exitGeo, exitMat);
-    this.exitTrigger.position.set(CX, H / 2, CZ - AD - 2);
-    this.scene.add(this.exitTrigger);
-    this._track(this.exitTrigger);
+    // --- Exit (behind the sealed door) — beacon lights the escape route ---
+    this._exitBeacon(CX, H / 2, CZ - AD - 2, 4, H);
 
-    // --- Shootable weak-point targets (boss fight — on arena walls) ------
-    this._shootableTarget(0.8, 0.6,  AW - 0.3, 2.0, CZ, 'weakpoint', Math.PI / 2);
-    this._shootableTarget(0.8, 0.6, -AW + 0.3, 2.0, CZ, 'weakpoint', -Math.PI / 2);
-    this._shootableTarget(0.8, 0.6, CX, 2.0, CZ - AD + 0.3, 'weakpoint');
+    // NOTE: no wall weak-point panels here — the boss carries its own 3
+    // glowing weak points (MonsterAI.weakPoints), which Game.js adds to
+    // the PulseTool raycast list.  Shoot the monster to damage it.
   }
 
   /**
