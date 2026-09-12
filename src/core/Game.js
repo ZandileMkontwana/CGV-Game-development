@@ -56,11 +56,11 @@ export default class Game {
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
 
-    // --- Spawn points per level (Person B can adjust these) -----------------
+    // --- Spawn points per level (Mlungisi sets these) -----------------------
     this._spawnPoints = {
-      1: { x: 0, y: 2, z: -7 },
-      2: { x: 0, y: 2, z: 0 },
-      3: { x: 0, y: 2, z: 0 },
+      1: { x: 0, y: 2, z: -7 },   // control room, south end
+      2: { x: 0, y: 2, z: -7 },   // damaged control room, south end
+      3: { x: 0, y: 2, z: 2 },    // escape room, south of arena
     };
 
     // --- Resize handler for renderer ----------------------------------------
@@ -95,7 +95,19 @@ export default class Game {
 
     this.monster.on('stateChange', (newState, oldState) => {
       // TODO (Person D): Trigger monster sound effects per state.
-      // console.log(`Monster: ${oldState} → ${newState}`);
+    });
+
+    // Pulse tool hits — damage monster weak points, open doors, disable vents.
+    this.pulseTool.on('hit', (target) => {
+      if (target.userData.pulseType === 'weakpoint' && !target.userData.destroyed) {
+        this.monster.damageWeakPoint(target);
+      }
+      if (target.userData.doorId) {
+        this.levels.openDoor(target.userData.doorId);
+      }
+      if (target.userData.ventId) {
+        this.levels.disableVent(target.userData.ventId);
+      }
     });
 
     // --- Game state hooks ---------------------------------------------------
@@ -154,9 +166,14 @@ export default class Game {
       this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
+      this.levels.update(dt); // animate doors, steam vents, rotating hazards
 
       // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
-      this.pulseTool.update(dt, this.levels.shootables);
+      // Include monster weak points as shootable targets when monster is alive.
+      const allTargets = this.monster.isActive && this.monster.state !== 'dead'
+        ? this.levels.shootables.concat(this.monster.weakPoints)
+        : this.levels.shootables;
+      this.pulseTool.update(dt, allTargets);
 
       // Update energy bar HUD.
       if (this._energyFillEl) {
@@ -171,6 +188,9 @@ export default class Game {
       if (this.monster.isActive) {
         this.monster.update(dt, this.player.position);
       }
+
+      // Check win triggers (player reached objective for this level).
+      this._checkWinTriggers();
 
       // Update health bar HUD.
       if (this._healthFillEl) {
@@ -213,6 +233,14 @@ export default class Game {
     const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
     this.player.spawn(sp.x, sp.y, sp.z);
 
+    // 3b. Apply per-level fog settings from LevelManager.
+    if (this.levels.fogColor != null) {
+      this.scene.fog = new THREE.Fog(
+        this.levels.fogColor, this.levels.fogNear, this.levels.fogFar
+      );
+      this.scene.background = new THREE.Color(this.levels.fogColor);
+    }
+
     // 4. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
 
@@ -229,6 +257,7 @@ export default class Game {
    * @param {number} levelNum
    */
   _setupMonster(levelNum) {
+    const waypoints = this.levels.monsterWaypoints;
     switch (levelNum) {
       case 1:
         // Test patrol in the reactor hall.
@@ -242,12 +271,24 @@ export default class Game {
         this.monster.setActive(true);
         break;
       case 2:
-        // TODO (Person B): Set waypoints for damaged corridor patrol.
-        this.monster.setActive(false);
+        // Monster patrols through the damaged corridors and reactor hall.
+        this.monster.spawn(0, 2, -26);
+        if (waypoints.length > 0) {
+          this.monster.setPatrolWaypoints(
+            waypoints.map(wp => ({ x: wp.x, y: 0, z: wp.z }))
+          );
+        }
+        this.monster.setActive(true);
         break;
       case 3:
-        // TODO (Person B): Boss fight arena setup.
-        this.monster.setActive(false);
+        // Boss fight — monster spawns in the arena centre.
+        this.monster.spawn(0, 2, -25);
+        if (waypoints.length > 0) {
+          this.monster.setPatrolWaypoints(
+            waypoints.map(wp => ({ x: wp.x, y: 0, z: wp.z }))
+          );
+        }
+        this.monster.setActive(true);
         break;
     }
   }
@@ -270,5 +311,32 @@ export default class Game {
    */
   setSpawnPoint(levelNum, x, y, z) {
     this._spawnPoints[levelNum] = { x, y, z };
+  }
+
+  // --- Win trigger checking -------------------------------------------------
+
+  /**
+   * Check if the player has reached a win trigger zone for the current level.
+   * For Level 3 the trigger only activates after the monster is defeated.
+   */
+  _checkWinTriggers() {
+    const triggers = this.levels.winTriggers;
+    if (!triggers || triggers.length === 0) return;
+
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+
+    for (const trigger of triggers) {
+      if (trigger.needMonsterDead && this.monster.state !== 'dead') continue;
+
+      const dx = px - trigger.x;
+      const dz = pz - trigger.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < trigger.radius) {
+        this.completeLevel();
+        return;
+      }
+    }
   }
 }
