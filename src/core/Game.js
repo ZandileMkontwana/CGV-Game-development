@@ -50,8 +50,13 @@ export default class Game {
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
 
+    this.pulseTool._bolt.material = this.shaders.createPulseGlowMaterial();
+    this._pulseTrail = this.shaders.createPulseTrail();
+
     // Monster AI — enemy with PATROL/CHASE/ATTACK state machine.
     this.monster = new MonsterAI(this.scene, this.physics);
+    
+    this.shaders.wireLevelVisuals({ weakPoints: this.monster.weakPoints });
 
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
@@ -101,6 +106,7 @@ export default class Game {
     this.pulseTool.on('hit', (target) => {
       if (target.userData.pulseType === 'weakpoint' && !target.userData.destroyed) {
         this.monster.damageWeakPoint(target);
+        this.shaders.flashWeakPoint(target); // reactive glow flash on hit
       }
       if (target.userData.doorId) {
         this.levels.openDoor(target.userData.doorId);
@@ -174,6 +180,10 @@ export default class Game {
         ? this.levels.shootables.concat(this.monster.weakPoints)
         : this.levels.shootables;
       this.pulseTool.update(dt, allTargets);
+      //  feed the bolt's current position into its fading trail.
+      if (this.pulseTool._boltActive) {
+        this._pulseTrail.emit(this.pulseTool._bolt.position);
+      }
 
       // Update energy bar HUD.
       if (this._energyFillEl) {
@@ -222,18 +232,11 @@ export default class Game {
     // 1. Build level geometry and physics (Person B's LevelManager).
     this.levels.load(levelNum);
 
-    // 2. Apply level-specific lighting and shaders (Person C's ShaderManager).
-    switch (levelNum) {
-      case 1: this.shaders.applyLevel1Lighting(); break;
-      case 2: this.shaders.applyLevel2Lighting(); break;
-      case 3: this.shaders.applyLevel3Lighting(); break;
-    }
-
-    // 3. Spawn the player at the level's spawn point.
+    // 2. Spawn the player at the level's spawn point.
     const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
     this.player.spawn(sp.x, sp.y, sp.z);
 
-    // 3b. Apply per-level fog settings from LevelManager.
+    // 3. Apply per-level fog settings from LevelManager as a base...
     if (this.levels.fogColor != null) {
       this.scene.fog = new THREE.Fog(
         this.levels.fogColor, this.levels.fogNear, this.levels.fogFar
@@ -241,10 +244,28 @@ export default class Game {
       this.scene.background = new THREE.Color(this.levels.fogColor);
     }
 
-    // 4. Configure the Pulse Tool for this level's targets.
+    // 4. ...then apply lighting + the real skybox + shader fog on top
+    //    (Person C's ShaderManager). KUTLOANO: this must run AFTER step 3,
+    //    or LevelManager's flat-colour fog/background stomps the gradient
+    //    skybox and FogExp2 set here.
+    switch (levelNum) {
+      case 1: this.shaders.applyLevel1Lighting(); break;
+      case 2: this.shaders.applyLevel2Lighting(); break;
+      case 3: this.shaders.applyLevel3Lighting(); break;
+    }
+
+    
+    this.shaders.wireLevelVisuals({
+      heatHazeZones: levelNum === 2 ? (this.levels.heatHazeZones || []) : [],
+      dissolveTargets: levelNum === 3 ? (this.levels._dissolveWalls || []) : [],
+    });
+    this.shaders.stopAutoCollapse();
+    if (levelNum === 3) this.shaders.startAutoCollapse(75);
+
+    // 5. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
 
-    // 5. Configure monster for this level.
+    // 6. Configure monster for this level.
     this.playerHealth = this.playerMaxHealth;
     this._setupMonster(levelNum);
   }
