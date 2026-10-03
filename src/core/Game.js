@@ -152,6 +152,7 @@ export default class Game {
 
     // --- Objective HUD -----------------------------------------------------
     this._objectiveEl = document.getElementById('objective');
+    this._hitMarkerEl = document.getElementById('hit-marker');
 
     // --- Collapse timer (Level 3 escape sequence) -------------------------
     this._collapseTimerEl = document.getElementById('collapse-timer');
@@ -198,6 +199,7 @@ export default class Game {
     this.pulseTool.on('hit', (target) => {
       // Impact feedback for every landed shot.
       this.audio.play('pulseHit');
+      this._flashHitMarker();
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       // Level 1's creature is a scripted cameo — never killable there.
@@ -613,6 +615,14 @@ export default class Game {
    */
   _setObjective(text) {
     if (this._objectiveEl) this._objectiveEl.textContent = text;
+  }
+
+  /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
+  _flashHitMarker() {
+    if (!this._hitMarkerEl) return;
+    this._hitMarkerEl.classList.remove('flash');
+    void this._hitMarkerEl.offsetWidth; // force reflow so the animation restarts
+    this._hitMarkerEl.classList.add('flash');
   }
 
   /**
