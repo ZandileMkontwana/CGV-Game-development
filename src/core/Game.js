@@ -10,6 +10,7 @@ import ShaderManager from '../shaders/ShaderManager.js';
 import UIManager from '../ui/UIManager.js';
 import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
+import { createScientist, faceToRotY } from './CharacterFactory.js';
 
 /**
  * Game — top-level orchestrator.
@@ -58,6 +59,15 @@ export default class Game {
 
     this.shaders.wireLevelVisuals({ weakPoints: this.monster.weakPoints });
 
+    // Scientist NPC — Level 1 intro beat (seated at the lab console).
+    this._scientist = createScientist();
+    this._scientistState = { mode: 'type' }; // mutated per frame — no allocs
+    this._scientist.group.visible = false;
+    this.scene.add(this._scientist.group);
+
+    // Level 1 scripted creature reveal state (rebuilt on each level load).
+    this._l1Reveal = null;
+
     // Combined PulseTool raycast list: level shootables + monster weak points.
     // Rebuilt once per level load (not per frame — zero-allocation rule).
     this._shootables = [];
@@ -65,11 +75,11 @@ export default class Game {
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
 
-    // --- Spawn points per level (Mlungisi sets these) -----------------------
+    // --- Spawn points per level (match the rebuilt layouts) -----------------
     this._spawnPoints = {
-      1: { x: 0, y: 2, z: -7 },   // control room, south end
-      2: { x: 0, y: 2, z: -7 },   // damaged control room, south end
-      3: { x: 0, y: 2, z: 2 },    // escape room, south of arena
+      1: { x: 0, y: 2, z: -2 },   // L1 reception corridor (north end)
+      2: { x: 0, y: 2, z: -3 },   // L2 staging bay (north end)
+      3: { x: 0, y: 2, z: -2 },   // L3 entry corridor (north end)
     };
 
     // --- Resize handler for renderer ----------------------------------------
@@ -126,7 +136,9 @@ export default class Game {
 
     // Pulse tool hits — damage monster weak points, open doors, disable vents.
     this.pulseTool.on('hit', (target) => {
-      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive) {
+      // Level 1's creature is a scripted cameo — never killable there.
+      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive
+          && this.gameState.currentLevel !== 1) {
         // Find the matching weak point mesh on the monster.
         for (const wp of this.monster.weakPoints) {
           if (wp === target) {
@@ -159,7 +171,7 @@ export default class Game {
       // Kill feedback + next objective.
       this.camera.shake(0.4);
       if (this.gameState.currentLevel === 1) {
-        this._setObjective('THREAT NEUTRALIZED — REACH THE REACTOR CORE');
+        this._setObjective('THREAT NEUTRALIZED — REACH THE CONTROL ROOM');
       } else if (this.gameState.currentLevel === 2) {
         this._setObjective('THREAT NEUTRALIZED — REACH THE EMERGENCY EXIT');
       }
@@ -198,6 +210,9 @@ export default class Game {
       if (newState === 'menu' || newState === 'gameover') {
         // Tear down level content when returning to menu.
         this.levels._teardown();
+        this.monster.setActive(false);
+        this._scientist.group.visible = false;
+        this._l1Reveal = null;
       }
     });
   }
@@ -242,6 +257,14 @@ export default class Game {
       this.shaders.update(dt);
       this.ui.update(dt);
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
+
+      // Level 1 scripted beats: creature cameo + scientist NPC reaction.
+      this._updateL1Reveal(dt);
+      if (this._scientist.group.visible) {
+        this._scientistState.mode =
+          this._l1Reveal && this._l1Reveal.played ? 'cower' : 'type';
+        this._scientist.update(dt, this._scientistState);
+      }
 
       // Monster AI — update BEFORE the PulseTool so this frame's raycast
       // tests against the monster's CURRENT position (MonsterAI.update
@@ -347,6 +370,16 @@ export default class Game {
     this.playerHealth = this.playerMaxHealth;
     this._setupMonster(levelNum);
 
+    // 6b. Level 1 intro NPC — the scientist seated at the lab console.
+    const npcAnchor = this.levels.npcAnchors && this.levels.npcAnchors.scientist;
+    const showScientist = levelNum === 1 && !!npcAnchor;
+    if (showScientist) {
+      this._scientist.group.position.set(npcAnchor.x, 0, npcAnchor.z);
+      this._scientist.group.rotation.y = faceToRotY(npcAnchor.face);
+      this._scientistState.mode = 'type';
+    }
+    this._scientist.group.visible = showScientist;
+
     // 7. Reset collapse / escape state.
     this._collapseActive = false;
     this._collapseTime = 0;
@@ -368,7 +401,7 @@ export default class Game {
 
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
-      1: 'OBJECTIVE: REACH THE REACTOR CORE — CENTRE OF THE HALL',
+      1: 'OBJECTIVE: REACH THE CONTROL ROOM — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR',
       2: 'OBJECTIVE: SNEAK PAST THE MONSTER — REACH THE EMERGENCY EXIT (HIDE BEHIND COVER)',
       3: 'OBJECTIVE: DESTROY THE MONSTER\u2019S 3 GLOWING WEAK POINTS',
     };
@@ -385,7 +418,7 @@ export default class Game {
 
   /**
    * Configure and spawn the monster for a given level.
-   * Level 1: monster patrols the reactor hall (for testing).
+   * Level 1: scripted cameo only — bursts from the tube, flees (no fight).
    * Level 2: monster hunts the player through damaged corridors.
    * Level 3: boss fight in the arena.
    * @param {number} levelNum
@@ -394,23 +427,18 @@ export default class Game {
     const waypoints = this.levels.monsterWaypoints;
     switch (levelNum) {
       case 1:
-        // Test patrol in the reactor hall.
-        this.monster.spawn(0, 2, -30);
-        this.monster.setPatrolWaypoints([
-          { x: 3, y: 0, z: -28 },
-          { x: 3, y: 0, z: -32 },
-          { x: -3, y: 0, z: -32 },
-          { x: -3, y: 0, z: -28 },
-        ]);
-        this.monster.setOccluders(this.levels.occluders); // walls/cover block LOS
-        this.monster.detectionRange = 12;
-        this.monster.escapeTimeout = 10;
-        this.monster.chaseSpeed = 5.5;
-        this.monster.attackDamage = 20;
-        break;
+        // Scripted cameo only: the creature bursts out of the containment
+        // tube and flees into the ducts (see _updateL1Reveal). Not a threat.
+        this.monster.spawn(0, -50, 0);      // parked out of play
+        this.monster.setPatrolWaypoints([]);
+        this.monster.setOccluders(this.levels.occluders);
+        this.monster.detectionRange = 0;    // can never detect the player
+        this.monster.setActive(false);
+        this._l1Reveal = { played: false, active: false, timer: 0 };
+        return;
       case 2:
-        // Stealth: patrols the damaged facility between Mlungisi's waypoints.
-        this.monster.spawn(0, 2, -26);
+        // Stealth: sweeps the damaged facility between the rebuilt waypoints.
+        this.monster.spawn(-4, 2, -21);
         if (waypoints.length > 0) {
           this.monster.setPatrolWaypoints(
             waypoints.map(wp => ({ x: wp.x, y: 0, z: wp.z }))
@@ -440,6 +468,55 @@ export default class Game {
         break;
     }
     this.monster.setActive(true);
+  }
+
+  /**
+   * Level 1 scripted creature reveal — a cameo, not a fight.
+   * When the player approaches the containment tube:
+   *   1. the creature bursts out at scriptedReveal.spawn,
+   *   2. lurches along the escape path into the ducts,
+   *   3. vanishes once it reaches the end (deactivated, body parked).
+   * detectionRange stays 0 the whole time, so it can never chase or attack.
+   * @param {number} dt
+   */
+  _updateL1Reveal(dt) {
+    const reveal = this.levels.scriptedReveal;
+    const r = this._l1Reveal;
+    if (!reveal || !r) return;
+
+    if (!r.played) {
+      // Trigger: player steps into the lab, near the containment tube.
+      const dx = this.player.position.x - reveal.trigger.x;
+      const dz = this.player.position.z - reveal.trigger.z;
+      if (dx * dx + dz * dz < reveal.trigger.radius * reveal.trigger.radius) {
+        r.played = true;
+        r.active = true;
+        r.timer = 0;
+        // Burst out of the tube and flee along the scripted path.
+        this.monster.spawn(reveal.spawn.x, reveal.spawn.y, reveal.spawn.z);
+        this.monster.patrolSpeed = 3.6;   // panic-lurch, faster than patrol
+        this.monster.setPatrolWaypoints(
+          reveal.escape.map(p => ({ x: p.x, y: 0, z: p.z }))
+        );
+        this.monster.setActive(true);
+        this.camera.shake(0.45);          // alarm-beat impact
+      }
+      return;
+    }
+
+    if (r.active) {
+      r.timer += dt;
+      // Deactivate once it has vanished into the ducts (or as a safety cap).
+      const end = reveal.escape[reveal.escape.length - 1];
+      const edx = this.monster.position.x - end.x;
+      const edz = this.monster.position.z - end.z;
+      if (r.timer > 1.2 && (edx * edx + edz * edz < 2.25 || r.timer > 7)) {
+        r.active = false;
+        this.monster.setActive(false);
+        this.monster.body.position.set(0, -50, 0); // park out of play
+        this.monster.patrolSpeed = 2.0;            // restore default tuning
+      }
+    }
   }
 
   /**
