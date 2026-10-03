@@ -50,8 +50,13 @@ export default class Game {
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
 
+    this.pulseTool._bolt.material = this.shaders.createPulseGlowMaterial();
+    this._pulseTrail = this.shaders.createPulseTrail();
+
     // Monster AI — enemy with PATROL/CHASE/ATTACK state machine.
     this.monster = new MonsterAI(this.scene, this.physics);
+
+    this.shaders.wireLevelVisuals({ weakPoints: this.monster.weakPoints });
 
     // Combined PulseTool raycast list: level shootables + monster weak points.
     // Rebuilt once per level load (not per frame — zero-allocation rule).
@@ -60,11 +65,11 @@ export default class Game {
     // Wire camera yaw so movement is camera-relative.
     this.player.cameraPivot = this.camera.yawObject;
 
-    // --- Spawn points per level (Person B can adjust these) -----------------
+    // --- Spawn points per level (Mlungisi sets these) -----------------------
     this._spawnPoints = {
-      1: { x: 0, y: 2, z: -7 },
-      2: { x: 0, y: 2, z: 5 },
-      3: { x: 0, y: 2, z: -2 },
+      1: { x: 0, y: 2, z: -7 },   // control room, south end
+      2: { x: 0, y: 2, z: -7 },   // damaged control room, south end
+      3: { x: 0, y: 2, z: 2 },    // escape room, south of arena
     };
 
     // --- Resize handler for renderer ----------------------------------------
@@ -117,7 +122,30 @@ export default class Game {
 
     this.monster.on('stateChange', (newState, oldState) => {
       // TODO (Person D): Trigger monster sound effects per state.
-      // console.log(`Monster: ${oldState} → ${newState}`);
+    });
+
+    // Pulse tool hits — damage monster weak points, open doors, disable vents.
+    this.pulseTool.on('hit', (target) => {
+      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive) {
+        // Find the matching weak point mesh on the monster.
+        for (const wp of this.monster.weakPoints) {
+          if (wp === target) {
+            this.monster.damageWeakPoint(wp);
+            this.shaders.flashWeakPoint(wp); // reactive glow flash on hit
+            // Remove the destroyed weak point from the raycast list so
+            // later shots pass through instead of hitting an invisible mesh.
+            const idx = this._shootables.indexOf(wp);
+            if (idx >= 0) this._shootables.splice(idx, 1);
+            break;
+          }
+        }
+      }
+      if (target.userData.doorId) {
+        this.levels.openDoor(target.userData.doorId);
+      }
+      if (target.userData.ventId) {
+        this.levels.disableVent(target.userData.ventId);
+      }
     });
 
     this.monster.on('death', () => {
@@ -130,8 +158,10 @@ export default class Game {
 
       // Kill feedback + next objective.
       this.camera.shake(0.4);
-      if (this.gameState.currentLevel !== 3) {
-        this._setObjective('THREAT NEUTRALIZED — REACH THE GREEN EXIT');
+      if (this.gameState.currentLevel === 1) {
+        this._setObjective('THREAT NEUTRALIZED — REACH THE REACTOR CORE');
+      } else if (this.gameState.currentLevel === 2) {
+        this._setObjective('THREAT NEUTRALIZED — REACH THE EMERGENCY EXIT');
       }
 
       // Monster defeated → start the failsafe collapse countdown.
@@ -147,25 +177,6 @@ export default class Game {
         this._bossPhaseEl.textContent = labels[phase] || '';
         this._bossPhaseEl.style.opacity = phase > 0 ? 1 : 0;
         this.camera.shake(0.3); // screen shake on phase transition
-      }
-    });
-
-    // Pulse Tool hit → check for weak point targets and damage monster.
-    // ('monsterBody' hits need no handling — the impact flash already shows
-    //  where the shot landed; only weak points deal damage.)
-    this.pulseTool.on('hit', (target) => {
-      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive) {
-        // Find the matching weak point mesh on the monster.
-        for (const wp of this.monster.weakPoints) {
-          if (wp === target) {
-            this.monster.damageWeakPoint(wp);
-            // Remove the destroyed weak point from the raycast list so
-            // later shots pass through instead of hitting an invisible mesh.
-            const idx = this._shootables.indexOf(wp);
-            if (idx >= 0) this._shootables.splice(idx, 1);
-            break;
-          }
-        }
       }
     });
 
@@ -230,6 +241,7 @@ export default class Game {
       this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
+      this.levels.update(dt); // animate doors, steam vents, rotating hazards
 
       // Monster AI — update BEFORE the PulseTool so this frame's raycast
       // tests against the monster's CURRENT position (MonsterAI.update
@@ -237,24 +249,15 @@ export default class Game {
       if (this.monster.isActive) {
         this.monster.update(dt, this.player.position);
         this._updateStealthHUD();
-
-        // Level 1 & 2 win check: reach the exit trigger zone.
-        // (Level 3 requires the escape door to open first — handled below.)
-        const lvl = this.gameState.currentLevel;
-        if ((lvl === 1 || lvl === 2) && this.levels.exitTrigger) {
-          const pPos = this.player.position;
-          const ePos = this.levels.exitTrigger.position;
-          const dx = pPos.x - ePos.x;
-          const dz = pPos.z - ePos.z;
-          if (Math.sqrt(dx * dx + dz * dz) < 3) {
-            this.completeLevel();
-          }
-        }
       }
 
       // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
       // Raycast list includes the monster's body + weak points (see _loadLevel).
       this.pulseTool.update(dt, this._shootables);
+      // Feed the bolt's current position into its fading trail (Kutloano).
+      if (this.pulseTool._boltActive) {
+        this._pulseTrail.emit(this.pulseTool._bolt.position);
+      }
 
       // Update energy bar HUD.
       if (this._energyFillEl) {
@@ -266,20 +269,13 @@ export default class Game {
       }
 
       // Collapse timer countdown (Level 3 escape sequence).
+      // (The level-3 win trigger itself is handled by _checkWinTriggers below.)
       if (this._collapseActive) {
         this._updateCollapseTimer(dt);
-
-        // Level 3 win check: reach exit trigger after door opens.
-        if (this._escapeDoorOpen && this.levels.exitTrigger) {
-          const pPos = this.player.position;
-          const ePos = this.levels.exitTrigger.position;
-          const dx = pPos.x - ePos.x;
-          const dz = pPos.z - ePos.z;
-          if (Math.sqrt(dx * dx + dz * dz) < 4) {
-            this.completeLevel();
-          }
-        }
       }
+
+      // Check win triggers (player reached objective for this level).
+      this._checkWinTriggers();
 
       // Update health bar HUD.
       if (this._healthFillEl) {
@@ -313,25 +309,45 @@ export default class Game {
     // 1. Build level geometry and physics (Person B's LevelManager).
     this.levels.load(levelNum);
 
-    // 2. Apply level-specific lighting and shaders (Person C's ShaderManager).
+    // 2. Spawn the player at the level's spawn point.
+    const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
+    this.player.spawn(sp.x, sp.y, sp.z);
+
+    // 3. Apply per-level fog settings from LevelManager as a base...
+    if (this.levels.fogColor != null) {
+      this.scene.fog = new THREE.Fog(
+        this.levels.fogColor, this.levels.fogNear, this.levels.fogFar
+      );
+      this.scene.background = new THREE.Color(this.levels.fogColor);
+    }
+
+    // 4. ...then apply lighting + the real skybox + shader fog on top
+    //    (Person C's ShaderManager). KUTLOANO: this must run AFTER step 3,
+    //    or LevelManager's flat-colour fog/background stomps the gradient
+    //    skybox and FogExp2 set here.
     switch (levelNum) {
       case 1: this.shaders.applyLevel1Lighting(); break;
       case 2: this.shaders.applyLevel2Lighting(); break;
       case 3: this.shaders.applyLevel3Lighting(); break;
     }
 
-    // 3. Spawn the player at the level's spawn point.
-    const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
-    this.player.spawn(sp.x, sp.y, sp.z);
+    this.shaders.wireLevelVisuals({
+      heatHazeZones: levelNum === 2 ? (this.levels.heatHazeZones || []) : [],
+      dissolveTargets: levelNum === 3 ? (this.levels._dissolveWalls || []) : [],
+    });
+    // The collapse is driven by the real Level 3 escape timer (starts when
+    // the boss dies) — don't run the ShaderManager's demo auto-driver.
+    this.shaders.stopAutoCollapse();
+    this.shaders.setDissolveAmount(0);
 
-    // 4. Configure the Pulse Tool for this level's targets.
+    // 5. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
 
-    // 5. Configure monster for this level.
+    // 6. Configure monster for this level.
     this.playerHealth = this.playerMaxHealth;
     this._setupMonster(levelNum);
 
-    // 6. Reset collapse / escape state.
+    // 7. Reset collapse / escape state.
     this._collapseActive = false;
     this._collapseTime = 0;
     this._escapeDoorOpen = false;
@@ -344,16 +360,16 @@ export default class Game {
       this._bossPhaseEl.style.textShadow = '0 0 10px #f80';
     }
 
-    // 7. Build the combined PulseTool raycast list: level targets plus the
+    // 8. Build the combined PulseTool raycast list: level targets plus the
     //    monster's body meshes (impact feedback on torso shots) and weak
     //    points (damage).
     this._shootables = this.levels.shootables
       .concat(this.monster.hitMeshes, this.monster.weakPoints);
 
-    // 8. Show this level's objective so the player knows what to do.
+    // 9. Show this level's objective so the player knows what to do.
     const objectives = {
-      1: 'OBJECTIVE: REACH THE GREEN EXIT — NORTH END OF THE REACTOR HALL',
-      2: 'OBJECTIVE: SNEAK PAST THE MONSTER TO THE EMERGENCY EXIT — HIDE BEHIND CRATES',
+      1: 'OBJECTIVE: REACH THE REACTOR CORE — CENTRE OF THE HALL',
+      2: 'OBJECTIVE: SNEAK PAST THE MONSTER — REACH THE EMERGENCY EXIT (HIDE BEHIND COVER)',
       3: 'OBJECTIVE: DESTROY THE MONSTER\u2019S 3 GLOWING WEAK POINTS',
     };
     this._setObjective(objectives[levelNum] || '');
@@ -375,6 +391,7 @@ export default class Game {
    * @param {number} levelNum
    */
   _setupMonster(levelNum) {
+    const waypoints = this.levels.monsterWaypoints;
     switch (levelNum) {
       case 1:
         // Test patrol in the reactor hall.
@@ -385,51 +402,44 @@ export default class Game {
           { x: -3, y: 0, z: -32 },
           { x: -3, y: 0, z: -28 },
         ]);
-        this.monster.setOccluders([]); // no LOS blocking in L1 (open hall)
+        this.monster.setOccluders(this.levels.occluders); // walls/cover block LOS
         this.monster.detectionRange = 12;
         this.monster.escapeTimeout = 10;
         this.monster.chaseSpeed = 5.5;
         this.monster.attackDamage = 20;
-        this.monster.setActive(true);
         break;
       case 2:
-        // Stealth: monster patrols the damaged corridor.
-        // Narrower detection range + higher escape timeout for stealth gameplay.
-        this.monster.spawn(3, 2, -25);
-        this.monster.setPatrolWaypoints([
-          { x:  4, y: 0, z: -5  },
-          { x:  4, y: 0, z: -20 },
-          { x: -4, y: 0, z: -20 },
-          { x: -4, y: 0, z: -40 },
-          { x:  4, y: 0, z: -40 },
-          { x:  4, y: 0, z: -5  },
-        ]);
-        // Pass level occluders for line-of-sight raycasting.
+        // Stealth: patrols the damaged facility between Mlungisi's waypoints.
+        this.monster.spawn(0, 2, -26);
+        if (waypoints.length > 0) {
+          this.monster.setPatrolWaypoints(
+            waypoints.map(wp => ({ x: wp.x, y: 0, z: wp.z }))
+          );
+        }
+        // Pass level occluders (walls, lockers, tall cover) for LOS raycasts.
         this.monster.setOccluders(this.levels.occluders);
         // Tuning: harder to spot player, gives time to hide.
         this.monster.detectionRange = 10;  // narrower than L1
         this.monster.escapeTimeout = 6;    // gives up chase faster
         this.monster.chaseSpeed = 5.5;
         this.monster.attackDamage = 20;
-        this.monster.setActive(true);
         break;
       case 3:
-        // Boss fight in the arena — aggressive, wide detection, no escape timeout.
-        this.monster.spawn(0, 2, -20);
-        this.monster.setPatrolWaypoints([
-          { x:  6, y: 0, z: -15 },
-          { x:  6, y: 0, z: -25 },
-          { x: -6, y: 0, z: -25 },
-          { x: -6, y: 0, z: -15 },
-        ]);
+        // Boss fight — arena-wide detection, never gives up the chase.
+        this.monster.spawn(0, 2, -25);
+        if (waypoints.length > 0) {
+          this.monster.setPatrolWaypoints(
+            waypoints.map(wp => ({ x: wp.x, y: 0, z: wp.z }))
+          );
+        }
         this.monster.setOccluders(this.levels.occluders);
         this.monster.detectionRange = 25;  // arena-wide detection
         this.monster.escapeTimeout = 999;  // never gives up chase in boss fight
         this.monster.chaseSpeed = 5.0;
         this.monster.attackDamage = 25;
-        this.monster.setActive(true);
         break;
     }
+    this.monster.setActive(true);
   }
 
   /**
@@ -546,6 +556,11 @@ export default class Game {
   _updateCollapseTimer(dt) {
     this._collapseTime -= dt;
 
+    // Drive Kutloano's dissolve shader from the real countdown:
+    // 0 = intact at the start, 1 = fully dissolved when the timer hits 0.
+    const progress = 1 - Math.max(0, this._collapseTime) / this._collapseDuration;
+    this.shaders.setDissolveAmount(progress);
+
     // Update HUD.
     if (this._collapseTimerValueEl) {
       const secs = Math.max(0, Math.ceil(this._collapseTime));
@@ -586,5 +601,32 @@ export default class Game {
    */
   setSpawnPoint(levelNum, x, y, z) {
     this._spawnPoints[levelNum] = { x, y, z };
+  }
+
+  // --- Win trigger checking -------------------------------------------------
+
+  /**
+   * Check if the player has reached a win trigger zone for the current level.
+   * For Level 3 the trigger only activates after the monster is defeated.
+   */
+  _checkWinTriggers() {
+    const triggers = this.levels.winTriggers;
+    if (!triggers || triggers.length === 0) return;
+
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+
+    for (const trigger of triggers) {
+      if (trigger.needMonsterDead && this.monster.state !== 'dead') continue;
+
+      const dx = px - trigger.x;
+      const dz = pz - trigger.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < trigger.radius) {
+        this.completeLevel();
+        return;
+      }
+    }
   }
 }

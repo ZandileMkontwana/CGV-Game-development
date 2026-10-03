@@ -29,11 +29,31 @@ export default class LevelManager {
     /** Shootable meshes for the PulseTool raycast (rebuilt each level load). */
     this.shootables = [];
 
-    /** Occluder meshes that block monster line-of-sight (rebuilt each level load). */
+    /** Meshes that block monster line-of-sight (walls, tall cover; rebuilt each level load). */
     this.occluders = [];
 
-    /** Exit trigger zone mesh (set by level builder, null if none). */
-    this.exitTrigger = null;
+    /** Win trigger zones (rebuilt each level load). */
+    this._winTriggers = [];
+
+    /** Monster patrol waypoints (rebuilt each level load). */
+    this._monsterWaypoints = [];
+
+    /** Heat-haze zone marker meshes (rebuilt each level load). */
+    this.heatHazeZones = [];
+
+    /** Animated sliding doors (rebuilt each level load). */
+    this._doors = [];
+
+    /** Steam vent particle emitters (rebuilt each level load). */
+    this._steamVents = [];
+
+    /** Rotating hazard meshes with speed (rebuilt each level load). */
+    this._rotatingHazards = [];
+
+    /** Per-level fog settings (set by each _buildLevel, read by Game.js). */
+    this.fogColor = null;
+    this.fogNear = 25;
+    this.fogFar = 90;
   }
 
   /**
@@ -70,7 +90,19 @@ export default class LevelManager {
     this._disposables = [];
     this.shootables = [];
     this.occluders = [];
-    this.exitTrigger = null;
+    this._winTriggers = [];
+    this._monsterWaypoints = [];
+    this.heatHazeZones = [];
+    this._doors = [];
+    // Dispose lingering steam particles.
+    for (const v of this._steamVents) {
+      for (const p of v.particles) {
+        this.scene.remove(p.mesh);
+        p.mesh.geometry.dispose();
+      }
+    }
+    this._steamVents = [];
+    this._rotatingHazards = [];
   }
 
   // ── Shared geometry helpers ──────────────────────────────────────────────
@@ -97,6 +129,7 @@ export default class LevelManager {
     );
     this.physics.addSyncPair(body, mesh);
     this._track(mesh, body);
+    this.occluders.push(mesh); // walls block the monster's line of sight
     return mesh;
   }
 
@@ -126,6 +159,9 @@ export default class LevelManager {
     );
     this.physics.addSyncPair(body, mesh);
     this._track(mesh, body);
+    // Tall props (lockers, machinery) are hiding cover — they block LOS.
+    // Must reach eye height (~1.5m) to obstruct the monster's sight line.
+    if (h >= 1.5) this.occluders.push(mesh);
     return mesh;
   }
 
@@ -144,48 +180,9 @@ export default class LevelManager {
     );
     this.physics.addSyncPair(body, mesh);
     this._track(mesh, body);
+    // Full-height columns (pillars, reactor cores) block LOS as well.
+    if (h >= 1.5) this.occluders.push(mesh);
     return mesh;
-  }
-
-  /**
-   * Exit trigger + green beacon so the player can SEE where to go.
-   * Creates: trigger volume (faint), point light (glow), floor strip (marker).
-   *
-   * @param {number} x  centre x
-   * @param {number} y  centre y
-   * @param {number} z  centre z
-   * @param {number} w  trigger width
-   * @param {number} h  trigger height
-   * @returns {THREE.Mesh} the trigger mesh (use .position for win checks)
-   */
-  _exitBeacon(x, y, z, w = 4, h = 3) {
-    // Trigger volume — faint green box.
-    const geo = new THREE.BoxGeometry(w, h, 2);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88, transparent: true, opacity: 0.1,
-    });
-    this.exitTrigger = new THREE.Mesh(geo, mat);
-    this.exitTrigger.position.set(x, y, z);
-    this.scene.add(this.exitTrigger);
-    this._track(this.exitTrigger);
-
-    // Beacon light — visible from across the room.
-    const light = new THREE.PointLight(0x00ff88, 1.5, 14, 1.5);
-    light.position.set(x, h - 0.3, z);
-    this.scene.add(light);
-    this._track(light);
-
-    // Glowing floor strip — marks the exit line on the ground.
-    const stripGeo = new THREE.BoxGeometry(w, 0.06, 1);
-    const stripMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88, transparent: true, opacity: 0.55,
-    });
-    const strip = new THREE.Mesh(stripGeo, stripMat);
-    strip.position.set(x, 0.04, z);
-    this.scene.add(strip);
-    this._track(strip);
-
-    return this.exitTrigger;
   }
 
   /**
@@ -228,6 +225,223 @@ export default class LevelManager {
     return mesh;
   }
 
+  // ── Procedural textures ─────────────────────────────────────────────────
+
+  /** Generate a brushed-metal panel texture with grid lines. */
+  _createMetalTexture(baseHex = '#667788', lineHex = '#556677') {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(0, 0, 256, 256);
+    let s = 42;
+    const rng = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    const id = ctx.getImageData(0, 0, 256, 256);
+    for (let i = 0; i < id.data.length; i += 4) {
+      const n = (rng() - 0.5) * 16;
+      id.data[i] = Math.max(0, Math.min(255, id.data[i] + n));
+      id.data[i + 1] = Math.max(0, Math.min(255, id.data[i + 1] + n));
+      id.data[i + 2] = Math.max(0, Math.min(255, id.data[i + 2] + n));
+    }
+    ctx.putImageData(id, 0, 0);
+    ctx.strokeStyle = lineHex; ctx.lineWidth = 2;
+    ctx.strokeRect(4, 4, 120, 120);
+    ctx.strokeRect(128, 4, 124, 120);
+    ctx.strokeRect(4, 128, 120, 124);
+    ctx.strokeRect(128, 128, 124, 124);
+    ctx.strokeStyle = '#ffffff10'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, 64); ctx.lineTo(256, 64);
+    ctx.moveTo(0, 192); ctx.lineTo(256, 192); ctx.stroke();
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
+  /** Generate a concrete / tile floor texture. */
+  _createConcreteTexture(baseHex = '#2a3040') {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = baseHex;
+    ctx.fillRect(0, 0, 256, 256);
+    let s = 73;
+    const rng = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    const id = ctx.getImageData(0, 0, 256, 256);
+    for (let i = 0; i < id.data.length; i += 4) {
+      const n = (rng() - 0.5) * 22;
+      id.data[i] = Math.max(0, Math.min(255, id.data[i] + n));
+      id.data[i + 1] = Math.max(0, Math.min(255, id.data[i + 1] + n));
+      id.data[i + 2] = Math.max(0, Math.min(255, id.data[i + 2] + n));
+    }
+    ctx.putImageData(id, 0, 0);
+    ctx.strokeStyle = '#00000020'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(128, 0); ctx.lineTo(128, 256);
+    ctx.moveTo(0, 128); ctx.lineTo(256, 128); ctx.stroke();
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
+  /** Generate a simple noise normal map for surface detail. */
+  _createNormalTexture(intensity = 10) {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#8080ff';
+    ctx.fillRect(0, 0, 128, 128);
+    let s = 17;
+    const rng = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    const id = ctx.getImageData(0, 0, 128, 128);
+    for (let i = 0; i < id.data.length; i += 4) {
+      id.data[i] = 128 + Math.floor((rng() - 0.5) * intensity);
+      id.data[i + 1] = 128 + Math.floor((rng() - 0.5) * intensity);
+    }
+    ctx.putImageData(id, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
+  /** Generate a radial scorch texture (reused for all decals). */
+  _createScorchTexture() {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(15,8,3,0.75)');
+    g.addColorStop(0.5, 'rgba(30,15,5,0.35)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  }
+
+  // ── Interactive systems ─────────────────────────────────────────────────
+
+  /**
+   * Create a sliding door that opens when its linked terminal is shot.
+   * The door slides upward (Y+) and its collision body is removed when open.
+   */
+  _createDoor(id, w, h, x, y, z, rotY, mat) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.15), mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.y = rotY;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.scene.add(mesh);
+    const body = this.physics.createBox(
+      0, w / 2, h / 2, 0.075,
+      new CANNON.Vec3(x, y, z)
+    );
+    this._track(mesh, body);
+    // A closed door blocks line of sight; once opened it slides up out of the way.
+    this.occluders.push(mesh);
+    this._doors.push({
+      id, mesh, body,
+      closedY: y,
+      openY: y + h + 0.3,
+      progress: 0,
+      opening: false,
+    });
+    return mesh;
+  }
+
+  /** Trigger a door to open by its id. */
+  openDoor(id) {
+    const door = this._doors.find(d => d.id === id);
+    if (door && !door.opening) door.opening = true;
+  }
+
+  /** Create a steam vent emitter at a world position. */
+  _createSteamVent(id, x, y, z) {
+    this._steamVents.push({ id, x, y, z, active: true, particles: [] });
+  }
+
+  /** Disable a steam vent by id (stops particle spawning). */
+  disableVent(id) {
+    const vent = this._steamVents.find(v => v.id === id);
+    if (vent) vent.active = false;
+  }
+
+  /** Add a rotating hazard mesh (fan blade, spinning debris). */
+  _addRotatingHazard(mesh, speed) {
+    this._rotatingHazards.push({ mesh, speed });
+  }
+
+  /** Place a scorch decal (dark mark) on a surface. */
+  _scorchDecal(x, y, z, size, rotY = 0) {
+    if (!this._scorchTex) this._scorchTex = this._createScorchTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: this._scorchTex, transparent: true,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+    mesh.position.set(x, y + 0.01, z);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.rotation.z = Math.random() * Math.PI * 2;
+    this.scene.add(mesh);
+    this._track(mesh);
+    return mesh;
+  }
+
+  /** Called every frame from Game._loop — animate doors, steam, hazards. */
+  update(dt) {
+    // --- Doors: lerp upward once triggered ---
+    for (const door of this._doors) {
+      if (door.opening && door.progress < 1) {
+        door.progress = Math.min(1, door.progress + dt * 0.8);
+        const y = door.closedY + (door.openY - door.closedY) * door.progress;
+        door.mesh.position.y = y;
+        door.body.position.set(
+          door.body.position.x, y, door.body.position.z
+        );
+        if (door.progress >= 1) {
+          this.physics.world.removeBody(door.body);
+        }
+      }
+    }
+    // --- Steam vents: spawn + animate particles ---
+    for (const vent of this._steamVents) {
+      if (vent.active && vent.particles.length < 25 && Math.random() < 0.5) {
+        if (!this._steamParticleMat) {
+          this._steamParticleMat = new THREE.SpriteMaterial({
+            color: 0xbbbbbb, transparent: true,
+            opacity: 0.4, depthWrite: false,
+          });
+        }
+        const sprite = new THREE.Sprite(this._steamParticleMat.clone());
+        sprite.scale.set(0.25, 0.25, 1);
+        sprite.position.set(
+          vent.x + (Math.random() - 0.5) * 0.2,
+          vent.y,
+          vent.z + (Math.random() - 0.5) * 0.2
+        );
+        this.scene.add(sprite);
+        vent.particles.push({
+          mesh: sprite, life: 1.2,
+          vy: 0.5 + Math.random() * 0.5,
+        });
+      }
+      for (let i = vent.particles.length - 1; i >= 0; i--) {
+        const p = vent.particles[i];
+        p.life -= dt;
+        p.mesh.position.y += p.vy * dt;
+        p.mesh.material.opacity = Math.max(0, (p.life / 1.2) * 0.4);
+        p.mesh.scale.multiplyScalar(1 + dt * 0.4);
+        if (p.life <= 0) {
+          this.scene.remove(p.mesh);
+          p.mesh.material.dispose();
+          vent.particles.splice(i, 1);
+        }
+      }
+    }
+    // --- Rotating hazards ---
+    for (const { mesh, speed } of this._rotatingHazards) {
+      mesh.rotation.y += speed * dt;
+    }
+  }
+
   // ── Level 1: Exploration — clean, brightly-lit corridors ─────────────
   //
   // Layout (top-down, player spawns at south end, walks north):
@@ -248,18 +462,34 @@ export default class LevelManager {
     const H = 3;     // wall/ceiling height (metres)
     const HH = H / 2; // half-height for wall box centres
 
-    // --- Materials ----------------------------------------------------------
+    // Win triggers (checked by Game.js each frame).
+    this._winTriggers = [
+      { x: 0, z: -30, radius: 2.5 }, // reach the reactor core area
+    ];
+
+    // --- Procedural textures -------------------------------------------------
+    const metalTex = this._createMetalTexture('#667788', '#556677');
+    const floorTex = this._createConcreteTexture('#2a3040');
+    floorTex.repeat.set(5, 5);
+    const normalTex = this._createNormalTexture(12);
+    normalTex.repeat.set(4, 4);
+    const ceilTex = this._createMetalTexture('#aabbcc', '#99aabb');
+
+    // --- Materials (PBR with procedural maps) --------------------------------
     const wallMat = new THREE.MeshStandardMaterial({
+      map: metalTex, normalMap: normalTex, normalScale: new THREE.Vector2(0.4, 0.4),
       color: 0x778899, roughness: 0.35, metalness: 0.65,
     });
     const floorMat = new THREE.MeshStandardMaterial({
+      map: floorTex, normalMap: normalTex, normalScale: new THREE.Vector2(0.3, 0.3),
       color: 0x2a3040, roughness: 0.7, metalness: 0.3,
     });
     const ceilMat = new THREE.MeshStandardMaterial({
-      color: 0xbbccdd, roughness: 0.9, metalness: 0.1,
+      map: ceilTex, color: 0xbbccdd, roughness: 0.9, metalness: 0.1,
     });
     const panelMat = new THREE.MeshStandardMaterial({
       color: 0x445566, roughness: 0.3, metalness: 0.8,
+      normalMap: normalTex, normalScale: new THREE.Vector2(0.2, 0.2),
     });
     const reactorMat = new THREE.MeshStandardMaterial({
       color: 0x0066ff, emissive: 0x002244, roughness: 0.2, metalness: 0.9,
@@ -291,6 +521,10 @@ export default class LevelManager {
     // North wall — door gap 2.5m centred at x = 0.
     this._wallBox(3.75, H, 0.2, -3.125, HH, -16, wallMat); // left section
     this._wallBox(3.75, H, 0.2, 3.125, HH, -16, wallMat);  // right section
+    // Sliding door (opens when terminal is shot).
+    this._createDoor('l1-north', 2.5, H, 0, HH, -16, 0, panelMat);
+    const l1Terminal = this._shootableTarget(0.6, 0.4, 4.85, 1.6, -10, 'terminal', Math.PI / 2);
+    l1Terminal.userData.doorId = 'l1-north';
 
     // --- Control room props ---
 
@@ -364,6 +598,48 @@ export default class LevelManager {
 
     // --- Reactor hall props ---
 
+    // === EXPERIMENT ROOM — containment tube area (west side) ===
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0x88ccff, transparent: true, opacity: 0.25,
+      roughness: 0.05, metalness: 0.9,
+    });
+    const tubeFrameMat = new THREE.MeshStandardMaterial({
+      color: 0x667788, roughness: 0.3, metalness: 0.8,
+    });
+    const specimenMat = new THREE.MeshStandardMaterial({
+      color: 0x44dd66, emissive: 0x115522, emissiveIntensity: 0.5,
+      roughness: 0.4, metalness: 0.3,
+    });
+
+    // Containment tube — large glass cylinder (where the creature grows).
+    this._propCylinder(0.8, 0.8, 2.4, -5, 1.2, -28, glassMat, 16);
+    // Tube metal frame rings (top and bottom).
+    this._propCylinder(0.9, 0.9, 0.1, -5, 0.05, -28, tubeFrameMat, 16);
+    this._propCylinder(0.9, 0.9, 0.1, -5, 2.45, -28, tubeFrameMat, 16);
+    // Specimen inside the tube (greenish organic mass).
+    this._propCylinder(0.35, 0.25, 1.2, -5, 0.9, -28, specimenMat, 8);
+    // Tube base platform.
+    this._propBox(2.2, 0.2, 2.2, -5, 0.1, -28, panelMat);
+
+    // Scientist workstation next to the tube.
+    this._propBox(1.5, 0.8, 0.7, -3.2, 0.4, -27, panelMat);
+    // Monitor on workstation.
+    const monitor = new THREE.Mesh(
+      new THREE.BoxGeometry(0.8, 0.6, 0.05), accentMat
+    );
+    monitor.position.set(-3.2, 1.2, -27);
+    monitor.rotation.x = -0.15;
+    this.scene.add(monitor);
+    this._track(monitor);
+
+    // Lab benches along the west wall.
+    this._propBox(0.8, 0.85, 2.5, -7.2, 0.425, -26, panelMat);
+    this._propBox(0.8, 0.85, 2.5, -7.2, 0.425, -34, panelMat);
+    // Lab equipment on benches (small boxes = instruments).
+    this._propBox(0.3, 0.25, 0.3, -7.2, 0.975, -25.5, accentMat);
+    this._propBox(0.25, 0.2, 0.4, -7.2, 0.95, -26.5, pipeMat);
+    this._propBox(0.35, 0.3, 0.25, -7.2, 1.0, -33.5, accentMat);
+
     // Central reactor core (tall glowing cylinder).
     this._propCylinder(1.5, 1.5, 2.8, 0, 1.4, -30, reactorMat, 24);
 
@@ -373,6 +649,10 @@ export default class LevelManager {
     // Reactor top ring.
     this._propCylinder(1.8, 1.8, 0.15, 0, 2.85, -30, accentMat, 24);
 
+    // Energy conduit from reactor to containment tube.
+    this._propBox(3.0, 0.08, 0.08, -2.5, 0.2, -29, accentMat);
+    this._propBox(0.08, 0.08, 1.5, -4.0, 0.2, -28.5, accentMat);
+
     // Support pillars (4 corners around reactor).
     const pillarPositions = [
       [3.5, -27], [-3.5, -27], [3.5, -33], [-3.5, -33],
@@ -381,11 +661,23 @@ export default class LevelManager {
       this._propCylinder(0.25, 0.25, H, px, HH, pz, wallMat, 8);
     }
 
-    // Side machinery banks (east + west).
+    // Side machinery banks (east side).
     this._propBox(1, 2, 3, 6.5, 1, -28, panelMat);
     this._propBox(1, 2, 3, 6.5, 1, -32, panelMat);
-    this._propBox(1, 2, 3, -6.5, 1, -28, panelMat);
-    this._propBox(1, 2, 3, -6.5, 1, -32, panelMat);
+    // East wall shelving units.
+    this._propBox(0.4, 1.8, 1.5, 7.5, 0.9, -26, panelMat);
+    this._propBox(0.4, 1.8, 1.5, 7.5, 0.9, -34, panelMat);
+
+    // West side — experiment area divider (low wall).
+    this._propBox(0.15, 1.2, 6, -3, 0.6, -30, wallMat);
+
+    // Floor guide strips (glowing path lines to guide the player).
+    const stripMat = new THREE.MeshStandardMaterial({
+      color: 0x00aaff, emissive: 0x003366, emissiveIntensity: 0.4,
+      roughness: 0.5, metalness: 0.5,
+    });
+    this._propBox(0.1, 0.01, 18, 0, 0.005, -21, stripMat);
+    this._propBox(6, 0.01, 0.1, -3, 0.005, -30, stripMat);
 
     // Overhead pipes across the reactor hall.
     this._propCylinder(0.1, 0.1, 16, 0, 2.8, -27, pipeMat);
@@ -404,8 +696,7 @@ export default class LevelManager {
     // ======================================================================
     // PULSE TOOL TARGETS — Level 1 (terminals & conduits)
     // ======================================================================
-    // Control room — wall terminals (face inward toward the player).
-    this._shootableTarget(0.6, 0.4, 4.85, 1.6, -10, 'terminal', Math.PI / 2);  // east wall
+    // Control room — wall terminals (east wall terminal already added as door trigger above).
     this._shootableTarget(0.6, 0.4, 4.85, 1.6, -13, 'terminal', Math.PI / 2);
     this._shootableTarget(0.6, 0.4, -4.85, 1.6, -10, 'terminal', -Math.PI / 2); // west wall
     this._shootableTarget(0.6, 0.4, -4.85, 1.6, -13, 'terminal', -Math.PI / 2);
@@ -418,209 +709,615 @@ export default class LevelManager {
     this._shootableTarget(0.8, 0.5, 5.9, 1.5, -28, 'terminal', Math.PI / 2);
     this._shootableTarget(0.8, 0.5, -5.9, 1.5, -32, 'terminal', -Math.PI / 2);
 
-    // --- Exit (north end of reactor hall) — glowing beacon marks the goal --
-    this._exitBeacon(0, 1.5, -35, 6, 3);
+    // --- Scorch decals (near reactor and machinery) ---
+    this._scorchDecal(1.5, 0, -28, 1.2);
+    this._scorchDecal(-1.0, 0, -32, 0.9);
+    this._scorchDecal(5.5, 0, -30, 1.0);
+
+    // --- Per-level fog settings ---
+    this.fogColor = 0x0a0e14;
+    this.fogNear = 25;
+    this.fogFar = 90;
   }
 
-  // ── Level 2: Failing station — stealth, hazards, timing ─────────────
+  // ── Level 2: The Hunt — damaged facility, stealth + evasion ──────────
+  //
+  // Same layout as Level 1 but damaged.  Monster patrols through corridors.
+  // Player hides behind lockers / crates, sneaks past, reaches emergency exit.
+  //
+  //   ┌────────────────────────┐
+  //   │  REACTOR HALL (damaged)│  z = -24 to -36
+  //   │  collapsed north end   │  ★ emergency exit north wall
+  //   └────────┬───────────────┘
+  //            │ corridor        z = -16 to -24
+  //   ┌────────┴───────────────┐
+  //   │  CONTROL ROOM (damaged)│  z = -6 to -16
+  //   │  hiding spots (lockers)│  ▲ spawn (0, 2, -7)
+  //   └────────────────────────┘
+  //
   _buildLevel2() {
-    const W = 10;    // corridor half-width (x = -W to W = 20m wide)
-    const H = 3.2;   // ceiling height
-    const Z0 = 10;   // south wall
-    const Z1 = -55;  // north wall (exit end)
-    const len = Z0 - Z1; // 65m corridor
+    const H = 3;
+    const HH = H / 2;
 
-    // --- Materials --------------------------------------------------------
-    const floorMat = new THREE.MeshStandardMaterial({
-      color: 0x554433, roughness: 0.85, metalness: 0.2,
-    });
+    // Win triggers (checked by Game.js each frame).
+    this._winTriggers = [
+      { x: 0, z: -34.5, radius: 1.5 }, // emergency exit at north wall
+    ];
+
+    // --- Procedural textures (darker, dirtier) --------------------------------
+    const rustTex = this._createMetalTexture('#5a4a3a', '#4a3a2a');
+    const dmgFloorTex = this._createConcreteTexture('#2a2218');
+    dmgFloorTex.repeat.set(5, 5);
+    const dmgNormal = this._createNormalTexture(18);
+    dmgNormal.repeat.set(4, 4);
+    const dmgCeilTex = this._createMetalTexture('#3a3028', '#2a2018');
+
+    // --- Materials (damaged, darker, with procedural maps) -------------------
     const wallMat = new THREE.MeshStandardMaterial({
-      color: 0x665544, roughness: 0.7, metalness: 0.3,
+      map: rustTex, normalMap: dmgNormal, normalScale: new THREE.Vector2(0.5, 0.5),
+      color: 0x5a4a3a, roughness: 0.75, metalness: 0.4,
+    });
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: dmgFloorTex, normalMap: dmgNormal, normalScale: new THREE.Vector2(0.4, 0.4),
+      color: 0x2a2218, roughness: 0.85, metalness: 0.2,
     });
     const ceilMat = new THREE.MeshStandardMaterial({
-      color: 0x443322, roughness: 0.9, metalness: 0.1,
+      map: dmgCeilTex, color: 0x3a3028, roughness: 0.9, metalness: 0.1,
+    });
+    const debrisMat = new THREE.MeshStandardMaterial({
+      color: 0x4a4035, roughness: 0.9, metalness: 0.2,
+    });
+    const lockerMat = new THREE.MeshStandardMaterial({
+      color: 0x556070, roughness: 0.5, metalness: 0.7,
     });
     const crateMat = new THREE.MeshStandardMaterial({
-      color: 0x7a6a52, roughness: 0.6, metalness: 0.4,
+      color: 0x6b5a45, roughness: 0.8, metalness: 0.15,
     });
-    const pillarMat = new THREE.MeshStandardMaterial({
-      color: 0x888888, roughness: 0.5, metalness: 0.6,
+    const pipeMat = new THREE.MeshStandardMaterial({
+      color: 0x887766, roughness: 0.5, metalness: 0.6,
+    });
+    const hazardMat = new THREE.MeshStandardMaterial({
+      color: 0xff8800, emissive: 0x552200, emissiveIntensity: 0.5,
+      roughness: 0.4, metalness: 0.3,
+    });
+    const exitMat = new THREE.MeshStandardMaterial({
+      color: 0x00ff44, emissive: 0x00ff44, emissiveIntensity: 0.8,
+      roughness: 0.2, metalness: 0.5,
+    });
+    const damagedPanelMat = new THREE.MeshStandardMaterial({
+      color: 0x3d3530, roughness: 0.7, metalness: 0.5,
     });
 
-    // --- Floor + ceiling --------------------------------------------------
-    this._floorCeil(W * 2, len, 0, 0, (Z0 + Z1) / 2, floorMat);
-    this._floorCeil(W * 2, len, 0, H, (Z0 + Z1) / 2, ceilMat, true);
+    // ======================================================================
+    // CONTROL ROOM  (same footprint as L1: x: -5 to 5, z: -6 to -16)
+    // ======================================================================
+    this._floorCeil(10, 10, 0, 0, -11, floorMat);
+    this._floorCeil(10, 10, 0, H, -11, ceilMat, true);
 
-    // --- Walls (east + west + north + south) ------------------------------
-    this._wallBox(0.5, H, len,  W, H / 2, (Z0 + Z1) / 2, wallMat);  // east
-    this._wallBox(0.5, H, len, -W, H / 2, (Z0 + Z1) / 2, wallMat);  // west
-    this._wallBox(W * 2, H, 0.5, 0, H / 2, Z1, wallMat);             // north
-    this._wallBox(W * 2, H, 0.5, 0, H / 2, Z0, wallMat);             // south
+    // South wall — intact.
+    this._wallBox(10, H, 0.2, 0, HH, -6, wallMat);
+    // East wall — gap near z = -12 (breach in the hull).
+    this._wallBox(0.2, H, 4.5, 5, HH, -8.25, wallMat);
+    this._wallBox(0.2, H, 2.5, 5, HH, -14.75, wallMat);
+    // West wall — intact.
+    this._wallBox(0.2, H, 10, -5, HH, -11, wallMat);
+    // North wall — door gap 2.5m centred at x = 0.
+    this._wallBox(3.75, H, 0.2, -3.125, HH, -16, wallMat);
+    this._wallBox(3.75, H, 0.2, 3.125, HH, -16, wallMat);
+    // Damaged sliding door (opens when conduit is shot).
+    this._createDoor('l2-north', 2.5, H, 0, HH, -16, 0, damagedPanelMat);
+    const l2Conduit = this._shootableTarget(0.5, 0.35, 1.85, 2.0, -16, 'conduit', Math.PI / 2);
+    l2Conduit.userData.doorId = 'l2-north';
 
-    // --- Hiding crates (occluders — block monster LOS) --------------------
-    // Placed along the corridor so the player can duck behind them.
-    const cratePositions = [
-      { x:  4, z:  2 }, { x: -3, z: -4 },
-      { x:  5, z: -12 }, { x: -4, z: -18 },
-      { x:  3, z: -24 }, { x: -5, z: -30 },
-      { x:  6, z: -36 }, { x: -3, z: -42 },
-      { x:  4, z: -48 },
+    // --- Hiding spots: lockers along west wall ---
+    this._propBox(0.6, 2.0, 0.5, -4.3, 1.0, -8, lockerMat);
+    this._propBox(0.6, 2.0, 0.5, -4.3, 1.0, -9.2, lockerMat);
+    this._propBox(0.6, 2.0, 0.5, -4.3, 1.0, -13.5, lockerMat);
+
+    // --- Overturned desks for cover ---
+    this._propBox(1.8, 0.12, 0.9, 2.5, 0.45, -10, debrisMat);
+    this._propBox(1.8, 0.12, 0.9, -1.5, 0.35, -12, debrisMat);
+
+    // --- Scattered debris (random rotation for organic feel) ---
+    const debris1 = this._propBox(0.6, 0.25, 0.4, 3.2, 0.125, -8.5, debrisMat);
+    debris1.rotation.y = 0.25; debris1.rotation.z = -0.08;
+    const debris2 = this._propBox(0.4, 0.18, 0.3, 1.0, 0.09, -14.2, debrisMat);
+    debris2.rotation.y = -0.35;
+    const debris3 = this._propBox(0.8, 0.3, 0.5, -2.8, 0.15, -7.5, debrisMat);
+    debris3.rotation.y = 0.6; debris3.rotation.x = 0.05;
+    const debris4 = this._propBox(0.3, 0.4, 0.3, 4.0, 0.2, -11.5, debrisMat);
+    debris4.rotation.y = -0.18; debris4.rotation.z = 0.12;
+
+    // --- Fallen ceiling panel (angled) ---
+    const fallenPanel = new THREE.Mesh(
+      new THREE.BoxGeometry(2.0, 0.08, 1.5), ceilMat
+    );
+    fallenPanel.position.set(3.0, 0.6, -9.0);
+    fallenPanel.rotation.z = 0.35;
+    fallenPanel.rotation.y = 0.2;
+    fallenPanel.castShadow = true;
+    this.scene.add(fallenPanel);
+    this._track(fallenPanel);
+
+    // --- Broken console (sparking) ---
+    this._propBox(1.2, 0.7, 0.6, 0, 0.35, -12.5, damagedPanelMat);
+
+    // --- Crates near east wall breach ---
+    this._propBox(0.8, 0.8, 0.8, 4.0, 0.4, -11, crateMat);
+    this._propBox(0.6, 0.6, 0.6, 3.5, 0.3, -12.5, crateMat);
+
+    // Corner pillars (partially damaged — one missing).
+    this._propBox(0.5, H, 0.5, -4.6, HH, -6.4, wallMat);
+    this._propBox(0.5, H, 0.5, 4.6, HH, -15.6, wallMat);
+
+    // ======================================================================
+    // CORRIDOR  (x: -2 to 2, z: -16 to -24)
+    // ======================================================================
+    this._floorCeil(4, 8, 0, 0, -20, floorMat);
+    this._floorCeil(4, 8, 0, H, -20, ceilMat, true);
+
+    // East wall — partial collapse (gap in the middle).
+    this._wallBox(0.2, H, 3.0, 2, HH, -17.5, wallMat);
+    this._wallBox(0.2, H, 2.5, 2, HH, -22.75, wallMat);
+    // West wall — mostly intact with a small gap.
+    this._wallBox(0.2, H, 5.5, -2, HH, -18.75, wallMat);
+    this._wallBox(0.2, H, 1.5, -2, HH, -23.25, wallMat);
+
+    // --- Corridor debris (rubble from ceiling collapse) ---
+    this._propBox(1.0, 0.35, 0.7, 0.5, 0.175, -19, debrisMat);
+    this._propBox(0.7, 0.45, 0.5, -0.8, 0.225, -21, debrisMat);
+    this._propBox(0.5, 0.2, 0.4, 1.2, 0.1, -17.5, debrisMat);
+
+    // Ceiling pipes — some broken, dangling at angles.
+    this._propCylinder(0.08, 0.08, 5, 1.5, 2.7, -18.5, pipeMat);
+    const brokenPipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 2.5, 8), pipeMat
+    );
+    brokenPipe.position.set(-1.3, 2.2, -20.5);
+    brokenPipe.rotation.z = 0.6;
+    brokenPipe.castShadow = true;
+    this.scene.add(brokenPipe);
+    this._track(brokenPipe);
+
+    // Locker in corridor (hiding spot).
+    this._propBox(0.5, 1.8, 0.5, -1.6, 0.9, -19.5, lockerMat);
+
+    // Crate stack for cover.
+    this._propBox(0.8, 0.7, 0.8, 1.5, 0.35, -22, crateMat);
+    this._propBox(0.6, 0.5, 0.6, 1.5, 0.95, -22, crateMat);
+
+    // ======================================================================
+    // REACTOR HALL  (x: -8 to 8, z: -24 to -36)
+    // ======================================================================
+    this._floorCeil(16, 12, 0, 0, -30, floorMat);
+    this._floorCeil(16, 12, 0, H, -30, ceilMat, true);
+
+    // South wall — door gap for corridor entrance.
+    this._wallBox(6.75, H, 0.2, -4.625, HH, -24, wallMat);
+    this._wallBox(6.75, H, 0.2, 4.625, HH, -24, wallMat);
+    // North wall — solid (emergency exit cut into it).
+    this._wallBox(6.5, H, 0.2, -4.75, HH, -36, wallMat);
+    this._wallBox(6.5, H, 0.2, 4.75, HH, -36, wallMat);
+    // East wall — large breach (section missing).
+    this._wallBox(0.2, H, 5.0, 8, HH, -26.5, wallMat);
+    this._wallBox(0.2, H, 4.0, 8, HH, -34, wallMat);
+    // West wall — mostly intact.
+    this._wallBox(0.2, H, 12, -8, HH, -30, wallMat);
+
+    // --- Damaged reactor core (tilted, flickering) ---
+    const damagedReactor = this._propCylinder(
+      1.5, 1.5, 2.8, 0, 1.4, -30,
+      new THREE.MeshStandardMaterial({
+        color: 0x334455, emissive: 0x112233, emissiveIntensity: 0.3,
+        roughness: 0.6, metalness: 0.7,
+      }), 24
+    );
+    damagedReactor.rotation.z = 0.08; // slightly tilted
+    damagedReactor.rotation.x = 0.05;
+    this._propBox(4, 0.3, 4, 0, 0.15, -30, damagedPanelMat);
+
+    // --- Large debris piles (cover from monster, random rotation) ---
+    const pile1 = this._propBox(2.0, 0.6, 1.2, 5.0, 0.3, -27, debrisMat);
+    pile1.rotation.y = 0.15;
+    const pile2 = this._propBox(1.5, 0.5, 1.5, -5.5, 0.25, -28, debrisMat);
+    pile2.rotation.y = -0.22; pile2.rotation.z = 0.04;
+    const pile3 = this._propBox(1.8, 0.8, 0.8, 3.5, 0.4, -33, debrisMat);
+    pile3.rotation.y = 0.4;
+    const pile4 = this._propBox(1.2, 0.4, 1.0, -4.0, 0.2, -32, debrisMat);
+    pile4.rotation.y = -0.3;
+    const pile5 = this._propBox(2.5, 0.7, 1.0, 0, 0.35, -26, debrisMat);
+    pile5.rotation.y = 0.12;
+
+    // --- Crates and lockers for hiding ---
+    this._propBox(0.8, 1.4, 0.8, -6.5, 0.7, -26, crateMat);
+    this._propBox(0.8, 1.4, 0.8, -6.5, 0.7, -34, crateMat);
+    this._propBox(0.6, 2.0, 0.5, 6.5, 1.0, -30, lockerMat);
+
+    // --- Collapsed ceiling sections (large debris on floor) ---
+    this._propBox(3.0, 0.12, 2.5, 4.5, 0.06, -29, ceilMat);
+    this._propBox(2.0, 0.10, 2.0, -3.0, 0.05, -31, ceilMat);
+
+    // --- Fallen support pillars ---
+    const fallenPillar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.25, 0.25, 3.0, 8), wallMat
+    );
+    fallenPillar.position.set(3.5, 0.25, -28);
+    fallenPillar.rotation.z = Math.PI / 2;
+    fallenPillar.castShadow = true;
+    this.scene.add(fallenPillar);
+    this._track(fallenPillar);
+
+    // Standing pillar remnants.
+    this._propCylinder(0.25, 0.25, H, -3.5, HH, -27, wallMat, 8);
+    this._propCylinder(0.25, 0.25, 1.5, 3.5, 0.75, -33, wallMat, 8);
+
+    // --- Overhead pipes (some intact, some broken) ---
+    this._propBox(16, 0.12, 0.12, 0, 2.75, -27, pipeMat);
+    this._propBox(10, 0.12, 0.12, -3, 2.75, -33, pipeMat);
+    this._propBox(0.12, 0.12, 12, -4, 2.85, -30, pipeMat);
+
+    // ======================================================================
+    // EMERGENCY EXIT — north wall, centre (glowing green marker)
+    // ======================================================================
+    const exitMarker = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 2.2, 0.1), exitMat
+    );
+    exitMarker.position.set(0, 1.1, -35.85);
+    this.scene.add(exitMarker);
+    this._track(exitMarker);
+    // Exit frame (visual border around the door).
+    this._propBox(1.8, 0.1, 0.15, 0, 2.25, -35.8, hazardMat);
+    this._propBox(0.1, 2.2, 0.15, -0.85, 1.1, -35.8, hazardMat);
+    this._propBox(0.1, 2.2, 0.15, 0.85, 1.1, -35.8, hazardMat);
+
+    // ======================================================================
+    // MONSTER PATROL WAYPOINTS (for Zandile's AI)
+    // ======================================================================
+    this._monsterWaypoints = [
+      { x: 0, z: -26 },
+      { x: 5, z: -27 },
+      { x: 5, z: -33 },
+      { x: 0, z: -34 },
+      { x: -5, z: -33 },
+      { x: -5, z: -27 },
+      { x: 0, z: -20 },
+      { x: 0, z: -10 },
     ];
-    for (const cp of cratePositions) {
-      const m = this._propBox(1.6, 2.0, 1.6, cp.x, 1.0, cp.z, crateMat);
-      this.occluders.push(m);
-    }
 
-    // --- Structural pillars (also occlude LOS) ----------------------------
-    const pillarPositions = [
-      { x: 0, z: -8 }, { x: 0, z: -22 }, { x: 0, z: -38 },
+    // ======================================================================
+    // SHOOTABLE TARGETS
+    // ======================================================================
+    // Power conduits — shoot to open doors / restore power.
+    this._shootableTarget(0.5, 0.35, 1.85, 2.0, -16, 'conduit', Math.PI / 2);
+    this._shootableTarget(0.5, 0.35, -1.85, 2.0, -22, 'conduit', -Math.PI / 2);
+    this._shootableTarget(0.6, 0.4, 4.85, 1.6, -10, 'conduit', Math.PI / 2);
+    // Coolant valves — shoot to stop steam vents.
+    const valve1 = this._shootableTarget(0.4, 0.3, 6.0, 1.2, -28, 'hazard', Math.PI / 2);
+    valve1.userData.ventId = 'l2-vent-1';
+    this._createSteamVent('l2-vent-1', 6.0, 0.3, -28);
+    const valve2 = this._shootableTarget(0.4, 0.3, -6.0, 1.2, -32, 'hazard', -Math.PI / 2);
+    valve2.userData.ventId = 'l2-vent-2';
+    this._createSteamVent('l2-vent-2', -6.0, 0.3, -32);
+    this._shootableTarget(0.4, 0.3, 0, 2.5, -26.5, 'hazard');
+
+    // ======================================================================
+    // HEAT-HAZE ZONE MARKERS (for Kutloano's shader)
+    // ======================================================================
+    const hazeZones = [
+      { x: 6.5, z: -28 },
+      { x: -6.5, z: -32 },
+      { x: 0, z: -30 },
     ];
-    for (const pp of pillarPositions) {
-      const m = this._propCylinder(0.5, 0.5, H, pp.x, H / 2, pp.z, pillarMat, 8);
-      this.occluders.push(m);
-    }
-
-    // Also add walls themselves as occluders so monster can't see through them.
-    // We only need the east/west wall meshes — already pushed by _wallBox
-    // via _track().  We'll collect all wall meshes via a second pass after
-    // building so we include them in occluders.
-    // (The corridor walls already block LOS via physics; we just add the
-    //  crate/pillar meshes above as the key gameplay occluders.)
-
-    // --- Ambient hazard props (non-interactive visual detail) -----------
-    // Broken ceiling panels, fallen debris.
-    const debrisMat = new THREE.MeshStandardMaterial({
-      color: 0x554433, roughness: 0.9, metalness: 0.1,
+    this.heatHazeZones = hazeZones.map(({ x, z }) => {
+      const plane = new THREE.Mesh(
+        new THREE.PlaneGeometry(2, 2.5),
+        new THREE.MeshBasicMaterial({
+          color: 0xff6600, transparent: true, opacity: 0.12,
+          side: THREE.DoubleSide,
+        })
+      );
+      plane.position.set(x, 1.5, z);
+      plane.userData.heatHaze = true;
+      this.scene.add(plane);
+      this._track(plane);
+      return plane;
     });
-    this._propBox(2, 0.2, 3, 2, 0.1, -15, debrisMat);
-    this._propBox(3, 0.3, 2, -4, 0.15, -35, debrisMat);
-    this._propBox(1.5, 0.15, 2.5, 6, 0.08, -45, debrisMat);
 
-    // --- Lighting (dim, flickering — coordinate with Person C) -----------
-    // Sparse point lights for stealth atmosphere.
-    const dimLight = new THREE.PointLight(0xffaa55, 0.6, 15, 1.5);
-    dimLight.position.set(0, 2.8, 0);
-    this.scene.add(dimLight);
-    this._track(dimLight);
+    // --- Rotating hazard: exposed fan blade in corridor ceiling ---
+    const fanMat = new THREE.MeshStandardMaterial({
+      color: 0x555555, roughness: 0.5, metalness: 0.8,
+    });
+    const fanBlade = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 0.05, 0.3), fanMat
+    );
+    fanBlade.position.set(0, 2.6, -20);
+    fanBlade.castShadow = true;
+    this.scene.add(fanBlade);
+    this._track(fanBlade);
+    this._addRotatingHazard(fanBlade, 3.0); // 3 rad/s
 
-    const dimLight2 = new THREE.PointLight(0xffaa55, 0.4, 15, 1.5);
-    dimLight2.position.set(0, 2.8, -25);
-    this.scene.add(dimLight2);
-    this._track(dimLight2);
+    // --- Scorch decals (near hazards and damage) ---
+    this._scorchDecal(5.5, 0, -28, 1.5);
+    this._scorchDecal(-5.0, 0, -32, 1.2);
+    this._scorchDecal(0, 0, -26.5, 1.0);
+    this._scorchDecal(3.0, 0, -9.0, 0.8);
 
-    const dimLight3 = new THREE.PointLight(0xffaa55, 0.4, 15, 1.5);
-    dimLight3.position.set(0, 2.8, -50);
-    this.scene.add(dimLight3);
-    this._track(dimLight3);
-
-    // --- Exit (north end) — glowing beacon marks the goal -----------------
-    this._exitBeacon(0, H / 2, Z1 + 1.5, W * 2 - 4, H);
-
-    // --- Shootable hazard targets (Level 2 pulse tool) --------------------
-    // Conduit panels on walls — shoot to disable hazards.
-    this._shootableTarget(0.5, 0.4,  9.7, 1.8, -10, 'hazard', Math.PI / 2);
-    this._shootableTarget(0.5, 0.4, -9.7, 1.8, -20, 'hazard', -Math.PI / 2);
-    this._shootableTarget(0.5, 0.4,  9.7, 1.8, -35, 'hazard', Math.PI / 2);
-    this._shootableTarget(0.5, 0.4, -9.7, 1.8, -45, 'hazard', -Math.PI / 2);
+    // --- Per-level fog settings ---
+    this.fogColor = 0x120a04;
+    this.fogNear = 15;
+    this.fogFar = 60;
   }
 
-  // ── Level 3: Meltdown — boss arena + escape sequence ──────────────────
+  // ── Level 3: The Collapse — boss arena + timed escape ───────────────
+  //
+  // Boss fight in a large arena.  Defeat the monster (shoot 3 weak points),
+  // then sprint through the escape corridor before the timer expires.
+  //
+  //   ▲ spawn (0, 2, 8)
+  //   ┌────────┐
+  //   │ ESCAPE │  z = -2 to 8   (corridor to exit)
+  //   │ DOOR ★ │
+  //   └────┬───┘
+  //        │ escape corridor  z = -2 to -10
+  //   ┌────┴───────────────────┐
+  //   │     BOSS ARENA         │  z = -10 to -40
+  //   │     (24m × 30m)        │
+  //   │   monster spawns (0,-25)│
+  //   └────────────────────────┘
+  //
   _buildLevel3() {
-    const AW = 15;   // arena half-width  (30m wide)
-    const AD = 15;   // arena half-depth  (30m deep)
-    const H  = 4.0;  // ceiling height
-    const CX = 0;    // arena centre x
-    const CZ = -20;   // arena centre z
+    const H = 4;     // taller ceiling for boss arena drama
+    const HH = H / 2;
 
-    // --- Materials --------------------------------------------------------
-    const floorMat = new THREE.MeshStandardMaterial({
-      color: 0x331111, roughness: 0.85, metalness: 0.2,
-    });
+    // Win triggers — the exit marker at the escape-room south wall can only
+    // be reached (and only counts) after the boss is dead. Trigger sits just
+    // inside the room so the player can actually walk into it.
+    this._winTriggers = [
+      { x: 0, z: 3.5, radius: 1.4, needMonsterDead: true },
+    ];
+
+    // --- Procedural textures (scorched, emergency) ----------------------------
+    const scorchTex = this._createMetalTexture('#4a2020', '#3a1515');
+    const l3FloorTex = this._createConcreteTexture('#1a0808');
+    l3FloorTex.repeat.set(6, 8);
+    const l3Normal = this._createNormalTexture(22);
+    l3Normal.repeat.set(5, 5);
+    const l3CeilTex = this._createMetalTexture('#2a1515', '#1a0a0a');
+
+    // --- Materials (scorched, with procedural maps) --------------------------
     const wallMat = new THREE.MeshStandardMaterial({
-      color: 0x553333, roughness: 0.6, metalness: 0.4,
+      map: scorchTex, normalMap: l3Normal, normalScale: new THREE.Vector2(0.6, 0.6),
+      color: 0x4a2020, roughness: 0.75, metalness: 0.4,
+    });
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: l3FloorTex, normalMap: l3Normal, normalScale: new THREE.Vector2(0.5, 0.5),
+      color: 0x1a0808, roughness: 0.85, metalness: 0.2,
     });
     const ceilMat = new THREE.MeshStandardMaterial({
-      color: 0x221111, roughness: 0.9, metalness: 0.1,
-    });
-    const pillarMat = new THREE.MeshStandardMaterial({
-      color: 0x888888, roughness: 0.5, metalness: 0.6,
+      map: l3CeilTex, color: 0x2a1515, roughness: 0.9, metalness: 0.1,
     });
     const debrisMat = new THREE.MeshStandardMaterial({
-      color: 0x443322, roughness: 0.9, metalness: 0.1,
+      color: 0x3a2222, roughness: 0.9, metalness: 0.2,
     });
-    const doorMat = new THREE.MeshStandardMaterial({
-      color: 0x666666, roughness: 0.4, metalness: 0.8,
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0x553333, roughness: 0.6, metalness: 0.5,
+    });
+    const pipeMat = new THREE.MeshStandardMaterial({
+      color: 0x887766, roughness: 0.5, metalness: 0.6,
+    });
+    const emergencyMat = new THREE.MeshStandardMaterial({
+      color: 0xff2200, emissive: 0xff2200, emissiveIntensity: 0.6,
+      roughness: 0.3, metalness: 0.4,
+    });
+    const exitMat = new THREE.MeshStandardMaterial({
+      color: 0x00ff44, emissive: 0x00ff44, emissiveIntensity: 0.8,
+      roughness: 0.2, metalness: 0.5,
+    });
+    const metalMat = new THREE.MeshStandardMaterial({
+      color: 0x444444, roughness: 0.4, metalness: 0.8,
+    });
+    const warningMat = new THREE.MeshStandardMaterial({
+      color: 0xffaa00, emissive: 0x553300, emissiveIntensity: 0.5,
+      roughness: 0.4, metalness: 0.3,
     });
 
-    // --- Arena floor + ceiling -------------------------------------------
-    this._floorCeil(AW * 2, AD * 2, CX, 0, CZ, floorMat);
-    this._floorCeil(AW * 2, AD * 2, CX, H, CZ, ceilMat, true);
+    // ======================================================================
+    // BOSS ARENA  (x: -12 to 12, z: -10 to -40, 24m × 30m)
+    // ======================================================================
+    this._floorCeil(24, 30, 0, 0, -25, floorMat);
+    this._floorCeil(24, 30, 0, H, -25, ceilMat, true);
 
-    // --- Arena walls (4 sides, with gap for exit on north wall) ----------
-    // South wall (with entry corridor gap).
-    this._wallBox(AW - 3, H, 0.5, CX - (AW + 3) / 2, H / 2, CZ + AD, wallMat);
-    this._wallBox(AW - 3, H, 0.5, CX + (AW + 3) / 2, H / 2, CZ + AD, wallMat);
-    // East wall.
-    this._wallBox(0.5, H, AD * 2, CX + AW, H / 2, CZ, wallMat);
-    // West wall.
-    this._wallBox(0.5, H, AD * 2, CX - AW, H / 2, CZ, wallMat);
-    // North wall (with exit door gap in the centre).
-    this._wallBox(AW - 2, H, 0.5, CX - (AW + 2) / 2, H / 2, CZ - AD, wallMat);
-    this._wallBox(AW - 2, H, 0.5, CX + (AW + 2) / 2, H / 2, CZ - AD, wallMat);
+    // South wall — opening for escape corridor (3m gap centred at x = 0).
+    this._wallBox(10.5, H, 0.2, -6.75, HH, -10, wallMat);
+    this._wallBox(10.5, H, 0.2, 6.75, HH, -10, wallMat);
+    // North wall (solid — back of the arena).
+    this._wallBox(24, H, 0.2, 0, HH, -40, wallMat);
+    // East wall (solid).
+    this._wallBox(0.2, H, 30, 12, HH, -25, wallMat);
+    // West wall (solid).
+    this._wallBox(0.2, H, 30, -12, HH, -25, wallMat);
 
-    // --- Exit door (sealed until monster is defeated) --------------------
-    this._exitDoor = this._propBox(4, H, 0.4, CX, H / 2, CZ - AD, doorMat);
-
-    // --- Entry corridor (south of arena) ---------------------------------
-    const corrW = 3;
-    const corrLen = 12;
-    const corrZ0 = CZ + AD;
-    const corrZ1 = corrZ0 + corrLen;
-    this._floorCeil(corrW * 2, corrLen, CX, 0, corrZ0 + corrLen / 2, floorMat);
-    this._floorCeil(corrW * 2, corrLen, CX, H, corrZ0 + corrLen / 2, ceilMat, true);
-    this._wallBox(0.5, H, corrLen, CX + corrW, H / 2, corrZ0 + corrLen / 2, wallMat);
-    this._wallBox(0.5, H, corrLen, CX - corrW, H / 2, corrZ0 + corrLen / 2, wallMat);
-    this._wallBox(corrW * 2, H, 0.5, CX, H / 2, corrZ1, wallMat); // back wall
-
-    // --- Structural pillars (cover during boss fight) --------------------
-    const pillarPositions = [
-      { x: -6, z: CZ - 4 }, { x:  6, z: CZ - 4 },
-      { x: -6, z: CZ + 4 }, { x:  6, z: CZ + 4 },
-      { x:  0, z: CZ - 8 }, { x:  0, z: CZ + 8 },
+    // --- Cover pillars (ring of 8 around the arena) ---
+    const arenaPillars = [
+      [-6, -16], [6, -16], [-6, -25], [6, -25],
+      [-6, -34], [6, -34], [0, -20], [0, -30],
     ];
-    for (const pp of pillarPositions) {
-      const m = this._propCylinder(0.6, 0.6, H, pp.x, H / 2, pp.z, pillarMat, 8);
-      this.occluders.push(m);
+    for (const [px, pz] of arenaPillars) {
+      this._propCylinder(0.4, 0.4, H, px, HH, pz, pillarMat, 8);
     }
 
-    // --- Debris (fallen ceiling panels, destroyed lab equipment) ---------
-    this._propBox(3, 0.3, 2, -8, 0.15, CZ + 2, debrisMat);
-    this._propBox(2, 0.2, 4, 7, 0.1, CZ - 6, debrisMat);
-    this._propBox(1.5, 0.25, 3, -3, 0.12, CZ + 7, debrisMat);
-    this._propBox(2.5, 0.2, 1.5, 10, 0.1, CZ - 10, debrisMat);
+    // --- Fallen debris from collapsing ceiling (random rotation) ---
+    const d1 = this._propBox(2.5, 0.5, 1.5, 4, 0.25, -18, debrisMat);
+    d1.rotation.y = 0.35; d1.rotation.z = 0.06;
+    const d2 = this._propBox(1.8, 0.6, 2.0, -7, 0.3, -22, debrisMat);
+    d2.rotation.y = -0.28;
+    const d3 = this._propBox(3.0, 0.4, 1.2, 8, 0.2, -30, debrisMat);
+    d3.rotation.y = 0.55; d3.rotation.x = -0.04;
+    const d4 = this._propBox(2.0, 0.7, 1.8, -5, 0.35, -35, debrisMat);
+    d4.rotation.y = -0.4; d4.rotation.z = 0.08;
+    const d5 = this._propBox(1.5, 0.3, 2.5, 3, 0.15, -37, debrisMat);
+    d5.rotation.y = 0.7;
+    const d6 = this._propBox(1.2, 0.5, 1.0, -9, 0.25, -15, debrisMat);
+    d6.rotation.y = -0.15; d6.rotation.z = -0.1;
+    const d7 = this._propBox(2.2, 0.4, 1.5, 9, 0.2, -28, debrisMat);
+    d7.rotation.y = 0.22;
 
-    // --- Red emergency lighting (failsafe protocol active) ---------------
-    const redLight1 = new THREE.PointLight(0xff2200, 0.8, 25, 1.5);
-    redLight1.position.set(CX, H - 0.2, CZ);
-    this.scene.add(redLight1);
-    this._track(redLight1);
+    // --- Collapsed ceiling sections (tagged for dissolve shader) ---
+    this._dissolveWalls = [];
+    const dissolvePositions = [
+      { x: -8, z: -15, w: 3, d: 3 },
+      { x: 8, z: -35, w: 4, d: 3 },
+      { x: -4, z: -38, w: 5, d: 2 },
+      { x: 10, z: -20, w: 2, d: 4 },
+    ];
+    for (const { x, z, w, d } of dissolvePositions) {
+      const block = new THREE.Mesh(
+        new THREE.BoxGeometry(w, 0.3, d), ceilMat
+      );
+      block.position.set(x, 0.15, z);
+      block.castShadow = true;
+      block.receiveShadow = true;
+      block.userData.dissolveTarget = true;
+      this.scene.add(block);
+      this._track(block);
+      this._dissolveWalls.push(block);
+    }
 
-    const redLight2 = new THREE.PointLight(0xff3300, 0.5, 20, 1.5);
-    redLight2.position.set(-10, H - 0.2, CZ - 5);
-    this.scene.add(redLight2);
-    this._track(redLight2);
+    // --- Overhead pipes (some broken, hanging) ---
+    this._propBox(24, 0.12, 0.12, 0, H - 0.15, -18, pipeMat);
+    this._propBox(24, 0.12, 0.12, 0, H - 0.15, -32, pipeMat);
+    this._propBox(0.12, 0.12, 30, -8, H - 0.1, -25, pipeMat);
+    this._propBox(0.12, 0.12, 30, 8, H - 0.1, -25, pipeMat);
+    // Broken hanging pipe.
+    const hangPipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.08, 3.5, 8), pipeMat
+    );
+    hangPipe.position.set(5, 2.5, -22);
+    hangPipe.rotation.z = 0.7;
+    hangPipe.castShadow = true;
+    this.scene.add(hangPipe);
+    this._track(hangPipe);
 
-    const redLight3 = new THREE.PointLight(0xff3300, 0.5, 20, 1.5);
-    redLight3.position.set(10, H - 0.2, CZ + 5);
-    this.scene.add(redLight3);
-    this._track(redLight3);
+    // --- Emergency lighting strips along walls ---
+    this._propBox(0.08, 0.08, 28, 11.85, 0.5, -25, emergencyMat);
+    this._propBox(0.08, 0.08, 28, -11.85, 0.5, -25, emergencyMat);
+    this._propBox(22, 0.08, 0.08, 0, 0.5, -39.85, emergencyMat);
 
-    // --- Exit (behind the sealed door) — beacon lights the escape route ---
-    this._exitBeacon(CX, H / 2, CZ - AD - 2, 4, H);
+    // --- Warning signs near escape corridor ---
+    this._propBox(0.08, 0.6, 0.4, -1.6, 2.0, -10.15, warningMat);
+    this._propBox(0.08, 0.6, 0.4, 1.6, 2.0, -10.15, warningMat);
 
-    // NOTE: no wall weak-point panels here — the boss carries its own 3
-    // glowing weak points (MonsterAI.weakPoints), which Game.js adds to
-    // the PulseTool raycast list.  Shoot the monster to damage it.
+    // --- Side machinery (damaged) ---
+    this._propBox(1.2, 1.8, 2.0, 10.5, 0.9, -15, metalMat);
+    this._propBox(1.2, 1.8, 2.0, 10.5, 0.9, -35, metalMat);
+    this._propBox(1.2, 1.5, 1.5, -10.5, 0.75, -20, metalMat);
+    this._propBox(1.2, 1.5, 1.5, -10.5, 0.75, -32, metalMat);
+
+    // ======================================================================
+    // ESCAPE CORRIDOR  (x: -2 to 2, z: -10 to -2, 4m × 8m)
+    // ======================================================================
+    this._floorCeil(4, 8, 0, 0, -6, floorMat);
+    this._floorCeil(4, 8, 0, H, -6, ceilMat, true);
+    this._wallBox(0.2, H, 8, 2, HH, -6, wallMat);
+    this._wallBox(0.2, H, 8, -2, HH, -6, wallMat);
+    // Debris in escape corridor.
+    this._propBox(0.6, 0.3, 0.5, 1.2, 0.15, -5, debrisMat);
+    this._propBox(0.4, 0.25, 0.4, -0.8, 0.125, -7, debrisMat);
+    // Emergency strip on floor.
+    this._propBox(0.1, 0.01, 8, 0, 0.005, -6, emergencyMat);
+
+    // ======================================================================
+    // ESCAPE DOOR + EXIT ROOM  (south end of corridor, z = -2 to 4)
+    // ======================================================================
+    // South wall with door gap.
+    this._wallBox(0.75, H, 0.2, -1.625, HH, -2, wallMat);
+    this._wallBox(0.75, H, 0.2, 1.625, HH, -2, wallMat);
+    // Open area beyond the door (trigger zone here).
+    this._floorCeil(6, 6, 0, 0, 1, floorMat);
+    this._floorCeil(6, 6, 0, H, 1, ceilMat, true);
+    this._wallBox(6, H, 0.2, 0, HH, 4, wallMat);
+    this._wallBox(0.2, H, 6, 3, HH, 1, wallMat);
+    this._wallBox(0.2, H, 6, -3, HH, 1, wallMat);
+    // Exit marker (glowing green).
+    const exitMarker = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 2.5, 0.1), exitMat
+    );
+    exitMarker.position.set(0, 1.25, 3.9);
+    this.scene.add(exitMarker);
+    this._track(exitMarker);
+    // Exit sign above door.
+    this._propBox(1.0, 0.3, 0.08, 0, 3.2, -1.9, exitMat);
+
+    // ======================================================================
+    // MONSTER PATROL WAYPOINTS (boss arena perimeter)
+    // ======================================================================
+    this._monsterWaypoints = [
+      { x: 0, y: 0, z: -15 },
+      { x: 8, y: 0, z: -18 },
+      { x: 8, y: 0, z: -32 },
+      { x: 0, y: 0, z: -36 },
+      { x: -8, y: 0, z: -32 },
+      { x: -8, y: 0, z: -18 },
+    ];
+
+    // ======================================================================
+    // SHOOTABLE TARGETS — cooling systems, corridor conduits
+    // ======================================================================
+    this._shootableTarget(0.5, 0.4, 11.85, 1.5, -15, 'hazard', Math.PI / 2);
+    this._shootableTarget(0.5, 0.4, 11.85, 1.5, -35, 'hazard', Math.PI / 2);
+    this._shootableTarget(0.5, 0.4, -11.85, 1.5, -20, 'hazard', -Math.PI / 2);
+    this._shootableTarget(0.5, 0.4, -11.85, 1.5, -32, 'hazard', -Math.PI / 2);
+    this._shootableTarget(0.4, 0.3, 1.85, 2.0, -6, 'conduit', Math.PI / 2);
+    this._shootableTarget(0.4, 0.3, -1.85, 2.0, -4, 'conduit', -Math.PI / 2);
+
+    // ======================================================================
+    // DISSOLVE SHADER ZONE MARKERS (for Kutloano)
+    // ======================================================================
+    const dissolveZonePositions = [
+      { x: -8, z: -15 },
+      { x: 8, z: -35 },
+      { x: 0, z: -38 },
+    ];
+    this.dissolveZones = dissolveZonePositions.map(({ x, z }) => {
+      const marker = new THREE.Mesh(
+        new THREE.PlaneGeometry(3, 3),
+        new THREE.MeshBasicMaterial({
+          color: 0xff3300, transparent: true, opacity: 0.08,
+          side: THREE.DoubleSide,
+        })
+      );
+      marker.position.set(x, 2, z);
+      marker.userData.dissolveZone = true;
+      this.scene.add(marker);
+      this._track(marker);
+      return marker;
+    });
+
+    // --- Rotating hazard: swinging debris arm in arena ---
+    const swingMat = new THREE.MeshStandardMaterial({
+      color: 0x665555, roughness: 0.6, metalness: 0.5,
+    });
+    const swingArm = new THREE.Mesh(
+      new THREE.BoxGeometry(3.0, 0.12, 0.12), swingMat
+    );
+    swingArm.position.set(-6, 2.8, -25);
+    swingArm.castShadow = true;
+    this.scene.add(swingArm);
+    this._track(swingArm);
+    this._addRotatingHazard(swingArm, 1.5); // slower, menacing swing
+
+    // --- Scorch decals (explosions and collapse damage) ---
+    this._scorchDecal(3, 0, -18, 2.0);
+    this._scorchDecal(-6, 0, -22, 1.8);
+    this._scorchDecal(7, 0, -30, 1.5);
+    this._scorchDecal(-4, 0, -35, 2.2);
+    this._scorchDecal(0, 0, -38, 1.6);
+    this._scorchDecal(9, 0, -15, 1.3);
+
+    // --- Per-level fog settings ---
+    this.fogColor = 0x0a0000;
+    this.fogNear = 10;
+    this.fogFar = 45;
   }
 
   /**
@@ -630,4 +1327,12 @@ export default class LevelManager {
   _track(mesh, body = null) {
     this._disposables.push({ mesh, body });
   }
+
+  // ── Public getters for cross-system integration ──────────────────────────
+
+  /** Monster patrol waypoints for the current level (used by Game._setupMonster). */
+  get monsterWaypoints() { return this._monsterWaypoints; }
+
+  /** Win trigger zones for the current level (checked by Game.js each frame). */
+  get winTriggers() { return this._winTriggers; }
 }
