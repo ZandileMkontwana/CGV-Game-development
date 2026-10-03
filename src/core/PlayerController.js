@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import InputManager from './InputManager.js';
+import { createEngineer } from './CharacterFactory.js';
 
 /**
  * PlayerController — first/third-person movement and physics body.
@@ -74,26 +75,15 @@ export default class PlayerController {
     /** @type {THREE.Object3D|null} set externally so movement is camera-relative */
     this.cameraPivot = null;
 
-    // --- Placeholder character model (visible in third-person only) --------
-    // TODO (Person B): Replace with GLTFLoader'd engineer model.
+    // --- Character model (code-built engineer via CharacterFactory) --------
+    // Swappable to a Blender .glb behind the same { group, update } API.
     this.scene = scene;
-    this.playerModel = new THREE.Group();
+    this.character = createEngineer();
+    this.playerModel = this.character.group;
 
-    // Body — capsule (cylinder + hemisphere caps).
-    const bodyGeo = new THREE.CapsuleGeometry(0.3, 0.8, 4, 8);
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3366aa });
-    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-    bodyMesh.position.y = 0.8; // feet to mid-torso
-    bodyMesh.castShadow = true;
-    this.playerModel.add(bodyMesh);
-
-    // Head — sphere.
-    const headGeo = new THREE.SphereGeometry(0.2, 8, 8);
-    const headMat = new THREE.MeshStandardMaterial({ color: 0xe8b87a });
-    const headMesh = new THREE.Mesh(headGeo, headMat);
-    headMesh.position.y = 1.55; // sits on top of the capsule
-    headMesh.castShadow = true;
-    this.playerModel.add(headMesh);
+    // Animation inputs — filled by update(), consumed by syncModel().
+    this._lastDt = 0.016;
+    this._charState = { moving: false, sprinting: false, grounded: true };
 
     // Hidden by default — starts in first-person mode.
     this.playerModel.visible = false;
@@ -113,6 +103,7 @@ export default class PlayerController {
    * @param {number} dt delta time in seconds
    */
   update(dt) {
+    this._lastDt = dt;
     const keys = this.input.keys;
     const sprint = keys['ShiftLeft'] || keys['ShiftRight'];
     const speed = this.moveSpeed * (sprint ? this.sprintMultiplier : 1);
@@ -156,6 +147,11 @@ export default class PlayerController {
       this.body.velocity.y = this.jumpImpulse;
       this.canJump = false;
     }
+
+    // --- Animation state for the character model ---------------------------
+    this._charState.moving = (moveX !== 0 || moveZ !== 0);
+    this._charState.sprinting = sprint;
+    this._charState.grounded = this.canJump;
   }
 
   /** World-space position of the player's feet. */
@@ -169,15 +165,19 @@ export default class PlayerController {
    * position and yaw regardless of who is driving the update.
    */
   syncModel() {
+    // The physics body is a sphere centred on the torso — offset by its
+    // radius so the character's feet (built at local y = 0) touch the floor.
     this.playerModel.position.set(
       this.body.position.x,
-      this.body.position.y,
+      this.body.position.y - this.playerRadius,
       this.body.position.z
     );
     // Rotate the model to face the camera yaw direction.
     if (this.cameraPivot) {
       this.playerModel.rotation.y = this.cameraPivot.rotation.y;
     }
+    // Drive the limb animation from the movement state captured in update().
+    this.character.update(this._lastDt, this._charState);
   }
 
   /** Show or hide the character model (called by CameraController). */

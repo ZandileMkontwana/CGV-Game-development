@@ -415,7 +415,7 @@ export default class LevelManager {
       ],
     };
     this.npcAnchors = {
-      scientist: { x: -3.4, z: -24.3, face: 'n' },  // typing at the console
+      scientist: { x: -2.45, z: -25.25, face: 'w' }, // seated, typing at the console
     };
 
     // ── Reception (x -5..5, z 0..-10) ─────────────────────────────────────
@@ -486,8 +486,8 @@ export default class LevelManager {
 
     // Focal props: containment tube + scientist console + benches.
     kit.containmentTube(-5.0, -26.0);
-    kit.consoleDesk(-3.4, -25.2, 'w', { w: 1.8, monitors: 2 });
-    kit.chair(-3.4, -24.4, 'n');
+    kit.consoleDesk(-3.4, -25.2, 'e', { w: 1.8, monitors: 2 });
+    kit.chair(-1.55, -25.05, 'w');
     kit.labBench(5.6, -23.5, 'w', { len: 2.6 });
     kit.labBench(5.6, -27.5, 'w', { len: 2.6 });
     kit.shelfUnit(-8.2, -22.0, 'e', { w: 1.5 });

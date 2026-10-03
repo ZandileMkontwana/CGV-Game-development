@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { createMonster } from './CharacterFactory.js';
 
 /**
  * MonsterAI — mutated scientist enemy with PATROL → CHASE → ATTACK states.
@@ -94,75 +95,15 @@ export default class MonsterAI {
     this._toPlayer = new THREE.Vector3();
     this._playerPos = new THREE.Vector3();
 
-    // --- Placeholder model --------------------------------------------------
-    this.model = new THREE.Group();
-
-    // Body — tall capsule.  Tagged 'monsterBody' so PulseTool shots aimed
-    // at the torso register an impact flash (no damage — weak points only).
-    const bodyGeo = new THREE.CapsuleGeometry(0.45, 1.2, 4, 8);
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x661122, roughness: 0.6, metalness: 0.3,
-    });
-    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-    bodyMesh.position.y = 1.1;
-    bodyMesh.castShadow = true;
-    bodyMesh.userData.pulseTarget = true;
-    bodyMesh.userData.pulseType = 'monsterBody';
-    this.model.add(bodyMesh);
-    this.hitMeshes = [bodyMesh];
-    this._bodyMat = bodyMat; // kept for the hit flash
-
-    // Head — sphere, slightly elongated.
-    const headGeo = new THREE.SphereGeometry(0.35, 8, 8);
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0x553344, roughness: 0.5, metalness: 0.4,
-    });
-    const headMesh = new THREE.Mesh(headGeo, headMat);
-    headMesh.position.y = 2.1;
-    headMesh.castShadow = true;
-    headMesh.userData.pulseTarget = true;
-    headMesh.userData.pulseType = 'monsterBody';
-    this.model.add(headMesh);
-    this.hitMeshes.push(headMesh);
-
-    // Eyes — two small emissive red spheres.
-    const eyeGeo = new THREE.SphereGeometry(0.06, 6, 6);
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff2200 });
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeL.position.set(-0.12, 2.15, 0.28);
-    this.model.add(eyeL);
-    const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeR.position.set(0.12, 2.15, 0.28);
-    this.model.add(eyeR);
-
-    // --- Weak points (3 glowing nodes — shootable, LARGE and protruding) ---
-    // Radius 0.28 + offsets outside the 0.45 body radius so they clearly
-    // bulge out of the silhouette — hittable at range while chasing.
-    this.weakPoints = [];
-    const wpGeo = new THREE.SphereGeometry(0.28, 10, 10);
-    const wpOffsets = [
-      { x: 0,     y: 1.6, z: 0.62 },  // chest (front — faces the player in chase)
-      { x: 0.55,  y: 0.8, z: 0 },     // right side
-      { x: -0.55, y: 0.8, z: 0 },     // left side
-    ];
-    for (let i = 0; i < 3; i++) {
-      const wpMat = new THREE.MeshStandardMaterial({
-        color: 0xff3333,
-        emissive: 0xff3333,
-        emissiveIntensity: 0.8,
-        roughness: 0.2,
-        metalness: 0.6,
-      });
-      const wpMesh = new THREE.Mesh(wpGeo, wpMat);
-      const off = wpOffsets[i];
-      wpMesh.position.set(off.x, off.y, off.z);
-      wpMesh.userData.pulseTarget = true;
-      wpMesh.userData.pulseType = 'weakpoint';
-      wpMesh.userData.weakPointIndex = i;
-      wpMesh.userData.destroyed = false;
-      this.model.add(wpMesh);
-      this.weakPoints.push(wpMesh);
-    }
+    // --- Creature model (code-built via CharacterFactory) -------------------
+    // The factory supplies the tagged hit meshes and the three mounted weak
+    // points with the exact same userData contract as the old placeholder.
+    const character = createMonster();
+    this._char = character;
+    this.model = character.group;
+    this.hitMeshes = character.hitMeshes;
+    this.weakPoints = character.weakPoints;
+    this._bodyMat = character.bodyMat; // shared chitin material — hit flash
 
     this.model.visible = false;
     scene.add(this.model);
@@ -322,6 +263,7 @@ export default class MonsterAI {
         this._emit('death');
       }
 
+      this._char.update(dt, 'dead', this.body.velocity);
       this.model.updateMatrixWorld(true);
       return;
     }
@@ -437,6 +379,9 @@ export default class MonsterAI {
         wp.material.emissiveIntensity = 0.7 + 0.5 * Math.sin(this._animTime * 4);
       }
     }
+
+    // --- Limb animation (CharacterFactory — zero per-frame allocs) ---------
+    this._char.update(dt, this.state, this.body.velocity);
 
     // --- Refresh world matrices NOW ---------------------------------------
     // Three.js normally updates matrixWorld during render (end of frame).
