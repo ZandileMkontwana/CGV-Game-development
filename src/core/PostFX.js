@@ -96,6 +96,9 @@ export default class PostFX {
     // Cap the post pipeline below the canvas DPR — bloom + grade at full
     // retina resolution is the single biggest frame-time cost.
     this._maxPixelRatio = Math.min(renderer.getPixelRatio(), 1.5);
+    this._dynScale = 1;    // adaptive resolution factor (0.65..1)
+    this._frameAccum = 0;
+    this._frameCount = 0;
     this.composer.setPixelRatio(this._maxPixelRatio);
     this.composer.setSize(window.innerWidth, window.innerHeight);
 
@@ -132,6 +135,27 @@ export default class PostFX {
     const u = this.grade.uniforms;
     u.uTime.value = this._time;
     u.uDanger.value += (this._dangerTarget - u.uDanger.value) * Math.min(1, dt * 3);
+
+    // --- Adaptive resolution -------------------------------------------------
+    // Every ~0.4s, compare average frame time to a 60fps budget and scale the
+    // post pipeline's pixel ratio up/down. Keeps the game playable on weak
+    // GPUs instead of locking them at a slideshow.
+    this._frameAccum += dt;
+    this._frameCount++;
+    if (this._frameAccum >= 0.4) {
+      const avg = this._frameAccum / this._frameCount;
+      this._frameAccum = 0;
+      this._frameCount = 0;
+      let scale = this._dynScale;
+      if (avg > 0.024) scale = Math.max(0.65, scale - 0.12);       // under ~40fps
+      else if (avg < 0.0145) scale = Math.min(1, scale + 0.08);    // headroom
+      if (scale !== this._dynScale) {
+        this._dynScale = scale;
+        this.composer.setPixelRatio(this._maxPixelRatio * scale);
+        this.composer.setSize(window.innerWidth, window.innerHeight);
+      }
+    }
+
     this.composer.render(dt);
   }
 

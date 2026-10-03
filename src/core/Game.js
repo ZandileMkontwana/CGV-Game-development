@@ -14,6 +14,7 @@ import { createScientist, faceToRotY } from './CharacterFactory.js';
 import AudioManager from '../audio/AudioManager.js';
 import PostFX from './PostFX.js';
 import WeaponViewmodel from './WeaponViewmodel.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /**
  * Game — top-level orchestrator.
@@ -26,7 +27,7 @@ import WeaponViewmodel from './WeaponViewmodel.js';
 export default class Game {
   constructor(container) {
     // --- Renderer -----------------------------------------------------------
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
@@ -40,6 +41,13 @@ export default class Game {
     // TODO (Person C): Set skybox / fog per level.
     this.scene.background = new THREE.Color(0x0a0a0a);
     this.scene.fog = new THREE.Fog(0x0a0a0a, 20, 80);
+
+    // Image-based lighting: metals (rifle) and PBR characters render black
+    // and flat without reflections. Kept dim so the horror grade survives.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.25;
+    pmrem.dispose();
 
     // --- Subsystems ---------------------------------------------------------
     this.input = new InputManager(this.renderer.domElement);

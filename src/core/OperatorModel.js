@@ -27,6 +27,7 @@ export default class OperatorModel {
         model.traverse((o) => {
           if (o.isMesh) {
             o.castShadow = true;
+            o.receiveShadow = true;
             // Skinned meshes deform away from their static bounds — disable
             // culling so limbs never pop out of view mid-animation.
             o.frustumCulled = false;

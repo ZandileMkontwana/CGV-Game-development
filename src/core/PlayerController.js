@@ -45,30 +45,25 @@ export default class PlayerController {
       linearDamping: 0.9,   // ground friction feel
       angularDamping: 1.0,  // prevent spinning
       fixedRotation: true,  // stay upright
+      collisionFilterGroup: 2, // ground raycast masks this out (group 1 = world)
     });
     physicsWorld.world.addBody(this.body);
 
-    // --- Ground contact tracking -------------------------------------------
-    this.canJump = false;
-    this._contactNormal = new CANNON.Vec3(); // reusable for collision checks
-    this.body.addEventListener('collide', (e) => {
-      const contact = e.contact;
-      // Get the world-space normal pointing FROM other body TOWARDS this body.
-      if (contact.bi === this.body) {
-        // ni points from bi (this) to bj (other) — we want the opposite.
-        this._contactNormal.set(-contact.ni.x, -contact.ni.y, -contact.ni.z);
-      } else {
-        // ni points from bi (other) to bj (this) — already correct.
-        this._contactNormal.copy(contact.ni);
-      }
-      if (this._contactNormal.y > 0.5) {
-        this.canJump = true;
-      }
-    });
+    // --- Ground contact: short downward ray each frame ----------------------
+    // Collide events only fire on NEW contacts, so they can't tell you when
+    // you've walked off a ledge — the ray (plus a coyote window) can.
+    this.grounded = false;
+    this.coyoteTime = 0.12; // seconds of forgiveness after leaving an edge
+    this._groundTime = -10; // last time the ray touched the floor
+    this._clock = 0;
+    this._rayFrom = new CANNON.Vec3();
+    this._rayTo = new CANNON.Vec3();
+    this._rayResult = new CANNON.RaycastResult();
 
     // --- Reusable vectors (avoid per-frame allocation) ---------------------
     this._forward = new THREE.Vector3();
     this._right = new THREE.Vector3();
+    this._up = new THREE.Vector3(0, 1, 0);
     this._impulse = new CANNON.Vec3();
     this._eyePos = new CANNON.Vec3(); // reused by eyePosition getter
 
@@ -121,7 +116,7 @@ export default class PlayerController {
     this.body.position.set(x, y, z);
     this.body.velocity.setZero();
     this.body.angularVelocity.setZero();
-    this.canJump = false;
+    this._groundTime = -10;
   }
 
   /**
@@ -130,11 +125,27 @@ export default class PlayerController {
    */
   update(dt) {
     this._lastDt = dt;
+    this._clock += dt;
     const keys = this.input.keys;
     const sprint = (keys['ShiftLeft'] || keys['ShiftRight']) && !this.isCrouching && !this.isAiming;
     let speed = this.moveSpeed * (sprint ? this.sprintMultiplier : 1);
     if (this.isCrouching) speed *= 0.5;   // sneaking — slower, quieter
     if (this.isAiming) speed *= 0.6;      // ADS — careful steps
+
+    // --- Grounding: short ray from just under the sphere down to 0.2 below --
+    // Starting below our own collider means the ray can never self-hit (and
+    // cannon's skipBackfaces doesn't cover spheres); collisionFilterMask 1
+    // additionally ignores the player body (group 2).
+    this._rayFrom.set(this.body.position.x, this.body.position.y - this.playerRadius - 0.02, this.body.position.z);
+    this._rayTo.set(this.body.position.x, this.body.position.y - this.playerRadius - 0.22, this.body.position.z);
+    this._rayResult.reset();
+    this.physicsWorld.world.raycastClosest(
+      this._rayFrom, this._rayTo,
+      { skipBackfaces: true, collisionFilterMask: 1 },
+      this._rayResult
+    );
+    if (this._rayResult.hasHit) this._groundTime = this._clock;
+    this.grounded = (this._clock - this._groundTime) < this.coyoteTime;
 
     // --- Movement direction relative to camera yaw -------------------------
     let moveX = 0;
@@ -145,41 +156,43 @@ export default class PlayerController {
     if (keys['KeyA']) moveX -= 1;
     if (keys['KeyD']) moveX += 1;
 
-    if (this.cameraPivot) {
-      if (moveX !== 0 || moveZ !== 0) {
-        // Build a direction vector in world space using the camera yaw.
-        this._forward.set(0, 0, -1).applyQuaternion(this.cameraPivot.quaternion);
-        this._forward.y = 0;
-        this._forward.normalize();
-        this._right.crossVectors(this._forward, new THREE.Vector3(0, 1, 0)).normalize();
+    if (this.cameraPivot && (moveX !== 0 || moveZ !== 0)) {
+      // Build a direction vector in world space using the camera yaw.
+      this._forward.set(0, 0, -1).applyQuaternion(this.cameraPivot.quaternion);
+      this._forward.y = 0;
+      this._forward.normalize();
+      this._right.crossVectors(this._forward, this._up).normalize();
 
-        const dirX = this._right.x * moveX + this._forward.x * -moveZ;
-        const dirZ = this._right.z * moveX + this._forward.z * -moveZ;
+      const dirX = this._right.x * moveX + this._forward.x * -moveZ;
+      const dirZ = this._right.z * moveX + this._forward.z * -moveZ;
 
-        // Normalise diagonal movement.
-        const len = Math.sqrt(dirX * dirX + dirZ * dirZ);
-        if (len > 0) {
-          // Direct velocity control — responsive and predictable.
-          this.body.velocity.x = (dirX / len) * speed;
-          this.body.velocity.z = (dirZ / len) * speed;
-        }
-      } else {
-        // Stop horizontal movement when no keys are held.
-        this.body.velocity.x = 0;
-        this.body.velocity.z = 0;
-      }
+      // Normalise diagonal movement → target velocity.
+      const len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+      const tvx = (dirX / len) * speed;
+      const tvz = (dirZ / len) * speed;
+
+      // Grounded: approach target fast (snappy, but smooths frame spikes).
+      // Air: only gentle steering — no helicopter strafing mid-jump.
+      const k = Math.min(1, dt * (this.grounded ? 16 : 2.5));
+      this.body.velocity.x += (tvx - this.body.velocity.x) * k;
+      this.body.velocity.z += (tvz - this.body.velocity.z) * k;
+    } else if (this.grounded) {
+      // Weighty but quick stop when keys release; airborne keeps momentum.
+      const k = Math.min(1, dt * 20);
+      this.body.velocity.x -= this.body.velocity.x * k;
+      this.body.velocity.z -= this.body.velocity.z * k;
     }
 
-    // --- Jump ---------------------------------------------------------------
-    if ((keys['Space']) && this.canJump) {
+    // --- Jump (coyote window lets an edge jump fire just after leaving) ----
+    if (keys['Space'] && this.grounded) {
       this.body.velocity.y = this.jumpImpulse;
-      this.canJump = false;
+      this._groundTime = -10; // consume the coyote window — no double jumps
     }
 
     // --- Animation state for the character model ---------------------------
     this._charState.moving = (moveX !== 0 || moveZ !== 0);
     this._charState.sprinting = sprint;
-    this._charState.grounded = this.canJump;
+    this._charState.grounded = this.grounded;
   }
 
   /** World-space position of the player's feet. */
