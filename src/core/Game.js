@@ -65,8 +65,35 @@ export default class Game {
     this._scientist.group.visible = false;
     this.scene.add(this._scientist.group);
 
+    // Red glow that bathes the scientist during the mutation beat. Kept at
+    // intensity 0 (not hidden) so the lighting shader never recompiles.
+    this._mutateLight = new THREE.PointLight(0xff2a1a, 0, 8, 2);
+    this._mutateLight.position.set(0, -50, 0);
+    this.scene.add(this._mutateLight);
+
     // Level 1 scripted creature reveal state (rebuilt on each level load).
     this._l1Reveal = null;
+
+    // Level 1 tutorial — controls walkthrough (see _updateTutorial).
+    this._tutorialEl = document.getElementById('tutorial');
+    this._tutorialTextEl = document.getElementById('tutorial-text');
+    this._tutorialSubEl = document.getElementById('tutorial-sub');
+    this._tutorialSteps = [
+      {
+        text: 'WASD — MOVE   ·   SHIFT — SPRINT   ·   SPACE — JUMP',
+        sub: 'MOUSE — LOOK   ·   V — TOGGLE FIRST/THIRD PERSON',
+      },
+      {
+        text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
+        sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
+      },
+      {
+        text: 'SHOOT THE GLOWING PANELS — CONDUITS & VALVES',
+        sub: 'THEY OPEN DOORS AND SHUT DOWN HAZARDS',
+      },
+    ];
+    this._tut = null;         // built per Level-1 load
+    this._baseObjective = ''; // restored after scripted beats change it
 
     // Combined PulseTool raycast list: level shootables + monster weak points.
     // Rebuilt once per level load (not per frame — zero-allocation rule).
@@ -136,6 +163,8 @@ export default class Game {
 
     // Pulse tool hits — damage monster weak points, open doors, disable vents.
     this.pulseTool.on('hit', (target) => {
+      // Tutorial: track the first successful hit on a shootable panel.
+      if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       // Level 1's creature is a scripted cameo — never killable there.
       if (target.userData.pulseType === 'weakpoint' && this.monster.isActive
           && this.gameState.currentLevel !== 1) {
@@ -158,6 +187,11 @@ export default class Game {
       if (target.userData.ventId) {
         this.levels.disableVent(target.userData.ventId);
       }
+    });
+
+    // Tutorial: track the first pulse the player fires.
+    this.pulseTool.on('fire', () => {
+      if (this._tut) this._tut.fired = true;
     });
 
     this.monster.on('death', () => {
@@ -258,11 +292,10 @@ export default class Game {
       this.ui.update(dt);
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
 
-      // Level 1 scripted beats: creature cameo + scientist NPC reaction.
+      // Level 1 scripted beats: mutation reveal, tutorial, scientist NPC.
       this._updateL1Reveal(dt);
+      this._updateTutorial(dt);
       if (this._scientist.group.visible) {
-        this._scientistState.mode =
-          this._l1Reveal && this._l1Reveal.played ? 'cower' : 'type';
         this._scientist.update(dt, this._scientistState);
       }
 
@@ -379,6 +412,7 @@ export default class Game {
       this._scientistState.mode = 'type';
     }
     this._scientist.group.visible = showScientist;
+    this._mutateLight.intensity = 0; // standby until the mutation beat
 
     // 7. Reset collapse / escape state.
     this._collapseActive = false;
@@ -405,7 +439,21 @@ export default class Game {
       2: 'OBJECTIVE: SNEAK PAST THE MONSTER — REACH THE EMERGENCY EXIT (HIDE BEHIND COVER)',
       3: 'OBJECTIVE: DESTROY THE MONSTER\u2019S 3 GLOWING WEAK POINTS',
     };
-    this._setObjective(objectives[levelNum] || '');
+    this._baseObjective = objectives[levelNum] || '';
+    this._setObjective(this._baseObjective);
+
+    // 10. Level 1 runs the controls tutorial (hints only — no gating).
+    if (levelNum === 1) {
+      this._tut = {
+        step: 0, timer: 0,
+        startX: sp.x, startZ: sp.z,
+        moved: false, fired: false, hit: false,
+      };
+      this._showTutorialStep(0);
+    } else {
+      this._tut = null;
+      if (this._tutorialEl) this._tutorialEl.classList.remove('visible');
+    }
   }
 
   /**
@@ -418,7 +466,7 @@ export default class Game {
 
   /**
    * Configure and spawn the monster for a given level.
-   * Level 1: scripted cameo only — bursts from the tube, flees (no fight).
+   * Level 1: scripted cameo only — the scientist mutates, creature flees.
    * Level 2: monster hunts the player through damaged corridors.
    * Level 3: boss fight in the arena.
    * @param {number} levelNum
@@ -427,14 +475,14 @@ export default class Game {
     const waypoints = this.levels.monsterWaypoints;
     switch (levelNum) {
       case 1:
-        // Scripted cameo only: the creature bursts out of the containment
-        // tube and flees into the ducts (see _updateL1Reveal). Not a threat.
+        // Scripted cameo only: the bitten scientist mutates into the
+        // creature, which flees into the ducts (see _updateL1Reveal).
         this.monster.spawn(0, -50, 0);      // parked out of play
         this.monster.setPatrolWaypoints([]);
         this.monster.setOccluders(this.levels.occluders);
         this.monster.detectionRange = 0;    // can never detect the player
         this.monster.setActive(false);
-        this._l1Reveal = { played: false, active: false, timer: 0 };
+        this._l1Reveal = { phase: 'idle', timer: 0 };
         return;
       case 2:
         // Stealth: sweeps the damaged facility between the rebuilt waypoints.
@@ -471,50 +519,131 @@ export default class Game {
   }
 
   /**
-   * Level 1 scripted creature reveal — a cameo, not a fight.
-   * When the player approaches the containment tube:
-   *   1. the creature bursts out at scriptedReveal.spawn,
-   *   2. lurches along the escape path into the ducts,
-   *   3. vanishes once it reaches the end (deactivated, body parked).
+   * Level 1 scripted mutation reveal — a cameo, not a fight.
+   * Timeline when the player reaches the lab:
+   *   1. 'alarm'  — the scientist doubles over; red glow + alarm shake,
+   *   2. 'mutate' — violent convulsions bathed in strobing red light,
+   *   3. 'flee'   — the scientist is gone: the creature bursts out and
+   *                 lurches along the escape path into the ducts, then
+   *                 deactivates once it reaches the end (body parked).
    * detectionRange stays 0 the whole time, so it can never chase or attack.
    * @param {number} dt
    */
   _updateL1Reveal(dt) {
     const reveal = this.levels.scriptedReveal;
     const r = this._l1Reveal;
-    if (!reveal || !r) return;
+    if (!reveal || !r || r.phase === 'done') return;
 
-    if (!r.played) {
-      // Trigger: player steps into the lab, near the containment tube.
+    if (r.phase === 'idle') {
+      // Trigger: player steps into the lab, near the console.
       const dx = this.player.position.x - reveal.trigger.x;
       const dz = this.player.position.z - reveal.trigger.z;
       if (dx * dx + dz * dz < reveal.trigger.radius * reveal.trigger.radius) {
-        r.played = true;
-        r.active = true;
+        r.phase = 'alarm';
         r.timer = 0;
-        // Burst out of the tube and flee along the scripted path.
+        this._scientistState.mode = 'cower';
+        const anchor = this.levels.npcAnchors && this.levels.npcAnchors.scientist;
+        if (anchor) this._mutateLight.position.set(anchor.x, 1.2, anchor.z);
+        this._mutateLight.intensity = 0.8;
+        this.camera.shake(0.45);
+        this._setObjective('ALARM — SOMETHING IS WRONG WITH THE SCIENTIST');
+      }
+      return;
+    }
+
+    r.timer += dt;
+
+    if (r.phase === 'alarm') {
+      // The scientist doubles over — the mutation is taking hold.
+      if (r.timer >= 1.2) {
+        r.phase = 'mutate';
+        r.timer = 0;
+        this._scientistState.mode = 'mutate';
+        this._mutateLight.intensity = 2.0;
+        this.camera.shake(0.6);
+      }
+      return;
+    }
+
+    if (r.phase === 'mutate') {
+      // Strobing red glow while the transformation convulses.
+      this._mutateLight.intensity = 2.2 + Math.sin(r.timer * 28) * 1.4;
+      if (r.timer >= 1.7) {
+        r.phase = 'flee';
+        r.timer = 0;
+        // The scientist is gone — the creature bursts out and flees.
+        this._scientist.group.visible = false;
+        this._mutateLight.intensity = 0;
         this.monster.spawn(reveal.spawn.x, reveal.spawn.y, reveal.spawn.z);
         this.monster.patrolSpeed = 3.6;   // panic-lurch, faster than patrol
         this.monster.setPatrolWaypoints(
           reveal.escape.map(p => ({ x: p.x, y: 0, z: p.z }))
         );
         this.monster.setActive(true);
-        this.camera.shake(0.45);          // alarm-beat impact
+        this.camera.shake(0.95);
+        this._setObjective('THE SCIENTIST IS GONE — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR');
       }
       return;
     }
 
-    if (r.active) {
-      r.timer += dt;
+    if (r.phase === 'flee') {
       // Deactivate once it has vanished into the ducts (or as a safety cap).
       const end = reveal.escape[reveal.escape.length - 1];
       const edx = this.monster.position.x - end.x;
       const edz = this.monster.position.z - end.z;
       if (r.timer > 1.2 && (edx * edx + edz * edz < 2.25 || r.timer > 7)) {
-        r.active = false;
+        r.phase = 'done';
         this.monster.setActive(false);
         this.monster.body.position.set(0, -50, 0); // park out of play
         this.monster.patrolSpeed = 2.0;            // restore default tuning
+        this._setObjective(this._baseObjective);   // back to the level goal
+      }
+    }
+  }
+
+  /**
+   * Show a tutorial step (text + sub-line) in the bottom-centre hint.
+   * @param {number} i step index
+   */
+  _showTutorialStep(i) {
+    const step = this._tutorialSteps[i];
+    if (!step || !this._tutorialEl) return;
+    this._tutorialTextEl.textContent = step.text;
+    this._tutorialSubEl.textContent = step.sub;
+    this._tutorialEl.classList.add('visible');
+  }
+
+  /**
+   * Drive the Level-1 controls tutorial. Steps advance in order once their
+   * goal is met (walked 6 m → fired the pulse tool → hit a glowing panel),
+   * with a minimum display time so hints never cascade in a single frame.
+   * @param {number} dt
+   */
+  _updateTutorial(dt) {
+    const tut = this._tut;
+    if (!tut || !this._tutorialEl) return;
+    tut.timer += dt;
+
+    // Step 0 goal: player has walked a few metres from the spawn point.
+    if (!tut.moved) {
+      const dx = this.player.position.x - tut.startX;
+      const dz = this.player.position.z - tut.startZ;
+      if (dx * dx + dz * dz > 36) tut.moved = true;
+    }
+
+    const complete =
+      (tut.step === 0 && tut.moved) ||
+      (tut.step === 1 && tut.fired) ||
+      (tut.step === 2 && tut.hit);
+
+    if (complete && tut.timer > 1.6) {
+      tut.step++;
+      tut.timer = 0;
+      if (tut.step < this._tutorialSteps.length) {
+        this._showTutorialStep(tut.step);
+      } else {
+        this._tutorialEl.classList.remove('visible'); // tutorial done
+        this._tut = null;
       }
     }
   }

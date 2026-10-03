@@ -246,19 +246,23 @@ export function createScientist() {
   buildLeg('l');
   buildLeg('r');
 
-  // ── Animation: typing / cowering ──────────────────────────────────────────
+  // ── Animation: typing / cowering / mutating ───────────────────────────────
   let t = 0;
-  let cower = 0; // smoothed 0..1 crouch blend
+  let cower = 0;  // smoothed 0..1 crouch blend
+  let mutate = 0; // smoothed 0..1 mutation-convulsion blend
+  let badgeRed = false; // badge emissive switched red during mutation?
 
   /**
    * @param {number} dt
-   * @param {{mode?:'type'|'cower'|'idle'}} s
+   * @param {{mode?:'type'|'cower'|'mutate'|'idle'}} s
    */
   const update = (dt, s) => {
     t += dt;
     const mode = (s && s.mode) || 'type';
     const target = mode === 'cower' ? 1 : 0;
+    const mutTarget = mode === 'mutate' ? 1 : 0;
     cower += (target - cower) * Math.min(1, dt * 4.5);
+    mutate += (mutTarget - mutate) * Math.min(1, dt * 6);
     const type = 1 - cower;
 
     // Typing pose: elbows bent, hands tapping on the console.
@@ -279,6 +283,28 @@ export function createScientist() {
     armL.rotation.z = 0.35 * cower;
     armR.rotation.z = -0.35 * cower;
     torso.position.y = 0.06 - 0.06 * cower;
+
+    // Mutation: violent convulsions — the spine arches, the head thrashes,
+    // the arms flail, and the ID badge strobes red as the change takes hold
+    // (Game.js adds the strobing red glow light around this beat).
+    if (mutate > 0.002) {
+      const conv = Math.sin(t * 27);
+      const arch = Math.sin(t * 11);
+      torso.rotation.x = 0.42 * cower + mutate * (-0.35 + 0.2 * arch) + conv * 0.08 * mutate;
+      torso.position.y += mutate * 0.06 * Math.abs(arch);
+      head.rotation.x = 0.24 * type + 0.55 * cower + mutate * (-0.55 + 0.25 * conv);
+      head.rotation.z = conv * 0.3 * mutate;
+      armL.rotation.x += mutate * (-1.9 + 0.5 * conv);
+      armR.rotation.x += mutate * (-1.9 - 0.5 * conv);
+      armL.rotation.z = 0.35 * cower + mutate * (0.8 + conv * 0.15);
+      armR.rotation.z = -0.35 * cower - mutate * (0.8 - conv * 0.15);
+      if (!badgeRed) { badge.emissive.setHex(0xff2a1a); badgeRed = true; }
+      badge.emissiveIntensity = 1.2 + Math.abs(conv) * 2.2 * mutate;
+    } else if (badgeRed) {
+      badge.emissive.setHex(0x38c8ff);
+      badge.emissiveIntensity = 0.7;
+      badgeRed = false;
+    }
   };
 
   return { group, update };
