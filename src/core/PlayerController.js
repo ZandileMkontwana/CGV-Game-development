@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import InputManager from './InputManager.js';
 import { createEngineer } from './CharacterFactory.js';
+import OperatorModel from './OperatorModel.js';
 
 /**
  * PlayerController — first/third-person movement and physics body.
@@ -103,6 +104,13 @@ export default class PlayerController {
     }
     this.isFirstPerson = true;
 
+    // --- Realistic third-person operator (skinned Soldier.glb) -------------
+    // Streams in async; until it's ready (or if it fails) the procedural
+    // engineer doubles as the third-person body.
+    this.operator = new OperatorModel();
+    this.operator.group.visible = false;
+    scene.add(this.operator.group);
+
     // Hidden by default — starts in first-person mode.
     this.playerModel.visible = false;
     scene.add(this.playerModel);
@@ -187,24 +195,29 @@ export default class PlayerController {
   syncModel() {
     // The physics body is a sphere centred on the torso — offset by its
     // radius so the character's feet (built at local y = 0) touch the floor.
-    this.playerModel.position.set(
-      this.body.position.x,
-      this.body.position.y - this.playerRadius,
-      this.body.position.z
-    );
-    // Rotate the model to face the camera yaw direction.
-    if (this.cameraPivot) {
-      this.playerModel.rotation.y = this.cameraPivot.rotation.y;
-    }
+    const px = this.body.position.x;
+    const py = this.body.position.y - this.playerRadius;
+    const pz = this.body.position.z;
+    const yaw = this.cameraPivot ? this.cameraPivot.rotation.y : 0;
 
     // Smooth crouch: squash the model toward the floor. The camera lowers
     // itself via the crouching state — this keeps the silhouette matching.
-    const target = this.isCrouching ? 0.68 : 1;
+    const target = this.isCrouching ? 1 : 0;
     this._crouchBlend += (target - this._crouchBlend) * Math.min(1, this._lastDt * 10);
-    this.playerModel.scale.y = this._crouchBlend;
 
-    // Drive the limb animation from the movement state captured in update().
+    // Procedural engineer (first-person legs + TP fallback).
+    this.playerModel.position.set(px, py, pz);
+    this.playerModel.rotation.y = yaw;
+    this.playerModel.scale.y = 1 - this._crouchBlend * 0.32;
     this.character.update(this._lastDt, this._charState);
+
+    // Skinned operator (third person) — same transform, subtler crouch.
+    if (this.operator.ready) {
+      this.operator.group.position.set(px, py, pz);
+      this.operator.group.rotation.y = yaw;
+      this.operator.group.scale.y = 1 - this._crouchBlend * 0.18;
+      this.operator.update(this._lastDt, this._charState);
+    }
   }
 
   /**
@@ -219,16 +232,23 @@ export default class PlayerController {
 
   /**
    * Switch between first- and third-person body rendering.
-   * FP: hide everything above the hips (torso/head/arms/backpack) so the
-   * camera never sits inside geometry — legs remain visible looking down.
-   * TP: the full operator silhouette is rendered.
+   * FP: the soldier is hidden; the engineer's lower half stays visible so
+   * you see your legs looking down, while everything above the hips hides
+   * (the camera sits where the torso would be).
+   * TP: the skinned soldier renders when loaded — otherwise the full
+   * procedural engineer falls in.
    * @param {boolean} firstPerson
    */
   setViewMode(firstPerson) {
     this.isFirstPerson = firstPerson;
-    this.playerModel.visible = true;
-    for (const m of this._upperParts) m.visible = !firstPerson;
-    for (const m of this._lowerParts) m.visible = true;
+    const useOperator = !firstPerson && this.operator.ready;
+    this.operator.group.visible = useOperator;
+    // TP+soldier: skinned operator only. FP / fallback: procedural engineer,
+    // upper body hidden in FP (camera sits inside the torso) but legs stay
+    // visible so looking down shows the character, like CoD.
+    this.playerModel.visible = !useOperator;
+    for (const m of this._upperParts) m.visible = !firstPerson && !useOperator;
+    for (const m of this._lowerParts) m.visible = !useOperator;
   }
 
   /** Show or hide the character model entirely (cutscenes, spawning). */

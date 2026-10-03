@@ -12,6 +12,8 @@ import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
 import { createScientist, faceToRotY } from './CharacterFactory.js';
 import AudioManager from '../audio/AudioManager.js';
+import PostFX from './PostFX.js';
+import WeaponViewmodel from './WeaponViewmodel.js';
 
 /**
  * Game — top-level orchestrator.
@@ -51,6 +53,10 @@ export default class Game {
 
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
+
+    // CoD-style first-person rifle + cinematic post-processing chain.
+    this.weapon = new WeaponViewmodel(this.camera.camera, this.input);
+    this.postfx = new PostFX(this.renderer, this.scene, this.camera.camera);
 
     this.pulseTool._bolt.material = this.shaders.createPulseGlowMaterial();
     this._pulseTrail = this.shaders.createPulseTrail();
@@ -215,6 +221,8 @@ export default class Game {
     this.pulseTool.on('fire', () => {
       if (this._tut) this._tut.fired = true;
       this.audio.play('pulseShot');
+      this.weapon.fire();
+      this.camera.recoil();
     });
 
     // Airy whoosh when a pulse shot hits nothing.
@@ -351,6 +359,15 @@ export default class Game {
         this._scientist.update(dt, this._scientistState);
       }
 
+      // First-person rifle: sway/bob/ADS driven by the same stance state,
+      // hidden in third person so it doesn't float beside the body.
+      this.weapon.setVisible(this.camera.isFirstPerson);
+      this.weapon.update(dt, {
+        moving: this.player._charState.moving,
+        sprinting: this.player._charState.sprinting,
+        aiming,
+      });
+
       // Procedural soundscape: footsteps, heartbeat, growls, distant creaks,
       // the creature's own heavy footfalls, and muffled breath while hiding.
       const mon = this.monster;
@@ -359,6 +376,10 @@ export default class Game {
       const mdz = mon.position.z - this.player.position.z;
       const mDist = mon.isActive ? Math.sqrt(mdx * mdx + mdz * mdz) : 999;
       const chasingNow = mon.state === 'chase' || mon.state === 'attack';
+
+      // Danger drives the PostFX red vignette pulse — the screen closes in
+      // as the creature closes distance, heard or not.
+      this.postfx.setDanger(mon.isActive ? Math.max(0, 1 - mDist / 13) : 0);
       const hidingNow = mon.isActive && !mon.canSeePlayer && mon.threatLevel > 0.2;
       this.audio.update(
         dt,
@@ -437,12 +458,15 @@ export default class Game {
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.position);
+      // No rifle floating in the menu shot; no danger pulse either.
+      this.weapon.setVisible(false);
+      this.postfx.setDanger(0);
       // Clear stealth HUD when monster isn't active.
       this._clearStealthHUD();
     }
 
     this.input.endFrame();
-    this.renderer.render(this.scene, this.camera.camera);
+    this.postfx.render(dt);
   };
 
   // --- Level loading --------------------------------------------------------

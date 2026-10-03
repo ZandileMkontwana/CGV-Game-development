@@ -33,6 +33,16 @@ export default class CameraController {
     this._ray = new THREE.Raycaster();
     this._hits = [];
     this._corners = [[0, 0], [-0.12, -0.09], [0.12, -0.09], [-0.12, 0.09], [0.12, 0.09]];
+
+    // Tactical flashlight — a spotlight parented to the camera so it always
+    // illuminates exactly where you look (toggle with F). No shadows: a
+    // moving shadow-casting spotlight costs a second shadow map per frame.
+    this.flashlightOn = true;
+    this.flashlight = new THREE.SpotLight(0xfff1d6, 0, 26, 0.5, 0.45, 1.7);
+    this.flashlight.position.set(0.18, -0.12, 0.05);
+    this.flashlight.target.position.set(0, 0, -8);
+    this.camera.add(this.flashlight);
+    this.camera.add(this.flashlight.target);
     this._onResize = () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
@@ -54,6 +64,8 @@ export default class CameraController {
 
   update(dt, position, state = {}) {
     if (this.input.justPressed('KeyV')) this.toggleView();
+    if (this.input.justPressed('KeyF')) this.flashlightOn = !this.flashlightOn;
+    this.flashlight.intensity = this.flashlightOn ? (this.isFirstPerson ? 34 : 24) : 0;
     const aim = !!state.aiming;
     const lookScale = aim ? 0.5 : 1;
     const keys = this.input.keys;
