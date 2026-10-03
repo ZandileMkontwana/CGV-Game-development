@@ -7,6 +7,7 @@
  *                                   'levelTransition' → 'playing'
  *                                       ↓
  *                                   'gameover' → 'menu'
+ *                                   'victory'  → 'menu'
  *
  * Other systems subscribe via `onChange(callback)` to react to state changes.
  */
@@ -18,6 +19,7 @@ const STATES = new Set([
   'paused',
   'levelTransition',
   'gameover',
+  'victory',
 ]);
 
 export default class GameState {
@@ -41,11 +43,20 @@ export default class GameState {
     this._levelIndicator = document.getElementById('level-indicator');
     this._hud = document.getElementById('hud');
 
+    // Game over / victory overlays.
+    this._gameOverOverlay = document.getElementById('gameover-overlay');
+    this._gameOverTitle = document.getElementById('gameover-title');
+    this._gameOverSubtitle = document.getElementById('gameover-subtitle');
+    this._btnRetry = document.getElementById('btn-retry');
+    this._btnGameOverMenu = document.getElementById('btn-gameover-menu');
+
     // Button listeners.
     this._btnStart?.addEventListener('click', () => this.startGame());
     this._btnResume?.addEventListener('click', () => this.resume());
     this._btnRestart?.addEventListener('click', () => this.restart());
     this._btnMainMenu?.addEventListener('click', () => this.goToMenu());
+    this._btnRetry?.addEventListener('click', () => this.restart());
+    this._btnGameOverMenu?.addEventListener('click', () => this.goToMenu());
 
     // ESC to pause / resume.
     window.addEventListener('keydown', (e) => {
@@ -108,7 +119,7 @@ export default class GameState {
   /** Advance to the next level. Returns false if the game is complete. */
   nextLevel() {
     if (this._currentLevel >= this._totalLevels) {
-      this._setState('gameover');
+      this.victory();
       return false;
     }
     this._currentLevel++;
@@ -123,7 +134,15 @@ export default class GameState {
 
   gameOver() {
     document.exitPointerLock?.();
+    this._showEndScreen('GAME OVER', 'The facility has claimed you.');
     this._setState('gameover');
+  }
+
+  /** Called when all levels are completed. */
+  victory() {
+    document.exitPointerLock?.();
+    this._showEndScreen('FACILITY CLEARED', 'You survived the containment breach.');
+    this._setState('victory');
   }
 
   // --- Internals ------------------------------------------------------------
@@ -144,8 +163,7 @@ export default class GameState {
 
     // Main menu.
     if (this._menuOverlay) {
-      const showMenu = this._state === 'menu' || this._state === 'gameover';
-      this._menuOverlay.style.display = showMenu ? 'flex' : 'none';
+      this._menuOverlay.style.display = this._state === 'menu' ? 'flex' : 'none';
     }
 
     // Pause overlay.
@@ -153,11 +171,35 @@ export default class GameState {
       this._pauseOverlay.style.display = this._state === 'paused' ? 'flex' : 'none';
     }
 
+    // Game over / victory overlay.
+    if (this._gameOverOverlay) {
+      const showEnd = this._state === 'gameover' || this._state === 'victory';
+      this._gameOverOverlay.style.display = showEnd ? 'flex' : 'none';
+    }
+
     // HUD visible only while playing.
     if (this._hud) {
       this._hud.style.display =
         this._state === 'playing' || this._state === 'paused' ? 'block' : 'none';
     }
+  }
+
+  /**
+   * Configure and show the end-of-game overlay.
+   * @param {string} title   main heading text
+   * @param {string} subtitle  flavour text below heading
+   */
+  _showEndScreen(title, subtitle) {
+    if (this._gameOverTitle) {
+      this._gameOverTitle.textContent = title;
+      // Green for victory, red for game over.
+      const isVictory = this._state === 'victory' || title === 'FACILITY CLEARED';
+      this._gameOverTitle.style.color = isVictory ? '#4f4' : '#f44';
+      this._gameOverTitle.style.textShadow = isVictory
+        ? '0 0 30px rgba(50, 255, 50, 0.5)'
+        : '0 0 30px rgba(255, 50, 50, 0.5)';
+    }
+    if (this._gameOverSubtitle) this._gameOverSubtitle.textContent = subtitle;
   }
 
   _updateLevelIndicator() {

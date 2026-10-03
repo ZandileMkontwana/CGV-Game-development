@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>The Core — Reactor Station</title>
+    <title>Containment Breach — Research Lab</title>
     <style>
       /* Reset — fills the viewport with no scrollbars */
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -64,7 +64,19 @@
         pointer-events: none;
       }
 
-      /* Menu overlay — covers the screen */
+      /* Objective text — tells the player what to do */
+      #objective {
+        position: absolute;
+        top: 34px; left: 10px;
+        font-size: 11px;
+        letter-spacing: 2px;
+        color: #8fdcaa;
+        text-shadow: 0 0 6px rgba(0, 255, 100, 0.3);
+        pointer-events: none;
+        max-width: 45%;
+      }
+
+      /* Menu overlay — industrial backdrop with story briefing */
       #menu-overlay {
         position: absolute;
         top: 0; left: 0;
@@ -73,37 +85,113 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        background: rgba(0, 0, 0, 0.85);
+        overflow: hidden;
+        background:
+          linear-gradient(180deg, rgba(4, 6, 10, 0.92) 0%, rgba(4, 6, 10, 0.45) 28%, rgba(4, 6, 10, 0.25) 52%, rgba(3, 5, 9, 0.85) 100%),
+          url('./assets/textures/menu-bg.png') center / cover no-repeat,
+          radial-gradient(ellipse 90% 65% at 50% 115%, rgba(0, 130, 255, 0.16), transparent 65%),
+          radial-gradient(ellipse 70% 55% at 50% -15%, rgba(255, 70, 40, 0.10), transparent 60%),
+          linear-gradient(180deg, #04060a 0%, #080d15 55%, #030509 100%);
         z-index: 20;
       }
+      /* Faint drifting lab-service grid. */
+      #menu-overlay::before {
+        content: '';
+        position: absolute;
+        inset: -12%;
+        background-image:
+          repeating-linear-gradient(0deg, rgba(130, 170, 220, 0.05) 0 1px, transparent 1px 46px),
+          repeating-linear-gradient(90deg, rgba(130, 170, 220, 0.05) 0 1px, transparent 1px 46px);
+        -webkit-mask-image: radial-gradient(ellipse 75% 70% at 50% 45%, #000 25%, transparent 100%);
+        mask-image: radial-gradient(ellipse 75% 70% at 50% 45%, #000 25%, transparent 100%);
+        pointer-events: none;
+        animation: menu-grid-drift 30s linear infinite;
+      }
+      @keyframes menu-grid-drift {
+        from { transform: translateY(0); }
+        to   { transform: translateY(-46px); }
+      }
+      /* Slow breathing glow along the lower horizon. */
+      #menu-overlay::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse 60% 35% at 50% 102%, rgba(0, 190, 255, 0.12), transparent 70%),
+          radial-gradient(ellipse 45% 30% at 50% 100%, rgba(80, 220, 255, 0.08), transparent 60%);
+        pointer-events: none;
+        animation: menu-glow 7s ease-in-out infinite alternate;
+      }
+      @keyframes menu-glow {
+        from { opacity: 0.45; }
+        to   { opacity: 1; }
+      }
+      /* Keep the real content above the backdrop layers. */
+      #menu-overlay > * { position: relative; z-index: 1; }
       #menu-overlay h1 {
-        font-size: 48px;
-        color: #e0e0e0;
+        font-size: clamp(30px, 5.5vw, 48px);
+        color: #e4f2ff;
         letter-spacing: 8px;
         text-transform: uppercase;
         margin-bottom: 8px;
+        text-align: center;
+        text-shadow: 0 0 24px rgba(0, 190, 255, 0.4), 0 0 70px rgba(0, 120, 255, 0.25);
       }
       #menu-overlay .subtitle {
-        font-size: 14px;
-        color: #888;
+        font-size: 13px;
+        color: #7d93a8;
         letter-spacing: 4px;
-        margin-bottom: 40px;
+        margin-bottom: 26px;
+      }
+      #menu-overlay .story {
+        max-width: 560px;
+        margin: 0 24px 20px;
+        padding: 18px 26px;
+        text-align: center;
+        font-size: 12.5px;
+        line-height: 1.9;
+        letter-spacing: 1px;
+        color: #9fb2c4;
+        border: 1px solid rgba(80, 120, 160, 0.28);
+        background: rgba(6, 12, 20, 0.74);
+        box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.55);
+      }
+      #menu-overlay .story p + p { margin-top: 10px; }
+      #menu-overlay .acts {
+        display: flex;
+        gap: 14px;
+        margin-bottom: 30px;
+        font-size: 10px;
+        letter-spacing: 3px;
+        color: #5d7a90;
+      }
+      #menu-overlay .acts span {
+        padding: 6px 12px;
+        border: 1px solid rgba(80, 120, 160, 0.22);
+        background: rgba(8, 14, 24, 0.5);
       }
       #menu-overlay button {
-        background: none;
-        border: 1px solid #555;
-        color: #ccc;
+        background: rgba(8, 14, 24, 0.6);
+        border: 1px solid #3c5568;
+        color: #cfe3f2;
         font-family: 'Courier New', monospace;
         font-size: 16px;
         padding: 12px 40px;
         margin: 6px;
         cursor: pointer;
         letter-spacing: 2px;
-        transition: border-color 0.2s, color 0.2s;
+        transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
       }
       #menu-overlay button:hover {
-        border-color: #fff;
+        border-color: #7fd4ff;
         color: #fff;
+        box-shadow: 0 0 18px rgba(0, 170, 255, 0.35);
+      }
+      #menu-overlay .menu-controls {
+        margin-top: 26px;
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: #526475;
       }
 
       /* Pause overlay */
@@ -225,6 +313,191 @@
         background: #f44;
         transition: width 0.2s ease;
       }
+
+      /* Tutorial hint — bottom centre, fades in/out (Level 1) */
+      #tutorial {
+        position: absolute;
+        bottom: 92px; left: 50%;
+        transform: translateX(-50%);
+        max-width: 70%;
+        text-align: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.4s ease;
+      }
+      #tutorial.visible { opacity: 1; }
+      #tutorial-text {
+        font-size: 15px;
+        letter-spacing: 3px;
+        color: #bfe8ff;
+        text-shadow: 0 0 12px rgba(0, 170, 255, 0.45);
+      }
+      /* Audio mute indicator (procedural soundscape). */
+      #mute-indicator {
+        position: absolute;
+        right: 24px;
+        bottom: 96px;
+        font-size: 10px;
+        letter-spacing: 3px;
+        color: #ffb066;
+        text-shadow: 0 0 10px rgba(255, 140, 40, 0.6);
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+      }
+      #mute-indicator.visible { opacity: 1; }
+
+      #tutorial-sub {
+        margin-top: 6px;
+        font-size: 10.5px;
+        letter-spacing: 2px;
+        color: #6f8ba1;
+      }
+
+      /* Stealth vignette — red border that pulses when monster is near */
+      #stealth-vignette {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        pointer-events: none;
+        opacity: 0;
+        background: radial-gradient(ellipse at center,
+          transparent 50%,
+          rgba(200, 0, 0, 0.3) 80%,
+          rgba(200, 0, 0, 0.6) 100%
+        );
+        transition: opacity 0.3s ease;
+      }
+      #stealth-vignette.pulse {
+        animation: vignette-pulse 0.8s ease-in-out infinite alternate;
+      }
+      @keyframes vignette-pulse {
+        from { opacity: var(--vignette-base, 0); }
+        to   { opacity: calc(var(--vignette-base, 0) + 0.15); }
+      }
+
+      /* Spotted warning flash */
+      #stealth-warning {
+        position: absolute;
+        top: 40%; left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 22px;
+        font-weight: bold;
+        color: #f44;
+        letter-spacing: 6px;
+        text-shadow: 0 0 20px #f00, 0 0 40px #f00;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+      }
+      #stealth-warning.active {
+        animation: warning-flash 0.4s ease-in-out infinite alternate;
+      }
+      @keyframes warning-flash {
+        from { opacity: 0.7; }
+        to   { opacity: 1; }
+      }
+
+      /* Hidden indicator */
+      #stealth-hidden {
+        position: absolute;
+        bottom: 70px; left: 50%;
+        transform: translateX(-50%);
+        font-size: 12px;
+        letter-spacing: 4px;
+        color: #4af;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+
+      /* Collapse timer — large countdown at top-centre */
+      #collapse-timer {
+        position: absolute;
+        top: 50px; left: 50%;
+        transform: translateX(-50%);
+        font-size: 36px;
+        font-weight: bold;
+        color: #f44;
+        letter-spacing: 4px;
+        text-shadow: 0 0 15px #f00, 0 0 30px #f00;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+      #collapse-timer.active {
+        opacity: 1;
+        animation: timer-pulse 1s ease-in-out infinite;
+      }
+      @keyframes timer-pulse {
+        0%, 100% { transform: translateX(-50%) scale(1); }
+        50%      { transform: translateX(-50%) scale(1.08); }
+      }
+      #collapse-timer .timer-label {
+        display: block;
+        font-size: 10px;
+        letter-spacing: 6px;
+        color: #f88;
+        text-align: center;
+        margin-bottom: 2px;
+      }
+
+      /* Boss phase indicator */
+      #boss-phase {
+        position: absolute;
+        top: 100px; left: 50%;
+        transform: translateX(-50%);
+        font-size: 14px;
+        letter-spacing: 4px;
+        color: #ff8844;
+        text-shadow: 0 0 10px #f80;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.5s;
+      }
+
+      /* Game Over / Victory overlay */
+      #gameover-overlay {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.9);
+        z-index: 25;
+      }
+      #gameover-title {
+        font-size: 52px;
+        font-weight: bold;
+        letter-spacing: 8px;
+        color: #f44;
+        text-shadow: 0 0 30px rgba(255, 50, 50, 0.5);
+        margin-bottom: 12px;
+      }
+      #gameover-subtitle {
+        font-size: 14px;
+        color: #888;
+        letter-spacing: 3px;
+        margin-bottom: 40px;
+      }
+      #gameover-overlay button {
+        background: none;
+        border: 1px solid #555;
+        color: #ccc;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        padding: 10px 32px;
+        margin: 6px;
+        cursor: pointer;
+        letter-spacing: 2px;
+        transition: border-color 0.2s, color 0.2s;
+      }
+      #gameover-overlay button:hover {
+        border-color: #fff;
+        color: #fff;
+      }
     </style>
   </head>
   <body>
@@ -236,7 +509,9 @@
       <div id="crosshair"></div>
       <div id="fps">-- FPS</div>
       <div id="debug-keys">Keys: none</div>
+      <div id="mute-indicator">[ MUTED ]</div>
       <div id="level-indicator">LEVEL 1</div>
+      <div id="objective"></div>
 
       <!-- Pulse Tool energy bar -->
       <div id="energy-bar-wrap">
@@ -253,14 +528,51 @@
           <div id="health-bar-fill"></div>
         </div>
       </div>
+
+      <!-- Tutorial hint (Level 1) -->
+      <div id="tutorial">
+        <div id="tutorial-text"></div>
+        <div id="tutorial-sub"></div>
+      </div>
+
+      <!-- Stealth HUD -->
+      <div id="stealth-vignette"></div>
+      <div id="stealth-warning">! DETECTED !</div>
+      <div id="stealth-hidden">[ HIDDEN ]</div>
+
+      <!-- Collapse timer (Level 3) -->
+      <div id="collapse-timer">
+        <span class="timer-label">FAILSAFE DETONATION</span>
+        <span id="collapse-timer-value">0:00</span>
+      </div>
+
+      <!-- Boss phase indicator (Level 3) -->
+      <div id="boss-phase"></div>
     </div>
 
     <!-- Main menu -->
     <div id="menu-overlay">
-      <h1>The Core</h1>
-      <div class="subtitle">Reactor Station</div>
+      <h1>Containment Breach</h1>
+      <div class="subtitle">Research Lab Facility</div>
+      <div class="story">
+        <p>
+          A scientist&rsquo;s experiment to grow a creature in the containment tube
+          went wrong. The creature broke free and bit the scientist &mdash; mutating
+          them into a monster. The failsafe protocol has already sealed the exits.
+        </p>
+        <p>
+          You are the engineer on shift. Witness the transformation, survive the
+          hunt, and escape the collapse.
+        </p>
+      </div>
+      <div class="acts">
+        <span>I &middot; WITNESS</span>
+        <span>II &middot; THE HUNT</span>
+        <span>III &middot; THE COLLAPSE</span>
+      </div>
       <button id="btn-start">Start Game</button>
       <button id="btn-credits">Credits</button>
+      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB PULSE TOOL &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA &middot; M MUTE</div>
     </div>
 
     <!-- Pause menu -->
@@ -269,6 +581,14 @@
       <button id="btn-resume">Resume</button>
       <button id="btn-restart">Restart</button>
       <button id="btn-main-menu">Main Menu</button>
+    </div>
+
+    <!-- Game Over / Victory overlay -->
+    <div id="gameover-overlay">
+      <div id="gameover-title">GAME OVER</div>
+      <div id="gameover-subtitle"></div>
+      <button id="btn-retry">Retry</button>
+      <button id="btn-gameover-menu">Main Menu</button>
     </div>
 
     <!-- Loading screen -->

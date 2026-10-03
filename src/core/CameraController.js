@@ -24,7 +24,8 @@ export default class CameraController {
   constructor(scene, input) {
     this.input = input;
     this.sensitivity = 0.002;
-    this.keyTurnSpeed = 2.5;  // radians/second for arrow-key turning
+    this.keyTurnSpeed = 1.2;  // radians/second for arrow-key turning
+    this.precisionTurnSpeed = 0.3; // rad/s while Shift held — for aiming
     this.pitchLimit = Math.PI / 2 - 0.05; // prevent flipping
 
     // --- Camera -------------------------------------------------------------
@@ -105,15 +106,19 @@ export default class CameraController {
     }
 
     // --- Arrow key turning (works without pointer lock) ---------------------
+    // Hold Shift for precision aiming — quarter speed makes it possible to
+    // line up shots on distant weak points without the mouse.
     const keys = this.input.keys;
-    if (keys['ArrowLeft'])  this.yawObject.rotation.y += this.keyTurnSpeed * dt;
-    if (keys['ArrowRight']) this.yawObject.rotation.y -= this.keyTurnSpeed * dt;
+    const precision = keys['ShiftLeft'] || keys['ShiftRight'];
+    const turnSpeed = precision ? this.precisionTurnSpeed : this.keyTurnSpeed;
+    if (keys['ArrowLeft'])  this.yawObject.rotation.y += turnSpeed * dt;
+    if (keys['ArrowRight']) this.yawObject.rotation.y -= turnSpeed * dt;
     if (keys['ArrowUp']) {
-      this.pitchObject.rotation.x += this.keyTurnSpeed * dt;
+      this.pitchObject.rotation.x += turnSpeed * dt;
       this.pitchObject.rotation.x = Math.min(this.pitchObject.rotation.x, this.pitchLimit);
     }
     if (keys['ArrowDown']) {
-      this.pitchObject.rotation.x -= this.keyTurnSpeed * dt;
+      this.pitchObject.rotation.x -= turnSpeed * dt;
       this.pitchObject.rotation.x = Math.max(this.pitchObject.rotation.x, -this.pitchLimit);
     }
 
@@ -156,6 +161,13 @@ export default class CameraController {
       // Decay shake even when in TP so it's clean on switch back.
       this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt);
     }
+
+    // --- Refresh world matrices NOW -----------------------------------------
+    // Three.js normally computes matrixWorld during render (end of frame).
+    // The PulseTool raycast runs earlier in the game loop and needs the
+    // camera's CURRENT world position/direction — so update the rig
+    // (yaw → pitch → camera) explicitly here.
+    this.yawObject.updateMatrixWorld(true);
   }
 
   /** Trigger screen shake (e.g. explosion, boss hit). */

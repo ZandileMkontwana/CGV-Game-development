@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { createMonster } from './CharacterFactory.js';
 
 /**
  * MonsterAI — mutated scientist enemy with PATROL → CHASE → ATTACK states.
@@ -56,9 +57,26 @@ export default class MonsterAI {
     this._escapeTimer = 0;
     this._health = 3;          // number of remaining weak points
     this._phaseSpeedBonus = 0; // added to chase speed as weak points are destroyed
+    this._phaseDamageBonus = 0;  // added to attack damage per destroyed weak point
+    this._phaseAttackBonus = 0;  // subtracted from attack cooldown per destroyed WP
+    this._animTime = 0;          // drives the weak point glow pulse
+
+    // --- Death animation state ---------------------------------------------
+    this._dying = false;         // true while the topple animation plays
+    this._deathTimer = 0;
+    this._deathDuration = 1.6;   // seconds the monster takes to fall
+    this._hitFlashTimer = 0;     // body flash on weak point hit
+
+    // --- Stealth: line-of-sight raycast ------------------------------------
+    this._occluders = [];       // meshes that block line of sight (walls, props)
+    this._losRaycaster = new THREE.Raycaster();
+    this._losOrigin = new THREE.Vector3();
+    this._losDir = new THREE.Vector3();
+    this._canSeePlayer = false; // updated each frame via LOS raycast
+    this._distToPlayer = Infinity; // horizontal distance to player
 
     // --- Event listeners ----------------------------------------------------
-    this._listeners = { damage: [], death: [], attack: [], stateChange: [] };
+    this._listeners = { damage: [], death: [], attack: [], stateChange: [], spotted: [], hidden: [], phaseChange: [] };
 
     // --- Physics body -------------------------------------------------------
     this.body = new CANNON.Body({
@@ -77,65 +95,15 @@ export default class MonsterAI {
     this._toPlayer = new THREE.Vector3();
     this._playerPos = new THREE.Vector3();
 
-    // --- Placeholder model --------------------------------------------------
-    this.model = new THREE.Group();
-
-    // Body — tall capsule.
-    const bodyGeo = new THREE.CapsuleGeometry(0.45, 1.2, 4, 8);
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x661122, roughness: 0.6, metalness: 0.3,
-    });
-    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-    bodyMesh.position.y = 1.1;
-    bodyMesh.castShadow = true;
-    this.model.add(bodyMesh);
-
-    // Head — sphere, slightly elongated.
-    const headGeo = new THREE.SphereGeometry(0.35, 8, 8);
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0x553344, roughness: 0.5, metalness: 0.4,
-    });
-    const headMesh = new THREE.Mesh(headGeo, headMat);
-    headMesh.position.y = 2.1;
-    headMesh.castShadow = true;
-    this.model.add(headMesh);
-
-    // Eyes — two small emissive red spheres.
-    const eyeGeo = new THREE.SphereGeometry(0.06, 6, 6);
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff2200 });
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeL.position.set(-0.12, 2.15, 0.28);
-    this.model.add(eyeL);
-    const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeR.position.set(0.12, 2.15, 0.28);
-    this.model.add(eyeR);
-
-    // --- Weak points (3 glowing nodes — shootable) -------------------------
-    this.weakPoints = [];
-    const wpGeo = new THREE.SphereGeometry(0.15, 8, 8);
-    const wpOffsets = [
-      { x: 0,    y: 1.6, z: 0.5 },   // chest (front)
-      { x: 0.4,  y: 0.8, z: 0 },     // right side
-      { x: -0.4, y: 0.8, z: 0 },     // left side
-    ];
-    for (let i = 0; i < 3; i++) {
-      const wpMat = new THREE.MeshStandardMaterial({
-        color: 0xff3333,
-        emissive: 0xff3333,
-        emissiveIntensity: 0.8,
-        roughness: 0.2,
-        metalness: 0.6,
-      });
-      const wpMesh = new THREE.Mesh(wpGeo, wpMat);
-      const off = wpOffsets[i];
-      wpMesh.position.set(off.x, off.y, off.z);
-      wpMesh.userData.pulseTarget = true;
-      wpMesh.userData.pulseType = 'weakpoint';
-      wpMesh.userData.weakPointIndex = i;
-      wpMesh.userData.destroyed = false;
-      this.model.add(wpMesh);
-      this.weakPoints.push(wpMesh);
-    }
+    // --- Creature model (code-built via CharacterFactory) -------------------
+    // The factory supplies the tagged hit meshes and the three mounted weak
+    // points with the exact same userData contract as the old placeholder.
+    const character = createMonster();
+    this._char = character;
+    this.model = character.group;
+    this.hitMeshes = character.hitMeshes;
+    this.weakPoints = character.weakPoints;
+    this._bodyMat = character.bodyMat; // shared chitin material — hit flash
 
     this.model.visible = false;
     scene.add(this.model);
@@ -162,6 +130,13 @@ export default class MonsterAI {
     this._escapeTimer = 0;
     this._health = 3;
     this._phaseSpeedBonus = 0;
+    this._phaseDamageBonus = 0;
+    this._phaseAttackBonus = 0;
+    this._dying = false;
+    this._deathTimer = 0;
+    this._hitFlashTimer = 0;
+    this.model.rotation.x = 0; // reset any topple from a previous death
+    this._bodyMat.emissive.setHex(0x000000);
     // Reset weak points.
     for (const wp of this.weakPoints) {
       wp.userData.destroyed = false;
@@ -190,18 +165,55 @@ export default class MonsterAI {
     wpMesh.userData.destroyed = true;
     wpMesh.visible = false;
     this._health--;
-    this._phaseSpeedBonus += 1.5; // faster with each weak point destroyed
+
+    // Phase bonuses: monster gets faster, hits harder, attacks more often.
+    this._phaseSpeedBonus  += 1.5;  // +1.5 m/s chase speed
+    this._phaseDamageBonus += 5;    // +5 attack damage
+    this._phaseAttackBonus += 0.3;  // -0.3s attack cooldown
+
+    // Hit flash — the body glows red for a moment so the hit reads clearly.
+    this._hitFlashTimer = 0.3;
+    this._bodyMat.emissive.setHex(0xff5544);
+    this._bodyMat.emissiveIntensity = 1.5;
+
+    const phase = 3 - this._health; // 1, 2, or 3
+    this._emit('phaseChange', phase);
     this._emit('damage', this._health);
+
     if (this._health <= 0) {
       this.state = State.DEAD;
       this.body.velocity.setZero();
-      this.model.visible = false;
-      this._emit('death');
+      // Play the topple animation, then hide + emit 'death' from update().
+      this._dying = true;
+      this._deathTimer = this._deathDuration;
     }
+  }
+
+  /** Set meshes that block line-of-sight (walls, props, hiding spots). */
+  setOccluders(meshes) {
+    this._occluders = meshes;
   }
 
   /** Current health (remaining weak points). */
   get health() { return this._health; }
+
+  /** Current boss phase (0 = full health, 1–3 = weak points destroyed). */
+  get phase() { return 3 - this._health; }
+
+  /** Whether the monster is dead. */
+  get isDead() { return this.state === State.DEAD; }
+
+  /** Horizontal distance to the player (updated each frame). */
+  get distToPlayer() { return this._distToPlayer; }
+
+  /** Whether the monster has unobstructed line of sight to the player. */
+  get canSeePlayer() { return this._canSeePlayer; }
+
+  /** Normalised threat level 0..1 (1 = monster right on top of player). */
+  get threatLevel() {
+    if (this._distToPlayer >= this.detectionRange) return 0;
+    return 1 - this._distToPlayer / this.detectionRange;
+  }
 
   /** World position of the monster's feet. */
   get position() { return this.body.position; }
@@ -212,7 +224,53 @@ export default class MonsterAI {
    * @param {import('cannon-es').Vec3} playerFeetPos player body.position
    */
   update(dt, playerFeetPos) {
-    if (!this.isActive || this.state === State.DEAD) return;
+    if (!this.isActive) return;
+
+    // --- Hit flash decay (runs while alive or dying) -----------------------
+    if (this._hitFlashTimer > 0) {
+      this._hitFlashTimer -= dt;
+      const k = Math.max(0, this._hitFlashTimer) / 0.3;
+      this._bodyMat.emissiveIntensity = k * 1.5;
+      if (this._hitFlashTimer <= 0) {
+        this._bodyMat.emissive.setHex(0x000000);
+      }
+    }
+
+    // --- Death topple animation ---------------------------------------------
+    // The monster falls over and sinks, THEN hides + emits 'death'.  Without
+    // this the monster just pops out of existence — reads as "nothing happened".
+    if (this._dying) {
+      this._deathTimer -= dt;
+      const t = 1 - Math.max(0, this._deathTimer) / this._deathDuration;
+      this.model.rotation.x = t * Math.PI * 0.45; // topple backward
+      this.model.position.set(
+        this.body.position.x,
+        this.body.position.y - t * 0.3,   // sink as it falls
+        this.body.position.z
+      );
+
+      // Stealth HUD should not react to a dying monster.
+      this._canSeePlayer = false;
+      this._distToPlayer = Infinity;
+
+      if (this._deathTimer <= 0) {
+        this._dying = false;
+        this.model.visible = false;
+        this.model.rotation.x = 0; // reset for the next spawn
+        // Teleport the physics body out of play — otherwise an invisible
+        // sphere blocks the player's path during the escape sequence.
+        this.body.position.set(0, -50, 0);
+        this._emit('death');
+      }
+
+      this._char.update(dt, 'dead', this.body.velocity);
+      this.model.updateMatrixWorld(true);
+      return;
+    }
+
+    if (this.state === State.DEAD) return;
+
+    this._animTime += dt;
 
     // Read player position once into reusable vector.
     this._playerPos.set(playerFeetPos.x, playerFeetPos.y, playerFeetPos.z);
@@ -221,11 +279,45 @@ export default class MonsterAI {
     const dx = this._playerPos.x - this.body.position.x;
     const dz = this._playerPos.z - this.body.position.z;
     const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+    this._distToPlayer = distToPlayer;
+
+    // --- Line-of-sight check (no per-frame alloc) ---------------------------
+    // Cast a ray from monster eye height to player eye height.
+    // If an occluder mesh is in between, the monster can't see the player.
+    this._losOrigin.set(
+      this.body.position.x,
+      this.body.position.y + 1.8, // monster eye height
+      this.body.position.z
+    );
+    this._losDir.set(
+      this._playerPos.x - this._losOrigin.x,
+      (this._playerPos.y + 1.5) - this._losOrigin.y, // player eye height
+      this._playerPos.z - this._losOrigin.z
+    );
+    const losDist = this._losDir.length();
+    this._losDir.normalize();
+    this._losRaycaster.set(this._losOrigin, this._losDir);
+    this._losRaycaster.far = losDist;
+
+    const losHits = this._losRaycaster.intersectObjects(this._occluders, false);
+    const wasSeeing = this._canSeePlayer;
+    this._canSeePlayer = losHits.length === 0; // no obstruction = visible
+
+    // Fire spotted/hidden events on transitions.
+    if (this._canSeePlayer && !wasSeeing && distToPlayer < this.detectionRange) {
+      this._emit('spotted');
+    } else if (!this._canSeePlayer && wasSeeing) {
+      this._emit('hidden');
+    }
 
     // --- State transitions --------------------------------------------------
+    // Player can only be detected if the monster has line of sight AND
+    // is within detection range.  Hiding behind objects breaks detection.
+    const detected = this._canSeePlayer && distToPlayer < this.detectionRange;
+
     switch (this.state) {
       case State.PATROL:
-        if (distToPlayer < this.detectionRange) {
+        if (detected) {
           this._setState(State.CHASE);
           this._escapeTimer = 0;
         }
@@ -234,15 +326,15 @@ export default class MonsterAI {
       case State.CHASE:
         if (distToPlayer < this.attackRange) {
           this._setState(State.ATTACK);
-        } else if (distToPlayer > this.detectionRange) {
-          // Player escaped detection range — start escape timer.
+        } else if (!detected) {
+          // Player hidden or out of range — start escape timer.
           this._escapeTimer += dt;
           if (this._escapeTimer >= this.escapeTimeout) {
             this._setState(State.PATROL);
             this._escapeTimer = 0;
           }
         } else {
-          // Player still in range — reset escape timer.
+          // Player still detected — reset escape timer.
           this._escapeTimer = 0;
         }
         break;
@@ -279,6 +371,24 @@ export default class MonsterAI {
       const wdz = wp.z - this.body.position.z;
       this.model.rotation.y = Math.atan2(wdx, wdz);
     }
+
+    // --- Weak point glow pulse (reads as "shoot me") -----------------------
+    for (let i = 0; i < this.weakPoints.length; i++) {
+      const wp = this.weakPoints[i];
+      if (!wp.userData.destroyed) {
+        wp.material.emissiveIntensity = 0.7 + 0.5 * Math.sin(this._animTime * 4);
+      }
+    }
+
+    // --- Limb animation (CharacterFactory — zero per-frame allocs) ---------
+    this._char.update(dt, this.state, this.body.velocity);
+
+    // --- Refresh world matrices NOW ---------------------------------------
+    // Three.js normally updates matrixWorld during render (end of frame).
+    // The PulseTool raycast runs right after this in Game._loop, so we
+    // update the model's world matrices explicitly — otherwise the ray
+    // tests against the monster's position from the PREVIOUS frame.
+    this.model.updateMatrixWorld(true);
   }
 
   // ── State behaviours ──────────────────────────────────────────────────────
@@ -327,9 +437,10 @@ export default class MonsterAI {
     this.body.velocity.z = 0;
 
     this._attackTimer -= dt;
+    const cooldown = Math.max(0.5, this.attackCooldown - this._phaseAttackBonus);
     if (this._attackTimer <= 0) {
-      this._attackTimer = this.attackCooldown;
-      this._emit('attack', this.attackDamage);
+      this._attackTimer = cooldown;
+      this._emit('attack', this.attackDamage + this._phaseDamageBonus);
     }
   }
 
