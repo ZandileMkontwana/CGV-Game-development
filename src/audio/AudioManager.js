@@ -43,6 +43,10 @@ export default class AudioManager {
     this._beatTimer = 0;
     this._growlTimer = 6;
     this._stingTimer = 10;
+    this._mStepTimer = 0;   // creature footfalls
+    this._breath = null;    // hiding-breath loop
+    this._breathOn = false;
+    this._breathAmp = 0;
 
     // Unlock the AudioContext on the first user gesture (browser autoplay
     // policy): the Start-click or any key press is enough.
@@ -118,6 +122,7 @@ export default class AudioManager {
       case 'growl': this._growl(opt === undefined ? 0.4 : opt); break;
       case 'roar': this._roar(); break;
       case 'spotted': this._sting(); break;
+      case 'jumpscare': this._jumpscare(); break;
       case 'attack': this._impact(); break;
       case 'transform': this._transform(); break;
       case 'death': this._death(); break;
@@ -137,7 +142,8 @@ export default class AudioManager {
    * Drive footsteps, the tension heartbeat, patrol growls and distant
    * facility creaks. Zero allocation — counters only.
    */
-  update(dt, moving, sprinting, grounded, threat, chasing, monsterActive, health01) {
+  update(dt, moving, sprinting, grounded, threat, chasing, monsterActive, health01,
+         monsterDist, hiding) {
     if (!this._unlocked || this.muted) return;
 
     // Footsteps — cadence from walk/sprint, only while grounded.
@@ -167,6 +173,27 @@ export default class AudioManager {
       this._beatTimer = 0.4;
     }
 
+    // The creature's own lurching footfalls — the sound that makes players
+    // freeze. Volume rises as it closes in.
+    if (monsterActive && chasing && monsterDist < 28) {
+      this._mStepTimer -= dt;
+      if (this._mStepTimer <= 0) {
+        const prox = 1 - monsterDist / 28;
+        this._heavyStep(0.12 + prox * 0.5);
+        this._mStepTimer = 0.34 + Math.random() * 0.14;
+      }
+    } else {
+      this._mStepTimer = 0.15;
+    }
+
+    // Muffled shaking breath while hiding from a nearby creature.
+    if (hiding && monsterActive) {
+      const bprox = monsterDist > 20 ? 0 : 1 - monsterDist / 20;
+      this.setBreathing(true, 0.35 + bprox * 0.65);
+    } else {
+      this.setBreathing(false, 0);
+    }
+
     // Occasional hunting growl while the creature stalks the corridors.
     if (monsterActive && !chasing) {
       this._growlTimer -= dt;
@@ -187,6 +214,43 @@ export default class AudioManager {
     }
   }
 
+  /**
+   * Muffled, shaky breathing while hiding. The loop is built once and then
+   * just re-targeted (no node churn). `k` 0..1 scales depth and speed.
+   */
+  setBreathing(on, k) {
+    if (!this._unlocked) return;
+    if (on && !this._breath) this._buildBreath();
+    if (!this._breath) return;
+    const b = this._breath;
+    const amp = on ? 0.05 + 0.16 * k : 0;
+    if (on !== this._breathOn || Math.abs(amp - this._breathAmp) > 0.012) {
+      const now = this.ctx.currentTime;
+      this._breathAmp = amp;
+      b.gain.gain.setTargetAtTime(amp, now, 0.3);
+      b.lfoGain.gain.setTargetAtTime(amp * 0.6, now, 0.3);
+      this._breathOn = on;
+    }
+    if (on) b.lfo.frequency.value = 0.16 + 0.22 * k; // faster as it closes in
+  }
+
+  _buildBreath() {
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const src = this._noiseSource(true);
+    const f = this._filter('bandpass', 480, 0.7);
+    const hf = this._filter('highpass', 240, 0.5);
+    const gain = this._gain(MIN_GAIN);
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 0.2; // inhale/exhale cycle
+    const lfoGain = this._gain(0);
+    lfo.connect(lfoGain).connect(gain.gain);
+    src.connect(hf).connect(f).connect(gain).connect(this.master);
+    src.start(t);
+    lfo.start(t);
+    this._breath = { src, lfo, gain, lfoGain };
+  }
+
   // ── Ambient bed ──────────────────────────────────────────────────────────
 
   setLevel(n) {
@@ -195,7 +259,10 @@ export default class AudioManager {
     if (this._unlocked && changed) this._startBed(n);
   }
 
-  stopAmbient() { this._stopBed(1.2); }
+  stopAmbient() {
+    this._stopBed(1.2);
+    this.setBreathing(false, 0);
+  }
 
   /** Momentarily pull the ambience down so stingers cut through. */
   duck(amount) {
@@ -418,6 +485,49 @@ export default class AudioManager {
 
   _hiss(dur, vol) {
     this._burst({ dur, vol, type: 'highpass', freq: 2600, attack: 0.05 });
+  }
+
+  /** The creature's footfall — a low body-thud with floor grit. */
+  _heavyStep(vol) {
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(95, t);
+    o.frequency.exponentialRampToValueAtTime(36, t + 0.18);
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 0.22);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + 0.24);
+    this._burst({ dur: 0.14, vol: vol * 0.5, type: 'lowpass', freq: 320 + Math.random() * 160, attack: 0.004 });
+  }
+
+  /** Hard first-sighting stinger: scream + scrape + sub boom. */
+  _jumpscare() {
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(880, t);
+    o.frequency.exponentialRampToValueAtTime(180, t + 0.7);
+    const vib = this.ctx.createOscillator();
+    vib.frequency.setValueAtTime(12, t);
+    vib.frequency.linearRampToValueAtTime(30, t + 0.7);
+    const vg = this._gain(70);
+    vib.connect(vg).connect(o.frequency);
+    const ws = this.ctx.createWaveShaper();
+    ws.curve = this._distCurve();
+    const og = this._gain(MIN_GAIN);
+    og.gain.setValueAtTime(MIN_GAIN, t);
+    og.gain.exponentialRampToValueAtTime(0.5, t + 0.012);
+    og.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 0.85);
+    o.connect(ws);
+    ws.connect(og).connect(this.master);
+    o.start(t); vib.start(t);
+    o.stop(t + 0.9); vib.stop(t + 0.9);
+    this._burst({ dur: 0.5, vol: 0.3, type: 'bandpass', freq: 5200, q: 2, f1: 900, attack: 0.01 });
+    this._chirp(58, 28, 1.0, 0.55, 'sine');
   }
 
   _door() {

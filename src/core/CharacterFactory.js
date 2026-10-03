@@ -61,15 +61,132 @@ export function faceToRotY(face) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Procedural canvas textures — generated once, cached module-wide.
+// Zero external assets; the LAMP build stays asset-free.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _skinTexCache = null;
+let _coatTexCache = null;
+let _bumpTexCache = null;
+
+/** Shared grayscale noise used as a bump map (leather / fabric grain). */
+function bumpTexture() {
+  if (_bumpTexCache) return _bumpTexCache;
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 1400; i++) {
+    const v = 100 + Math.floor(Math.random() * 110);
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 5, 0, 6.283);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  _bumpTexCache = t;
+  return t;
+}
+
+/** Mottled, veined creature hide + matching bump map. */
+function skinTextures() {
+  if (_skinTexCache) return _skinTexCache;
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#221a1b';
+  ctx.fillRect(0, 0, 256, 256);
+  // Large mottling — bruises, darker hide patches, raw spots.
+  for (let i = 0; i < 240; i++) {
+    const r = 6 + Math.random() * 26;
+    ctx.globalAlpha = 0.1 + Math.random() * 0.16;
+    ctx.fillStyle = Math.random() < 0.45 ? '#120c0d' : Math.random() < 0.75 ? '#332426' : '#4a2d2a';
+    ctx.beginPath();
+    ctx.ellipse(
+      Math.random() * 256, Math.random() * 256,
+      r, r * (0.5 + Math.random() * 0.7), Math.random() * 3.14, 0, 6.283
+    );
+    ctx.fill();
+  }
+  // Veins — thin branching lines.
+  ctx.globalAlpha = 0.3;
+  ctx.strokeStyle = '#5c2a23';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 24; i++) {
+    let x = Math.random() * 256;
+    let y = Math.random() * 256;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    for (let j = 0; j < 5; j++) {
+      x += (Math.random() - 0.5) * 46;
+      y += (Math.random() - 0.5) * 46;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  // Fine speckle for pores.
+  ctx.globalAlpha = 0.55;
+  for (let i = 0; i < 1500; i++) {
+    ctx.fillStyle = Math.random() < 0.5 ? '#0d0909' : '#3d2c2b';
+    ctx.fillRect(Math.random() * 256, Math.random() * 256, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+  const map = new THREE.CanvasTexture(c);
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.repeat.set(2, 2);
+  _skinTexCache = { map, bump: bumpTexture() };
+  return _skinTexCache;
+}
+
+/** Lab coat with old bloodstains — the bite happened before you arrived. */
+function coatTextures() {
+  if (_coatTexCache) return _coatTexCache;
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e6e9ee';
+  ctx.fillRect(0, 0, 256, 256);
+  // Fabric noise.
+  for (let i = 0; i < 900; i++) {
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = Math.random() < 0.5 ? '#c8ccd4' : '#f4f6f9';
+    ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+  }
+  // Bruise/stain cluster around the chest area.
+  for (let i = 0; i < 26; i++) {
+    const r = 6 + Math.random() * 22;
+    ctx.globalAlpha = 0.14 + Math.random() * 0.24;
+    ctx.fillStyle = Math.random() < 0.6 ? '#571d18' : '#3d120f';
+    ctx.beginPath();
+    ctx.ellipse(
+      70 + Math.random() * 116, 60 + Math.random() * 90,
+      r, r * (0.6 + Math.random() * 0.6), Math.random() * 3.14, 0, 6.283
+    );
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  const map = new THREE.CanvasTexture(c);
+  map.colorSpace = THREE.SRGBColorSpace;
+  _coatTexCache = { map, bump: bumpTexture() };
+  return _coatTexCache;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Engineer — the player character (feet at local y = 0, ~1.8 m tall)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function createEngineer() {
   const group = new THREE.Group();
 
-  const suit = std(0x37506b, { roughness: 0.8, metalness: 0.15 });
-  const suitDark = std(0x263546, { roughness: 0.85, metalness: 0.2 });
-  const vest = std(0x59636f, { roughness: 0.55, metalness: 0.45 });
+  const bump = bumpTexture();
+  const suit = std(0x35506d, { roughness: 0.8, metalness: 0.15, bumpMap: bump, bumpScale: 0.012 });
+  const suitDark = std(0x233240, { roughness: 0.85, metalness: 0.2, bumpMap: bump, bumpScale: 0.012 });
+  const vest = std(0x5a6570, { roughness: 0.55, metalness: 0.45, bumpMap: bump, bumpScale: 0.008 });
   const boot = std(0x1d232b, { roughness: 0.9, metalness: 0.1 });
   const helmetMat = std(0xcfd6de, { roughness: 0.35, metalness: 0.55 });
   const visorMat = std(0x0d2b3a, { roughness: 0.15, metalness: 0.6, emissive: 0x2fd9ff, emissiveIntensity: 0.8 });
@@ -194,11 +311,15 @@ export function createEngineer() {
 export function createScientist() {
   const group = new THREE.Group();
 
-  const coat = std(0xe4e8ee, { roughness: 0.85, metalness: 0.02 });
-  const coatShade = std(0xc9cfd8, { roughness: 0.85, metalness: 0.02 });
-  const trousers = std(0x3a4148, { roughness: 0.9 });
-  const skin = std(0xd8a97c, { roughness: 0.9, metalness: 0 });
-  const hair = std(0x4a3b2e, { roughness: 0.95, metalness: 0 });
+  const coatTex = coatTextures();
+  const coat = std(0xffffff, {
+    roughness: 0.8, metalness: 0.02,
+    map: coatTex.map, bumpMap: coatTex.bump, bumpScale: 0.01,
+  }); // bloodstained from the bite — the player walks into the aftermath
+  const coatShade = std(0xc4cad4, { roughness: 0.85, metalness: 0.02, bumpMap: coatTex.bump, bumpScale: 0.01 });
+  const trousers = std(0x363d44, { roughness: 0.9 });
+  const skin = std(0xbf9f82, { roughness: 0.75, metalness: 0 }); // pallid, clammy
+  const hair = std(0x403429, { roughness: 0.95, metalness: 0 });
   const shoe = std(0x22262c, { roughness: 0.9 });
   const badge = std(0x223344, { roughness: 0.4, metalness: 0.3, emissive: 0x38c8ff, emissiveIntensity: 0.7 });
 
@@ -317,73 +438,186 @@ export function createScientist() {
 export function createMonster() {
   const group = new THREE.Group(); // roughly feet at local y = -0.55 (body sphere r 0.6)
 
-  const chitin = std(0x241d20, { roughness: 0.72, metalness: 0.35 }); // shared body material (hit flash)
-  const chitinDark = std(0x161215, { roughness: 0.8, metalness: 0.3 });
-  const sinew = std(0x3a2e33, { roughness: 0.65, metalness: 0.15 });
-  const eyeMat = std(0x1a0505, { roughness: 0.3, emissive: 0xff5522, emissiveIntensity: 1.4 });
+  const tex = skinTextures();
+  const chitin = std(0xffffff, {
+    map: tex.map, bumpMap: tex.bump, bumpScale: 0.035,
+    roughness: 0.6, metalness: 0.06,
+  }); // shared body material (hit flash)
+  const chitinDark = std(0x6b5759, {
+    map: tex.map, bumpMap: tex.bump, bumpScale: 0.03,
+    roughness: 0.7, metalness: 0.08,
+  });
+  const sinew = std(0x9c4a3c, { map: tex.map, roughness: 0.5, metalness: 0.05 });
+  const bone = std(0xc9bda2, { roughness: 0.55, metalness: 0.05 });
+  const maw = std(0x2a0a08, { emissive: 0x7a1408, emissiveIntensity: 0.55, roughness: 0.4 });
+  const eyeMat = std(0x1a0505, { roughness: 0.3, emissive: 0xff3a1a, emissiveIntensity: 1.6 });
   const spineGlowMat = std(0x1a0505, { roughness: 0.5, emissive: 0xff2a1a, emissiveIntensity: 0.9 });
 
-  // Pelvis + hunched spine.
+  // Pelvis + hunched spine — organic masses instead of boxes.
   const pelvis = joint(group, 0, 0.32, 0);
-  part(pelvis, new THREE.BoxGeometry(0.42, 0.3, 0.36), chitin, 0, 0, 0);
-  part(pelvis, new THREE.BoxGeometry(0.46, 0.12, 0.4), chitinDark, 0, 0.18, 0); // hip ridge
+  const pelvisMass = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), chitin);
+  pelvisMass.scale.set(1.05, 0.75, 0.9);
+  pelvisMass.castShadow = true;
+  pelvisMass.receiveShadow = true;
+  pelvis.add(pelvisMass);
+  part(pelvis, new THREE.BoxGeometry(0.46, 0.09, 0.34), chitinDark, 0, 0.2, 0); // hip ridge
 
   const spine = joint(pelvis, 0, 0.22, 0);
   spine.rotation.x = 0.42; // hunch forward
-  const chestMesh = part(spine, new THREE.BoxGeometry(0.62, 0.5, 0.42), chitin, 0, 0.28, 0.04);
+
+  // Ribcage — the tagged body target.
+  const chestMesh = new THREE.Mesh(new THREE.SphereGeometry(0.36, 14, 12), chitin);
+  chestMesh.position.set(0, 0.3, 0.02);
+  chestMesh.scale.set(1.05, 1.12, 0.82);
+  chestMesh.castShadow = true;
+  chestMesh.receiveShadow = true;
   chestMesh.userData.pulseTarget = true;
   chestMesh.userData.pulseType = 'monsterBody';
-  part(spine, new THREE.BoxGeometry(0.7, 0.14, 0.46), chitinDark, 0, 0.52, 0.0); // shoulder crest
-  // Spine glow: three emissive nodes along the back.
+  spine.add(chestMesh);
+
+  // Exposed rib arcs across the chest.
+  const ribGeo = new THREE.TorusGeometry(0.3, 0.018, 6, 14, Math.PI);
   for (let i = 0; i < 3; i++) {
-    part(spine, new THREE.BoxGeometry(0.07, 0.07, 0.07), spineGlowMat, 0, 0.12 + i * 0.17, -0.22 - i * 0.02);
+    const rib = new THREE.Mesh(ribGeo, chitinDark);
+    rib.position.set(0, 0.16 + i * 0.14, 0.1);
+    rib.rotation.x = Math.PI / 2 - 0.18;
+    rib.castShadow = true;
+    spine.add(rib);
   }
 
-  // Head — long skull, jaw, glowing eyes.
-  const neck = joint(spine, 0, 0.56, 0.24);
-  const headMesh = part(neck, new THREE.BoxGeometry(0.34, 0.3, 0.5), chitin, 0, 0.02, 0.08);
+  // Vertebra spikes down the back.
+  const spikeGeo = new THREE.ConeGeometry(0.045, 0.3, 6);
+  for (let i = 0; i < 5; i++) {
+    const sp = new THREE.Mesh(spikeGeo, bone);
+    sp.position.set(0, 0.1 + i * 0.13, -0.26);
+    sp.rotation.x = -1.05;
+    const sc = 1 - i * 0.12;
+    sp.scale.set(sc, sc, sc);
+    sp.castShadow = true;
+    spine.add(sp);
+  }
+
+  // Spine glow: three emissive pustules along the back.
+  const glowGeo = new THREE.SphereGeometry(0.045, 8, 8);
+  for (let i = 0; i < 3; i++) {
+    part(spine, glowGeo, spineGlowMat, 0, 0.12 + i * 0.17, -0.24 - i * 0.02);
+  }
+
+  // Head — gaunt elongated skull, hinged jaw, deep-set ember eyes.
+  const neck = joint(spine, 0, 0.56, 0.2);
+  const neckMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 0.24, 8), sinew);
+  neckMesh.position.set(0, 0.02, -0.04);
+  neckMesh.rotation.x = 0.5;
+  neckMesh.castShadow = true;
+  neck.add(neckMesh);
+
+  const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 10), chitin);
+  headMesh.position.set(0, 0.06, 0.1);
+  headMesh.scale.set(0.85, 0.8, 1.5);
+  headMesh.castShadow = true;
+  headMesh.receiveShadow = true;
   headMesh.userData.pulseTarget = true;
   headMesh.userData.pulseType = 'monsterBody';
-  part(neck, new THREE.BoxGeometry(0.26, 0.1, 0.34), chitinDark, 0, -0.14, 0.12); // jaw
-  part(neck, new THREE.BoxGeometry(0.3, 0.08, 0.16), chitinDark, 0, 0.16, 0.16);  // brow
-  const eyeGeo = new THREE.SphereGeometry(0.055, 8, 8);
-  part(neck, eyeGeo, eyeMat, -0.1, 0.04, 0.31);
-  part(neck, eyeGeo, eyeMat, 0.1, 0.04, 0.31);
+  neck.add(headMesh);
 
-  // Long clawed arms — reach past the knees.
+  // Heavy brow — shadows the eyes into sockets.
+  const brow = part(neck, new THREE.BoxGeometry(0.3, 0.06, 0.14), chitinDark, 0, 0.16, 0.16);
+  brow.rotation.x = -0.25;
+  const eyeGeo = new THREE.SphereGeometry(0.042, 8, 8);
+  part(neck, eyeGeo, eyeMat, -0.085, 0.06, 0.3);
+  part(neck, eyeGeo, eyeMat, 0.085, 0.06, 0.3);
+
+  // Hinged jaw — creaks open in chase, gapes in attack (animated below).
+  const jaw = joint(neck, 0, -0.06, 0.02);
+  const jawMesh = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), chitinDark);
+  jawMesh.position.set(0, -0.05, 0.14);
+  jawMesh.scale.set(0.95, 0.45, 1.6);
+  jawMesh.castShadow = true;
+  jaw.add(jawMesh);
+  part(jaw, new THREE.SphereGeometry(0.09, 8, 6), maw, 0, -0.01, 0.12); // throat glow
+  const toothGeo = new THREE.ConeGeometry(0.016, 0.09, 5);
+  for (let i = -2; i <= 2; i++) {
+    // Lower fangs (on the jaw) …
+    const lo = new THREE.Mesh(toothGeo, bone);
+    lo.position.set(i * 0.045, 0.02, 0.3 - Math.abs(i) * 0.045);
+    lo.rotation.x = 0.12;
+    jaw.add(lo);
+    // … and upper fangs (on the skull).
+    const up = new THREE.Mesh(toothGeo, bone);
+    up.position.set(i * 0.045, -0.01, 0.31 - Math.abs(i) * 0.045);
+    up.rotation.x = Math.PI - 0.12;
+    neck.add(up);
+  }
+
+  // Long knuckle-dragging arms — tapered limbs, exposed forearm muscle,
+  // bone claws.
   const buildArm = (side) => {
     const s = side === 'l' ? -1 : 1;
-    const arm = joint(spine, s * 0.42, 0.44, 0.02);
-    part(arm, new THREE.SphereGeometry(0.12, 8, 8), chitinDark, 0, 0, 0);
-    part(arm, new THREE.BoxGeometry(0.15, 0.55, 0.15), chitin, 0, -0.28, 0);
-    const elbow = joint(arm, 0, -0.56, 0);
-    part(elbow, new THREE.BoxGeometry(0.13, 0.58, 0.13), sinew, 0, -0.29, 0);
-    const wrist = joint(elbow, 0, -0.6, 0);
-    // Three claw fingers.
-    for (let i = -1; i <= 1; i++) {
-      const claw = part(wrist, new THREE.BoxGeometry(0.035, 0.3, 0.035), chitinDark, i * 0.06, -0.15, i * 0.02);
-      claw.rotation.z = i * 0.22;
-    }
-    return { arm, elbow, wrist };
-  };
-  const { arm: armL, elbow: elbL } = buildArm('l');
-  const { arm: armR, elbow: elbR } = buildArm('r');
+    const arm = joint(spine, s * 0.4, 0.44, 0.02);
+    part(arm, new THREE.SphereGeometry(0.12, 10, 8), chitin, 0, 0.02, 0);
+    const plate = part(arm, new THREE.BoxGeometry(0.16, 0.1, 0.18), chitinDark, s * 0.03, 0.1, -0.02);
+    plate.rotation.z = -s * 0.35;
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.062, 0.6, 8), chitin);
+    upper.position.set(0, -0.3, 0);
+    upper.castShadow = true;
+    arm.add(upper);
 
-  // Digitigrade legs.
+    const elbow = joint(arm, 0, -0.6, 0);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.22, 6), bone);
+    spike.position.set(0, 0.04, -0.1);
+    spike.rotation.x = -2.2;
+    elbow.add(spike);
+    const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.05, 0.62, 8), sinew);
+    fore.position.set(0, -0.31, 0);
+    fore.castShadow = true;
+    elbow.add(fore);
+
+    const wrist = joint(elbow, 0, -0.64, 0);
+    const palm = part(wrist, new THREE.BoxGeometry(0.11, 0.13, 0.06), chitinDark, 0, -0.06, 0.02);
+    palm.rotation.x = -0.2;
+    const fingers = [];
+    for (let i = -1; i <= 1; i++) {
+      const f = joint(wrist, i * 0.045, -0.11, 0.03);
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.16, 0.026), chitin);
+      seg.position.set(0, -0.08, 0);
+      seg.castShadow = true;
+      f.add(seg);
+      const claw = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.14, 5), bone);
+      claw.position.set(0, -0.21, 0.01);
+      claw.rotation.x = Math.PI;
+      f.add(claw);
+      fingers.push(f);
+    }
+    return { arm, elbow, fingers };
+  };
+  const { arm: armL, elbow: elbL, fingers: finL } = buildArm('l');
+  const { arm: armR, elbow: elbR, fingers: finR } = buildArm('r');
+
+  // Digitigrade legs — heavy thighs, springy shins, splayed toe claws.
   const buildLeg = (side) => {
     const s = side === 'l' ? -1 : 1;
-    const hip = joint(pelvis, s * 0.2, -0.04, 0);
+    const hip = joint(pelvis, s * 0.2, -0.02, 0);
     hip.rotation.x = -0.5; // thigh forward
-    part(hip, new THREE.BoxGeometry(0.17, 0.42, 0.19), chitin, 0, -0.2, 0);
-    const knee = joint(hip, 0, -0.42, 0);
-    knee.rotation.x = 1.05; // shin back
-    part(knee, new THREE.BoxGeometry(0.13, 0.4, 0.14), sinew, 0, -0.19, 0);
-    const ankle = joint(knee, 0, -0.4, 0);
-    ankle.rotation.x = -0.65;
-    part(ankle, new THREE.BoxGeometry(0.15, 0.09, 0.3), chitinDark, 0, -0.05, 0.12);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.08, 0.48, 8), chitin);
+    thigh.position.set(0, -0.24, 0);
+    thigh.castShadow = true;
+    hip.add(thigh);
+    const knee = joint(hip, 0, -0.48, 0);
+    knee.rotation.x = 1.0; // shin back
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.05, 0.44, 8), chitinDark);
+    shin.position.set(0, -0.22, 0);
+    shin.castShadow = true;
+    knee.add(shin);
+    const ankle = joint(knee, 0, -0.44, 0);
+    ankle.rotation.x = -0.6;
+    part(ankle, new THREE.BoxGeometry(0.15, 0.07, 0.32), chitinDark, 0, -0.03, 0.1);
     // Toe claws.
+    const toeGeo = new THREE.ConeGeometry(0.025, 0.16, 5);
     for (let i = -1; i <= 1; i++) {
-      part(ankle, new THREE.BoxGeometry(0.03, 0.05, 0.14), chitinDark, i * 0.05, -0.08, 0.28);
+      const toe = new THREE.Mesh(toeGeo, bone);
+      toe.position.set(i * 0.05, -0.05, 0.28);
+      toe.rotation.x = Math.PI / 2 + 0.15;
+      ankle.add(toe);
     }
     return { hip, knee };
   };
@@ -424,7 +658,8 @@ export function createMonster() {
   // ── Animation state ───────────────────────────────────────────────────────
   let t = 0;
   let phase = 0;
-  let atk = 0; // attack-swipe timer
+  let atk = 0;        // attack-swipe timer
+  let jawOpen = 0.08; // smoothed jaw angle
 
   /**
    * @param {number} dt
@@ -439,7 +674,7 @@ export function createMonster() {
     const amp = state === 'chase' ? 0.75 : state === 'attack' ? 0.35 : 0.45;
     const dead = state === 'dead';
 
-    // Legs — big slow strides; limp when dead.
+    // Legs — big lurching strides; limp when dead.
     const legLTarget = dead ? 0.2 : -0.5 + swing * amp;
     const legRTarget = dead ? 0.2 : -0.5 - swing * amp;
     hipL.rotation.x += (legLTarget - hipL.rotation.x) * Math.min(1, dt * 6);
@@ -447,36 +682,60 @@ export function createMonster() {
     kneeL.rotation.x += ((dead ? 1.3 : 1.05 - swing * amp * 0.5) - kneeL.rotation.x) * Math.min(1, dt * 6);
     kneeR.rotation.x += ((dead ? 1.3 : 1.05 + swing * amp * 0.5) - kneeR.rotation.x) * Math.min(1, dt * 6);
 
-    // Arms — hang and swing; reaching forward in chase; swipe in attack.
+    // Arms — the left drags low (unnatural asymmetry), both reach in chase,
+    // the right arm slashes in attack.
+    const drag = 0.18;
     const reach = state === 'chase' ? -0.55 : 0;
     let armRTarget = reach + swing * amp * 0.7;
     if (state === 'attack') {
       atk += dt * 7;
       const swipe = Math.max(0, Math.sin(atk)); // 0..1 wind-back-and-slash
       armRTarget = -0.4 - swipe * 1.6;
-      armL.rotation.x += ((-0.2 + swing * 0.2) - armL.rotation.x) * Math.min(1, dt * 8);
+      armL.rotation.x += ((-0.2 + swing * 0.2 + drag * 0.5) - armL.rotation.x) * Math.min(1, dt * 8);
     } else {
       atk = 0;
-      armL.rotation.x += ((reach - swing * amp * 0.7) - armL.rotation.x) * Math.min(1, dt * 6);
+      armL.rotation.x += ((reach + drag - swing * amp * 0.7) - armL.rotation.x) * Math.min(1, dt * 6);
     }
-    if (dead) { armRTarget = 0.25; }
+    if (dead) {
+      armRTarget = 0.25;
+      armL.rotation.x += (0.15 - armL.rotation.x) * Math.min(1, dt * 3);
+    }
     armR.rotation.x += (armRTarget - armR.rotation.x) * Math.min(1, dt * 7);
-    elbL.rotation.x = -0.25 - (state === 'chase' ? 0.5 : 0) + swing * 0.08;
+    elbL.rotation.x = -0.32 - (state === 'chase' ? 0.5 : 0) + swing * 0.08;
     elbR.rotation.x = state === 'attack' ? -0.15 : -0.25 - (state === 'chase' ? 0.5 : 0) - swing * 0.08;
+
+    // Claws flex — open when hunting, clenched in attack.
+    const curl = dead ? 0.1 : state === 'attack' ? -1.1 : state === 'chase' ? -0.7 : -0.35;
+    for (let i = 0; i < 3; i++) {
+      finL[i].rotation.x += (curl - finL[i].rotation.x) * Math.min(1, dt * 6);
+      finR[i].rotation.x += (curl - finR[i].rotation.x) * Math.min(1, dt * 6);
+    }
+
+    // Jaw — breathes slightly at idle, creaks open in chase, gapes in attack.
+    const jawTarget = dead ? 0.5 : state === 'attack' ? 1.0
+      : state === 'chase' ? 0.55 : 0.08 + Math.sin(t * 1.6) * 0.05;
+    jawOpen += (jawTarget - jawOpen) * Math.min(1, dt * (state === 'attack' ? 14 : 5));
+    jaw.rotation.x = jawOpen;
 
     // Body: hunch, sway, breathing; deeper hunch in chase.
     spine.rotation.x += ((dead ? 0.85 : state === 'chase' ? 0.55 : 0.42 + Math.sin(t * 1.4) * 0.03)
       - spine.rotation.x) * Math.min(1, dt * 4);
+    spine.rotation.y = Math.sin(phase) * 0.07 * amp; // shoulder counter-sway
     pelvis.rotation.z = dead ? 0 : Math.sin(phase) * 0.06 * amp;
     pelvis.position.y = 0.32 + Math.abs(Math.cos(phase)) * 0.045 * Math.min(1, spd * 0.3);
 
-    // Head: slow scan while patrolling, locked on while chasing.
+    // Head: slow scanning while patrolling with sudden jerks — the twitch is
+    // what reads as "not human" even when it hasn't noticed you.
+    const twitch = Math.sin(t * 13.7) * Math.sin(t * 7.3);
+    const jerk = state === 'patrol' && Math.abs(twitch) > 0.83;
     const headYaw = state === 'patrol' ? Math.sin(t * 0.8) * 0.35 : 0;
-    neck.rotation.y += (headYaw - neck.rotation.y) * Math.min(1, dt * 3);
+    const targetYaw = headYaw + (jerk ? Math.sin(t * 41) * 0.22 : 0);
+    neck.rotation.y += (targetYaw - neck.rotation.y) * Math.min(1, dt * (jerk ? 18 : 3));
     neck.rotation.x = dead ? 0.5 : state === 'attack' ? 0.15 : 0;
 
-    // Eye glow pulse ("it sees you" read) — cheap sin, no allocations.
-    eyeMat.emissiveIntensity = 1.1 + 0.5 * Math.sin(t * 5);
+    // Eye glow: ember flicker, surging when it hunts.
+    eyeMat.emissiveIntensity = (state === 'chase' ? 2.1 + 0.6 * Math.sin(t * 9)
+      : 1.1 + 0.5 * Math.sin(t * 5)) + (jerk ? 0.8 : 0);
     spineGlowMat.emissiveIntensity = 0.7 + 0.3 * Math.sin(t * 3.2 + 1.3);
   };
 

@@ -153,6 +153,9 @@ export default class Game {
     // --- Audio ---------------------------------------------------------------
     // Fully procedural horror soundscape (Web Audio) — no asset files.
     this.audio = new AudioManager();
+    this._monsterSeen = false; // one first-sighting sting per level
+    this._camPosVec = new THREE.Vector3(); // reused in the sight check
+    this._fwdVec = new THREE.Vector3();
 
     // --- Clock --------------------------------------------------------------
     this._clock = new THREE.Clock();
@@ -337,16 +340,43 @@ export default class Game {
         this._scientist.update(dt, this._scientistState);
       }
 
-      // Procedural soundscape: footsteps, heartbeat, growls, distant creaks.
+      // Procedural soundscape: footsteps, heartbeat, growls, distant creaks,
+      // the creature's own heavy footfalls, and muffled breath while hiding.
+      const mon = this.monster;
       const cs = this.player._charState;
+      const mdx = mon.position.x - this.player.position.x;
+      const mdz = mon.position.z - this.player.position.z;
+      const mDist = mon.isActive ? Math.sqrt(mdx * mdx + mdz * mdz) : 999;
+      const chasingNow = mon.state === 'chase' || mon.state === 'attack';
+      const hidingNow = mon.isActive && !mon.canSeePlayer && mon.threatLevel > 0.2;
       this.audio.update(
         dt,
         cs.moving, cs.sprinting, cs.grounded,
-        this.monster.isActive ? this.monster.threatLevel : 0,
-        this.monster.state === 'chase' || this.monster.state === 'attack',
-        this.monster.isActive,
-        this.playerHealth / this.playerMaxHealth
+        mon.isActive ? mon.threatLevel : 0,
+        chasingNow,
+        mon.isActive,
+        this.playerHealth / this.playerMaxHealth,
+        mDist,
+        hidingNow
       );
+
+      // First time the creature crosses your view — one hard sting per level.
+      if (mon.isActive && !this._monsterSeen &&
+          this.gameState.currentLevel !== 1 && mDist < 24) {
+        this.camera.camera.getWorldPosition(this._camPosVec);
+        this.camera.camera.getWorldDirection(this._fwdVec);
+        const vx = mon.position.x - this._camPosVec.x;
+        const vy = mon.position.y + 0.6 - this._camPosVec.y;
+        const vz = mon.position.z - this._camPosVec.z;
+        const vlen = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+        const facing = (vx * this._fwdVec.x + vy * this._fwdVec.y + vz * this._fwdVec.z) / vlen;
+        if (facing > 0.35) {
+          this._monsterSeen = true;
+          this.audio.play('jumpscare');
+          this.audio.duck(0.85);
+          this.camera.shake(0.9);
+        }
+      }
 
       // Monster AI — update BEFORE the PulseTool so this frame's raycast
       // tests against the monster's CURRENT position (MonsterAI.update
@@ -452,6 +482,7 @@ export default class Game {
     this.audio.setLevel(levelNum);
     this.audio.stopRumble();
     this._lastBeepSec = -1;
+    this._monsterSeen = false;
 
     // 6. Configure monster for this level.
     this.playerHealth = this.playerMaxHealth;
