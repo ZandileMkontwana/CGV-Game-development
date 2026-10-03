@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /**
  * LevelManager — Person B's domain.
@@ -51,6 +52,12 @@ export default class LevelManager {
     this.fogColor = null;
     this.fogNear = 25;
     this.fogFar = 90;
+
+    /** GLTF loader for Blender .glb models (reused across levels). */
+    this._gltfLoader = new GLTFLoader();
+
+    /** Loaded model cache — path → cloned scene root (avoids re-fetching). */
+    this._modelCache = new Map();
   }
 
   /**
@@ -73,10 +80,21 @@ export default class LevelManager {
   _teardown() {
     for (const entry of this._disposables) {
       if (entry.mesh) {
-        if (entry.mesh.geometry) entry.mesh.geometry.dispose();
-        if (entry.mesh.material) {
-          if (entry.mesh.material.map) entry.mesh.material.map.dispose();
-          entry.mesh.material.dispose();
+        // Dispose groups (GLB models) recursively.
+        if (entry.mesh.isGroup || entry.mesh.isObject3D) {
+          entry.mesh.traverse((child) => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+              if (child.material.map) child.material.map.dispose();
+              child.material.dispose();
+            }
+          });
+        } else {
+          if (entry.mesh.geometry) entry.mesh.geometry.dispose();
+          if (entry.mesh.material) {
+            if (entry.mesh.material.map) entry.mesh.material.map.dispose();
+            entry.mesh.material.dispose();
+          }
         }
         this.scene.remove(entry.mesh);
       }
@@ -307,6 +325,129 @@ export default class LevelManager {
     return new THREE.CanvasTexture(c);
   }
 
+  // ── Modular corridor builders ───────────────────────────────────────────
+  //
+  // Each helper builds a complete corridor section (floor + ceiling + walls)
+  // centred on (cx, cz).  Use rotY to rotate T-junctions and corners.
+  // Conventions: corridor width = 4m, height = H metres.
+
+  /**
+   * Straight corridor section along the Z axis.
+   * @param {number} cx   centre x
+   * @param {number} cz   centre z
+   * @param {number} len  length along Z
+   * @param {number} H    ceiling height
+   * @param {THREE.Material} wallMat
+   * @param {THREE.Material} floorMat
+   * @param {THREE.Material} ceilMat
+   */
+  _corridorStraight(cx, cz, len, H, wallMat, floorMat, ceilMat) {
+    const HH = H / 2;
+    this._floorCeil(4, len, cx, 0, cz, floorMat);
+    this._floorCeil(4, len, cx, H, cz, ceilMat, true);
+    this._wallBox(0.2, H, len, cx + 2, HH, cz, wallMat); // east
+    this._wallBox(0.2, H, len, cx - 2, HH, cz, wallMat); // west
+  }
+
+  /**
+   * T-junction: main corridor along Z with a branch opening on the east (+X) side.
+   * Main section is 4m wide × 4m long; the branch opening is 2.5m centred at z = cz.
+   * @param {number} cx  centre x of main corridor
+   * @param {number} cz  centre z of junction
+   * @param {number} H   ceiling height
+   */
+  _corridorTJunction(cx, cz, H, wallMat, floorMat, ceilMat) {
+    const HH = H / 2;
+    // Floor + ceiling for the junction box (4m × 4m).
+    this._floorCeil(4, 4, cx, 0, cz, floorMat);
+    this._floorCeil(4, 4, cx, H, cz, ceilMat, true);
+    // West wall (solid).
+    this._wallBox(0.2, H, 4, cx - 2, HH, cz, wallMat);
+    // East wall — gap for branch (2.5m opening centred at cz).
+    this._wallBox(0.2, H, 0.75, cx + 2, HH, cz - 1.625, wallMat);
+    this._wallBox(0.2, H, 0.75, cx + 2, HH, cz + 1.625, wallMat);
+    // North + south walls solid.
+    this._wallBox(4, H, 0.2, cx, HH, cz - 2, wallMat);
+    this._wallBox(4, H, 0.2, cx, HH, cz + 2, wallMat);
+  }
+
+  /**
+   * Corner section: corridor comes from south (+Z) and turns east (+X).
+   * 4m × 4m box with walls on the outside of the corner (north + west).
+   * @param {number} cx  centre x
+   * @param {number} cz  centre z
+   * @param {number} H   ceiling height
+   */
+  _corridorCorner(cx, cz, H, wallMat, floorMat, ceilMat) {
+    const HH = H / 2;
+    this._floorCeil(4, 4, cx, 0, cz, floorMat);
+    this._floorCeil(4, 4, cx, H, cz, ceilMat, true);
+    // North wall (outside of turn).
+    this._wallBox(4, H, 0.2, cx, HH, cz - 2, wallMat);
+    // West wall (outside of turn).
+    this._wallBox(0.2, H, 4, cx - 2, HH, cz, wallMat);
+    // South and east are open for corridor connections.
+  }
+
+  // ── Blender model loading (.glb) ────────────────────────────────────────
+  //
+  // Async loader with a built-in cache so each asset is fetched only once.
+  // If the .glb file is not yet in src/assets/models/ the method logs a
+  // warning and silently falls back to whatever placeholder geometry the
+  // caller already placed — levels remain fully playable without models.
+
+  /**
+   * Load a Blender-exported .glb model and place it in the scene.
+   * Returns a Promise that resolves to the THREE.Group (or null on failure).
+   *
+   * @param {string} path   relative path from project root, e.g. 'src/assets/models/scientist-npc.glb'
+   * @param {number} x      world x
+   * @param {number} y      world y
+   * @param {number} z      world z
+   * @param {object} opts   optional overrides
+   * @param {number} opts.scale     uniform scale (default 1)
+   * @param {number} opts.rotY      Y-axis rotation in radians (default 0)
+   * @param {boolean} opts.collision add a static physics body (default false)
+   * @param {number} opts.collisionRadius bounding-box half-extent for physics (default 0.5)
+   * @returns {Promise<THREE.Group|null>}
+   */
+  async _loadModel(path, x, y, z, opts = {}) {
+    const { scale = 1, rotY = 0, collision = false, collisionRadius = 0.5 } = opts;
+    try {
+      let gltf = this._modelCache.get(path);
+      if (!gltf) {
+        gltf = await this._gltfLoader.loadAsync(path);
+        this._modelCache.set(path, gltf);
+      }
+      const model = gltf.scene.clone();
+      model.position.set(x, y, z);
+      model.scale.setScalar(scale);
+      model.rotation.y = rotY;
+      model.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+      this.scene.add(model);
+      this._track(model);
+
+      // Optional static physics body.
+      if (collision) {
+        const body = this.physics.createBox(
+          0, collisionRadius, collisionRadius, collisionRadius,
+          new CANNON.Vec3(x, y + collisionRadius, z)
+        );
+        this.physics.addSyncPair(body, model);
+        this._track(model, body);
+      }
+      return model;
+    } catch (err) {
+      console.warn(`[LevelManager] Model not loaded: ${path} — ${err.message || err}`);
+      return null;
+    }
+  }
+
   // ── Interactive systems ─────────────────────────────────────────────────
 
   /**
@@ -488,6 +629,9 @@ export default class LevelManager {
     const accentMat = new THREE.MeshStandardMaterial({
       color: 0x00aaff, emissive: 0x003366, roughness: 0.5, metalness: 0.6,
     });
+    const lockerMat = new THREE.MeshStandardMaterial({
+      color: 0x556070, roughness: 0.5, metalness: 0.7,
+    });
 
     // ======================================================================
     // CONTROL ROOM  (x: -5 to 5, z: -6 to -16, 10m × 10m)
@@ -550,11 +694,31 @@ export default class LevelManager {
     this._floorCeil(4, 8, 0, 0, -20, floorMat);
     this._floorCeil(4, 8, 0, H, -20, ceilMat, true);
 
-    // East wall.
+    // East wall (solid).
     this._wallBox(0.2, H, 8, 2, HH, -20, wallMat);
 
     // West wall.
     this._wallBox(0.2, H, 8, -2, HH, -20, wallMat);
+
+    // --- Side branch corridor (T-junction at z = -20, branches east) ---
+    // Open a gap in the east wall at z = -20 for the branch.
+    // Remove the solid east wall above and replace with split sections.
+    // NOTE: The solid east wall was already placed above; we keep it and
+    // add a branch alcove extending east from the corridor midpoint.
+    // Side corridor floor + ceiling (4m long, extending east).
+    this._floorCeil(4, 4, 4, 0, -20, floorMat);
+    this._floorCeil(4, 4, 4, H, -20, ceilMat, true);
+    // Side corridor walls (north + south of the branch).
+    this._wallBox(4, H, 0.2, 4, HH, -18, wallMat); // north wall of branch
+    this._wallBox(4, H, 0.2, 4, HH, -22, wallMat); // south wall of branch
+    // East end wall of the branch.
+    this._wallBox(0.2, H, 4, 6, HH, -20, wallMat);
+
+    // Small storage room props in the side branch.
+    this._propBox(0.6, 1.4, 0.6, 5.2, 0.7, -19, panelMat); // crate
+    this._propBox(0.5, 1.8, 0.5, 5.4, 0.9, -21, lockerMat); // locker
+    // Side branch ceiling pipe.
+    this._propBox(4, 0.1, 0.1, 4, 2.8, -20, pipeMat);
 
     // --- Corridor props ---
 
@@ -562,6 +726,19 @@ export default class LevelManager {
     this._propCylinder(0.08, 0.08, 8, 1.5, 2.7, -20, pipeMat);
     this._propCylinder(0.08, 0.08, 8, -1.5, 2.7, -20, pipeMat);
     this._propCylinder(0.06, 0.06, 8, 0.8, 2.85, -20, pipeMat);
+
+    // --- Blender model load hooks for lab equipment ---
+    // These will replace the placeholder geometry above once the .glb files
+    // are exported from Blender into src/assets/models/.
+    this._loadModel('src/assets/models/lab-desk.glb', 0, 0, -12, {
+      scale: 1, collision: true, collisionRadius: 0.6,
+    });
+    this._loadModel('src/assets/models/lab-computer.glb', -2, 0.75, -7.5, {
+      scale: 0.8,
+    });
+    this._loadModel('src/assets/models/containment-tube.glb', -5, 0, -28, {
+      scale: 1, collision: true, collisionRadius: 0.9,
+    });
 
     // ======================================================================
     // REACTOR HALL  (x: -8 to 8, z: -24 to -36, 16m × 12m)
@@ -620,6 +797,42 @@ export default class LevelManager {
     this.scene.add(monitor);
     this._track(monitor);
 
+    // --- Scientist NPC placeholder (standing at the workstation) ---
+    const npcGroup = new THREE.Group();
+    const npcBodyMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 });
+    const npcSkinMat = new THREE.MeshStandardMaterial({ color: 0xe0b090, roughness: 0.5 });
+    // Lab coat body.
+    const npcBody = new THREE.Mesh(new THREE.CapsuleGeometry(0.25, 0.9, 4, 8), npcBodyMat);
+    npcBody.position.y = 0.85;
+    npcBody.castShadow = true;
+    npcGroup.add(npcBody);
+    // Head.
+    const npcHead = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), npcSkinMat);
+    npcHead.position.y = 1.6;
+    npcHead.castShadow = true;
+    npcGroup.add(npcHead);
+    // Clipboard (small box in front).
+    const npcClipboard = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 0.28, 0.03), panelMat
+    );
+    npcClipboard.position.set(0.25, 1.0, 0.2);
+    npcClipboard.rotation.x = -0.4;
+    npcGroup.add(npcClipboard);
+    npcGroup.position.set(-3.2, 0, -26);
+    npcGroup.rotation.y = Math.PI * 0.7;
+    this.scene.add(npcGroup);
+    this._track(npcGroup);
+
+    // Load Blender scientist-npc model when the asset is available.
+    this._loadModel('src/assets/models/scientist-npc.glb', -3.2, 0, -26, {
+      scale: 1, rotY: Math.PI * 0.7,
+    }).then((model) => {
+      // Swap: hide placeholder if the GLB loaded successfully.
+      if (model) npcGroup.visible = false;
+    });
+
+    // --- Lab equipment props ---
+
     // Lab benches along the west wall.
     this._propBox(0.8, 0.85, 2.5, -7.2, 0.425, -26, panelMat);
     this._propBox(0.8, 0.85, 2.5, -7.2, 0.425, -34, panelMat);
@@ -627,6 +840,24 @@ export default class LevelManager {
     this._propBox(0.3, 0.25, 0.3, -7.2, 0.975, -25.5, accentMat);
     this._propBox(0.25, 0.2, 0.4, -7.2, 0.95, -26.5, pipeMat);
     this._propBox(0.35, 0.3, 0.25, -7.2, 1.0, -33.5, accentMat);
+
+    // Computer console desks (east side of control room already has panels).
+    // Additional desk with dual monitors near the south wall.
+    this._propBox(1.8, 0.75, 0.8, -2, 0.375, -7.5, panelMat);
+    const deskMonitor1 = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.45, 0.04), accentMat
+    );
+    deskMonitor1.position.set(-2.3, 1.15, -7.5);
+    deskMonitor1.rotation.x = -0.12;
+    this.scene.add(deskMonitor1);
+    this._track(deskMonitor1);
+    const deskMonitor2 = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.45, 0.04), accentMat
+    );
+    deskMonitor2.position.set(-1.7, 1.15, -7.5);
+    deskMonitor2.rotation.x = -0.12;
+    this.scene.add(deskMonitor2);
+    this._track(deskMonitor2);
 
     // Central reactor core (tall glowing cylinder).
     this._propCylinder(1.5, 1.5, 2.8, 0, 1.4, -30, reactorMat, 24);
@@ -988,6 +1219,14 @@ export default class LevelManager {
     this._createSteamVent('l2-vent-2', -6.0, 0.3, -32);
     this._shootableTarget(0.4, 0.3, 0, 2.5, -26.5, 'hazard');
 
+    // --- Blender model load hooks for Level 2 equipment ---
+    this._loadModel('src/assets/models/lab-desk.glb', 0, 0, -12.5, {
+      scale: 0.9, rotY: 0.3, collision: true, collisionRadius: 0.5,
+    });
+    this._loadModel('src/assets/models/lab-equipment.glb', 4.0, 0, -11, {
+      scale: 0.7,
+    });
+
     // ======================================================================
     // HEAT-HAZE ZONE MARKERS (for Kutloano's shader)
     // ======================================================================
@@ -1255,6 +1494,14 @@ export default class LevelManager {
     this._shootableTarget(0.5, 0.4, -11.85, 1.5, -32, 'hazard', -Math.PI / 2);
     this._shootableTarget(0.4, 0.3, 1.85, 2.0, -6, 'conduit', Math.PI / 2);
     this._shootableTarget(0.4, 0.3, -1.85, 2.0, -4, 'conduit', -Math.PI / 2);
+
+    // --- Blender model load hooks for Level 3 boss arena equipment ---
+    this._loadModel('src/assets/models/lab-equipment.glb', 10.5, 0, -15, {
+      scale: 1.1, rotY: Math.PI / 2, collision: true, collisionRadius: 0.6,
+    });
+    this._loadModel('src/assets/models/lab-equipment.glb', -10.5, 0, -20, {
+      scale: 0.9, rotY: -Math.PI / 2, collision: true, collisionRadius: 0.6,
+    });
 
     // ======================================================================
     // DISSOLVE SHADER ZONE MARKERS (for Kutloano)
