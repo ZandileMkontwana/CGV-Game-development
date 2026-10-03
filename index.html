@@ -332,6 +332,21 @@
         color: #bfe8ff;
         text-shadow: 0 0 12px rgba(0, 170, 255, 0.45);
       }
+      /* Audio mute indicator (procedural soundscape). */
+      #mute-indicator {
+        position: absolute;
+        right: 24px;
+        bottom: 96px;
+        font-size: 10px;
+        letter-spacing: 3px;
+        color: #ffb066;
+        text-shadow: 0 0 10px rgba(255, 140, 40, 0.6);
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+      }
+      #mute-indicator.visible { opacity: 1; }
+
       #tutorial-sub {
         margin-top: 6px;
         font-size: 10.5px;
@@ -494,6 +509,7 @@
       <div id="crosshair"></div>
       <div id="fps">-- FPS</div>
       <div id="debug-keys">Keys: none</div>
+      <div id="mute-indicator">[ MUTED ]</div>
       <div id="level-indicator">LEVEL 1</div>
       <div id="objective"></div>
 
@@ -556,7 +572,7 @@
       </div>
       <button id="btn-start">Start Game</button>
       <button id="btn-credits">Credits</button>
-      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB PULSE TOOL &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA</div>
+      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB PULSE TOOL &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA &middot; M MUTE</div>
     </div>
 
     <!-- Pause menu -->

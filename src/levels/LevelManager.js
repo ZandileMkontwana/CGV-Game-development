@@ -131,6 +131,24 @@ export default class LevelManager {
       case 3: this._buildLevel3(); break;
       default: throw new Error(`Unknown level: ${levelNum}`);
     }
+
+    // Collect flicker-capable fixtures (marked in LevelKit's lamp builders)
+    // for the horror-lighting driver in update(). Built once per load, so
+    // the per-frame driver stays allocation-free.
+    this._flickerLights = [];
+    for (const d of this._disposables) {
+      const l = d.mesh;
+      if (l && l.isLight && l.userData.flicker) {
+        this._flickerLights.push({
+          light: l,
+          base: l.intensity,
+          timer: Math.random() * 8,
+          next: 6 + Math.random() * 12,
+          burst: 0,
+          seed: Math.random() * 6.283,
+        });
+      }
+    }
   }
 
   /** Remove the active level; keep shared kit/material caches alive. */
@@ -160,6 +178,8 @@ export default class LevelManager {
     this._exitDoor = null;
     this.scriptedReveal = null;
     this.npcAnchors = {};
+    this._flickerLights = [];
+    this.collapseMode = false;
   }
 
   // ── Bookkeeping helpers ───────────────────────────────────────────────────
@@ -384,6 +404,23 @@ export default class LevelManager {
     // Rotating hazards.
     for (const { mesh, speed } of this._rotatingHazards) {
       mesh.rotation.y += speed * dt;
+    }
+
+    // Flickering lights — dying fluorescents. Each fixture idles for a few
+    // seconds, then stutters for a short burst. During the Level-3 collapse
+    // (collapseMode) bursts come thick and fast.
+    const haste = this.collapseMode ? 0.22 : 1;
+    for (const f of this._flickerLights) {
+      f.timer += dt;
+      if (f.burst > 0) {
+        f.burst -= dt;
+        f.light.intensity = f.base * (Math.sin(f.timer * 74 + f.seed) > 0.1 ? 0.07 : 1.05);
+        if (f.burst <= 0) f.light.intensity = f.base;
+      } else if (f.timer >= f.next) {
+        f.timer = 0;
+        f.burst = 0.12 + Math.random() * 0.35;
+        f.next = (6 + Math.random() * 12) * haste;
+      }
     }
   }
 

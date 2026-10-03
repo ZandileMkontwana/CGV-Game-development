@@ -232,6 +232,7 @@ export default class LevelKit {
       const c = colorName === 'amber' ? this.mats.colors.warn
         : colorName === 'red' ? this.mats.colors.emer : this.mats.colors.lampLight;
       const light = new THREE.PointLight(c, o.intensity || 0.9, 11, 2);
+            light.userData.flicker = true;
       light.position.set(x, y - 0.35, z);
       this.scene.add(light);
       this.host._track(light);
@@ -680,6 +681,7 @@ export default class LevelKit {
     }
     if (o.light !== false) {
       const light = new THREE.PointLight(0x54ff8a, 0.9, 9, 2);
+            light.userData.flicker = true;
       light.position.set(x, 1.6, z);
       this.scene.add(light);
       this.host._track(light);
@@ -709,6 +711,7 @@ export default class LevelKit {
     }
     if (o.light !== false) {
       const light = new THREE.PointLight(this.mats.colors.accent, 1.2, 14, 2);
+            light.userData.flicker = true;
       light.position.set(x, 2.2, z);
       this.scene.add(light);
       this.host._track(light);

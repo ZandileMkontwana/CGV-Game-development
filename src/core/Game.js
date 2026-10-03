@@ -11,6 +11,7 @@ import UIManager from '../ui/UIManager.js';
 import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
 import { createScientist, faceToRotY } from './CharacterFactory.js';
+import AudioManager from '../audio/AudioManager.js';
 
 /**
  * Game — top-level orchestrator.
@@ -91,6 +92,10 @@ export default class Game {
         text: 'SHOOT THE GLOWING PANELS — CONDUITS & VALVES',
         sub: 'THEY OPEN DOORS AND SHUT DOWN HAZARDS',
       },
+      {
+        text: 'LISTEN — GROWLS AND YOUR HEARTBEAT MEAN IT IS NEAR',
+        sub: 'HIDE BEHIND COVER TO BREAK LINE OF SIGHT · M — MUTE',
+      },
     ];
     this._tut = null;         // built per Level-1 load
     this._baseObjective = ''; // restored after scripted beats change it
@@ -145,6 +150,10 @@ export default class Game {
     this._frameCount = 0;
     this._fpsTime = 0;
 
+    // --- Audio ---------------------------------------------------------------
+    // Fully procedural horror soundscape (Web Audio) — no asset files.
+    this.audio = new AudioManager();
+
     // --- Clock --------------------------------------------------------------
     this._clock = new THREE.Clock();
 
@@ -152,17 +161,25 @@ export default class Game {
     this.monster.on('attack', (damage) => {
       this.playerHealth = Math.max(0, this.playerHealth - damage);
       this.camera.shake(0.2); // screen shake on hit
+      this.audio.play('attack');
+      this.audio.duck(0.55);
       if (this.playerHealth <= 0) {
         this.gameState.gameOver();
       }
     });
 
     this.monster.on('stateChange', (newState, oldState) => {
-      // TODO (Person D): Trigger monster sound effects per state.
+      // A sharp screech the moment the hunt begins — the classic "it saw me".
+      if (newState === 'chase' && oldState !== 'chase') {
+        this.audio.play('spotted');
+        this.audio.duck(0.45);
+      }
     });
 
     // Pulse tool hits — damage monster weak points, open doors, disable vents.
     this.pulseTool.on('hit', (target) => {
+      // Impact feedback for every landed shot.
+      this.audio.play('pulseHit');
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       // Level 1's creature is a scripted cameo — never killable there.
@@ -183,15 +200,23 @@ export default class Game {
       }
       if (target.userData.doorId) {
         this.levels.openDoor(target.userData.doorId);
+        this.audio.play('doorOpen');
       }
       if (target.userData.ventId) {
         this.levels.disableVent(target.userData.ventId);
+        this.audio.play('ventHiss');
       }
     });
 
     // Tutorial: track the first pulse the player fires.
     this.pulseTool.on('fire', () => {
       if (this._tut) this._tut.fired = true;
+      this.audio.play('pulseShot');
+    });
+
+    // Airy whoosh when a pulse shot hits nothing.
+    this.pulseTool.on('miss', () => {
+      this.audio.play('pulseMiss');
     });
 
     this.monster.on('death', () => {
@@ -204,6 +229,8 @@ export default class Game {
 
       // Kill feedback + next objective.
       this.camera.shake(0.4);
+      this.audio.play('death');
+      this.audio.duck(0.6);
       if (this.gameState.currentLevel === 1) {
         this._setObjective('THREAT NEUTRALIZED — REACH THE CONTROL ROOM');
       } else if (this.gameState.currentLevel === 2) {
@@ -217,6 +244,8 @@ export default class Game {
     });
 
     this.monster.on('phaseChange', (phase) => {
+      this.audio.play('roar');
+      this.audio.duck(0.5);
       // Update boss phase HUD.
       if (this._bossPhaseEl) {
         const labels = ['', 'PHASE 2 — ENRAGED', 'PHASE 3 — CRITICAL'];
@@ -240,6 +269,15 @@ export default class Game {
         // Retry from the end screen — the level was torn down on game over,
         // so rebuild it from level 1.
         this._loadLevel(1);
+      }
+      if (newState === 'gameover') {
+        this.audio.play('gameover');
+        this.audio.stopAmbient();
+        this.audio.stopRumble();
+      }
+      if (newState === 'victory' || newState === 'menu') {
+        this.audio.stopAmbient();
+        this.audio.stopRumble();
       }
       if (newState === 'menu' || newState === 'gameover') {
         // Tear down level content when returning to menu.
@@ -298,6 +336,17 @@ export default class Game {
       if (this._scientist.group.visible) {
         this._scientist.update(dt, this._scientistState);
       }
+
+      // Procedural soundscape: footsteps, heartbeat, growls, distant creaks.
+      const cs = this.player._charState;
+      this.audio.update(
+        dt,
+        cs.moving, cs.sprinting, cs.grounded,
+        this.monster.isActive ? this.monster.threatLevel : 0,
+        this.monster.state === 'chase' || this.monster.state === 'attack',
+        this.monster.isActive,
+        this.playerHealth / this.playerMaxHealth
+      );
 
       // Monster AI — update BEFORE the PulseTool so this frame's raycast
       // tests against the monster's CURRENT position (MonsterAI.update
@@ -398,6 +447,11 @@ export default class Game {
 
     // 5. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
+
+    // 5b. Switch the procedural ambience to this level's mood.
+    this.audio.setLevel(levelNum);
+    this.audio.stopRumble();
+    this._lastBeepSec = -1;
 
     // 6. Configure monster for this level.
     this.playerHealth = this.playerMaxHealth;
@@ -546,6 +600,7 @@ export default class Game {
         if (anchor) this._mutateLight.position.set(anchor.x, 1.2, anchor.z);
         this._mutateLight.intensity = 0.8;
         this.camera.shake(0.45);
+        this.audio.play('alarm');
         this._setObjective('ALARM — SOMETHING IS WRONG WITH THE SCIENTIST');
       }
       return;
@@ -561,6 +616,8 @@ export default class Game {
         this._scientistState.mode = 'mutate';
         this._mutateLight.intensity = 2.0;
         this.camera.shake(0.6);
+        this.audio.play('transform');
+        this.audio.duck(0.6);
       }
       return;
     }
@@ -581,6 +638,8 @@ export default class Game {
         );
         this.monster.setActive(true);
         this.camera.shake(0.95);
+        this.audio.play('roar');
+        this.audio.duck(0.7);
         this._setObjective('THE SCIENTIST IS GONE — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR');
       }
       return;
@@ -634,7 +693,8 @@ export default class Game {
     const complete =
       (tut.step === 0 && tut.moved) ||
       (tut.step === 1 && tut.fired) ||
-      (tut.step === 2 && tut.hit);
+      (tut.step === 2 && tut.hit) ||
+      (tut.step === 3 && tut.timer > 6); // listen-hint lingers, then fades
 
     if (complete && tut.timer > 1.6) {
       tut.step++;
@@ -740,6 +800,12 @@ export default class Game {
     // Screen shake for dramatic effect.
     this.camera.shake(0.5);
 
+    // Collapse ambience: sustained structural rumble + flickering lights.
+    this.audio.play('collapse');
+    this.audio.duck(0.65);
+    this.levels.collapseMode = true; // fixtures now stutter constantly
+    this._lastBeepSec = -1;
+
     // Hide boss phase indicator.
     if (this._bossPhaseEl) {
       this._bossPhaseEl.textContent = 'ESCAPE — RUN!';
@@ -779,6 +845,13 @@ export default class Game {
     if (this._collapseTime < 30 && this._collapseTime > 0) {
       const intensity = (1 - this._collapseTime / 30) * 0.15;
       this.camera.shake(intensity);
+    }
+
+    // Countdown beeps in the last 10 seconds — higher and faster under 5 s.
+    const secsLeft = Math.max(0, Math.ceil(this._collapseTime));
+    if (secsLeft > 0 && secsLeft <= 10 && secsLeft !== this._lastBeepSec) {
+      this._lastBeepSec = secsLeft;
+      this.audio.play('beep', secsLeft <= 5);
     }
 
     // Time's up — game over.
