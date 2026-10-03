@@ -412,19 +412,32 @@ export function createScientist() {
       const conv = Math.sin(t * 27);
       const arch = Math.sin(t * 11);
       torso.rotation.x = 0.42 * cower + mutate * (-0.35 + 0.2 * arch) + conv * 0.08 * mutate;
-      torso.position.y += mutate * 0.06 * Math.abs(arch);
+      torso.position.y += mutate * (0.32 + 0.08 * Math.abs(arch)); // rears up out of the seat
       head.rotation.x = 0.24 * type + 0.55 * cower + mutate * (-0.55 + 0.25 * conv);
       head.rotation.z = conv * 0.3 * mutate;
       armL.rotation.x += mutate * (-1.9 + 0.5 * conv);
       armR.rotation.x += mutate * (-1.9 - 0.5 * conv);
       armL.rotation.z = 0.35 * cower + mutate * (0.8 + conv * 0.15);
       armR.rotation.z = -0.35 * cower - mutate * (0.8 - conv * 0.15);
+      // The body swells as it changes — the silhouette stops reading human.
+      torso.scale.set(1 + mutate * 0.35, 1 + mutate * 0.45, 1 + mutate * 0.35);
+      head.scale.setScalar(1 + mutate * 0.3);
+      armL.scale.setScalar(1 + mutate * 0.25);
+      armR.scale.setScalar(1 + mutate * 0.25);
       if (!badgeRed) { badge.emissive.setHex(0xff2a1a); badgeRed = true; }
       badge.emissiveIntensity = 1.2 + Math.abs(conv) * 2.2 * mutate;
-    } else if (badgeRed) {
-      badge.emissive.setHex(0x38c8ff);
-      badge.emissiveIntensity = 0.7;
-      badgeRed = false;
+    } else {
+      if (badgeRed) {
+        badge.emissive.setHex(0x38c8ff);
+        badge.emissiveIntensity = 0.7;
+        badgeRed = false;
+      }
+      if (torso.scale.x !== 1) {
+        torso.scale.set(1, 1, 1);
+        head.scale.setScalar(1);
+        armL.scale.setScalar(1);
+        armR.scale.setScalar(1);
+      }
     }
   };
 

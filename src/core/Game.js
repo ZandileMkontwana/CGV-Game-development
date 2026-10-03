@@ -606,10 +606,14 @@ export default class Game {
   /**
    * Level 1 scripted mutation reveal — a cameo, not a fight.
    * Timeline when the player reaches the lab:
-   *   1. 'alarm'  — the scientist doubles over; red glow + alarm shake,
-   *   2. 'mutate' — violent convulsions bathed in strobing red light,
-   *   3. 'flee'   — the scientist is gone: the creature bursts out and
-   *                 lurches along the escape path into the ducts, then
+   *   1. 'alarm'  — the scientist stops typing and turns toward the player;
+   *                 red glow ramps up with an alarm shake,
+   *   2. 'mutate' — violent convulsions bathed in strobing red light — the
+   *                 body rears up and swells as the change takes hold,
+   *   3. 'burst'  — the scientist is gone: the creature appears in his place
+   *                 at a fraction of its size, facing the player, and
+   *                 visibly swells to full size in the strobe light,
+   *   4. 'flee'   — it lurches along the escape path into the ducts, then
    *                 deactivates once it reaches the end (body parked).
    * detectionRange stays 0 the whole time, so it can never chase or attack.
    * @param {number} dt
@@ -639,9 +643,23 @@ export default class Game {
 
     r.timer += dt;
 
+    // The scientist turns to face the player as the change takes hold — the
+    // movement pulls the eye to the console wherever the player is standing.
+    if (r.phase === 'alarm' || r.phase === 'mutate') {
+      const sg = this._scientist.group;
+      const targetYaw = Math.atan2(
+        this.player.position.x - sg.position.x,
+        this.player.position.z - sg.position.z
+      );
+      let d = targetYaw - sg.rotation.y;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      sg.rotation.y += d * Math.min(1, dt * 5);
+    }
+
     if (r.phase === 'alarm') {
       // The scientist doubles over — the mutation is taking hold.
-      if (r.timer >= 1.2) {
+      if (r.timer >= 1.5) {
         r.phase = 'mutate';
         r.timer = 0;
         this._scientistState.mode = 'mutate';
@@ -654,23 +672,44 @@ export default class Game {
     }
 
     if (r.phase === 'mutate') {
-      // Strobing red glow while the transformation convulses.
-      this._mutateLight.intensity = 2.2 + Math.sin(r.timer * 28) * 1.4;
-      if (r.timer >= 1.7) {
+      // Strobing red glow, escalating as the transformation convulses.
+      const k = Math.min(1, r.timer / 2.6);
+      this._mutateLight.intensity = 1.8 + k * 2.2 + Math.sin(r.timer * 28) * (1.2 + k * 0.9);
+      if (r.timer >= 2.6) {
+        r.phase = 'burst';
+        r.timer = 0;
+        // The scientist is gone — the creature appears in his place at a
+        // fraction of its size, facing the player, and swells to full size.
+        this._scientist.group.visible = false;
+        this.monster.spawn(reveal.spawn.x, reveal.spawn.y, reveal.spawn.z);
+        this.monster.setPatrolWaypoints([]); // held in place during the burst
+        this.monster.setActive(true);
+        this.monster.model.scale.setScalar(0.3);
+        this.monster.model.rotation.y = Math.atan2(
+          this.player.position.x - reveal.spawn.x,
+          this.player.position.z - reveal.spawn.z
+        );
+        this.camera.shake(1.0);
+        this.audio.play('roar');
+        this.audio.duck(0.7);
+      }
+      return;
+    }
+
+    if (r.phase === 'burst') {
+      // Grow the creature in front of the player over 0.45 s.
+      const k = Math.min(1, r.timer / 0.45);
+      this.monster.model.scale.setScalar(0.3 + 0.7 * k);
+      this._mutateLight.intensity = 3.2 + Math.sin(r.timer * 46) * 1.6;
+      if (k >= 1) {
         r.phase = 'flee';
         r.timer = 0;
-        // The scientist is gone — the creature bursts out and flees.
-        this._scientist.group.visible = false;
+        this.monster.model.scale.setScalar(1); // full size — rest of the game
         this._mutateLight.intensity = 0;
-        this.monster.spawn(reveal.spawn.x, reveal.spawn.y, reveal.spawn.z);
-        this.monster.patrolSpeed = 3.6;   // panic-lurch, faster than patrol
+        this.monster.patrolSpeed = 3.2;        // panic-lurch, faster than patrol
         this.monster.setPatrolWaypoints(
           reveal.escape.map(p => ({ x: p.x, y: 0, z: p.z }))
         );
-        this.monster.setActive(true);
-        this.camera.shake(0.95);
-        this.audio.play('roar');
-        this.audio.duck(0.7);
         this._setObjective('THE SCIENTIST IS GONE — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR');
       }
       return;
@@ -684,6 +723,7 @@ export default class Game {
       if (r.timer > 1.2 && (edx * edx + edz * edz < 2.25 || r.timer > 7)) {
         r.phase = 'done';
         this.monster.setActive(false);
+        this.monster.model.scale.setScalar(1);     // safety — never stay small
         this.monster.body.position.set(0, -50, 0); // park out of play
         this.monster.patrolSpeed = 2.0;            // restore default tuning
         this._setObjective(this._baseObjective);   // back to the level goal

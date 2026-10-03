@@ -446,7 +446,7 @@ export default class LevelManager {
     // Story beat: the bitten scientist convulses and mutates into the
     // creature, which then flees into the ducts — the player witnesses it.
     this.scriptedReveal = {
-      trigger: { x: -1.0, z: -23.0, radius: 2.6 }, // alarm triggers here
+      trigger: { x: 0, z: -22.0, radius: 2.8 },   // fires as the player enters the lab
       spawn: { x: -2.45, y: 1.4, z: -25.25 },      // the scientist's console seat
       escape: [                                     // flees toward the SE duct
         { x: 2.5, z: -27.5 },
