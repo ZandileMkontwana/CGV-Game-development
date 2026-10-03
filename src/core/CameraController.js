@@ -1,74 +1,38 @@
 import * as THREE from 'three';
-import InputManager from './InputManager.js';
 
-/**
- * CameraController — first-person / third-person camera with smooth toggle.
- *
- * Owns a THREE.PerspectiveCamera and a yaw/pitch rig:
- *   yawObject   → rotates around Y (left/right mouse)
- *   pitchObject → rotates around X (up/down mouse), child of yawObject
- *   camera      → attached to pitchObject
- *
- * The rig is exposed as `yawObject` so that PlayerController can read
- * the camera's yaw direction for movement.
- *
- * Press V to toggle between first-person (camera at eye level) and
- * third-person (camera behind and above the player, model visible).
- * The transition uses exponential smoothing for a polished feel.
- */
 export default class CameraController {
-  /**
-   * @param {THREE.Scene} scene
-   * @param {InputManager} input
-   */
   constructor(scene, input) {
     this.input = input;
     this.sensitivity = 0.002;
-    this.keyTurnSpeed = 1.2;  // radians/second for arrow-key turning
-    this.precisionTurnSpeed = 0.3; // rad/s while Shift held — for aiming
-    this.pitchLimit = Math.PI / 2 - 0.05; // prevent flipping
-
-    // --- Camera -------------------------------------------------------------
-    this.camera = new THREE.PerspectiveCamera(
-      75,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      500
-    );
-
-    // --- Yaw / Pitch rig ----------------------------------------------------
-    this.yawObject = new THREE.Object3D();   // rotates around Y axis
-    this.pitchObject = new THREE.Object3D(); // rotates around X axis
+    this.keyTurnSpeed = 1.2;
+    this.pitchLimit = Math.PI / 2 - 0.12;
+    this.camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 180);
+    this.yawObject = new THREE.Object3D();
+    this.pitchObject = new THREE.Object3D();
     this.yawObject.add(this.pitchObject);
     this.pitchObject.add(this.camera);
     scene.add(this.yawObject);
-
-    // --- First / Third person toggle state ----------------------------------
-    /** @type {boolean} true = first-person, false = third-person */
     this.isFirstPerson = true;
-
-    /** Third-person offset: how far behind and above the player the camera sits */
-    this.tpDistance = 4.0;   // metres behind the player
-    this.tpHeight = 1.8;    // metres above the pivot point
-
-    /** Speed of the FP↔TP lerp transition (higher = snappier) */
-    this.transitionSpeed = 6;
-
-    /** Height offsets used when positioning the yaw pivot. */
-    this.fpPivotHeight = 1.7;   // eye level — same as PlayerController.playerHeight
-    this.tpPivotHeight = 1.2;   // shoulder level — frames the character nicely
-
-    // Reusable vectors for per-frame camera offset calculation.
-    // Avoids allocating new Vector3 objects every frame.
-    this._targetOffset = new THREE.Vector3();
-    this._currentOffset = new THREE.Vector3(0, 0, 0);
-    this._pivotPos = new THREE.Vector3(); // current pivot target (lerped)
-
-    // --- Screen shake state -------------------------------------------------
+    this.isBodyOccluded = false;
+    this.motionEnabled = true;
+    this.occluders = [];
+    this.tpDistance = 2.6;
     this.shakeIntensity = 0;
-    this.shakeDecay = 5; // intensity reduces per second
-
-    // --- Resize handler -----------------------------------------------------
+    this._height = 1.25;
+    this._phase = 0;
+    this._bob = 0;
+    this._recoil = 0;
+    this._offset = new THREE.Vector3();
+    this._target = new THREE.Vector3();
+    this._origin = new THREE.Vector3();
+    this._end = new THREE.Vector3();
+    this._direction = new THREE.Vector3();
+    this._right = new THREE.Vector3();
+    this._up = new THREE.Vector3();
+    this._rayOrigin = new THREE.Vector3();
+    this._ray = new THREE.Raycaster();
+    this._hits = [];
+    this._corners = [[0, 0], [-0.12, -0.09], [0.12, -0.09], [-0.12, 0.09], [0.12, 0.09]];
     this._onResize = () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
@@ -76,106 +40,96 @@ export default class CameraController {
     window.addEventListener('resize', this._onResize);
   }
 
-  /**
-   * Toggle between first-person and third-person camera views.
-   * The actual transition is interpolated smoothly each frame in update().
-   */
   toggleView() {
     this.isFirstPerson = !this.isFirstPerson;
   }
 
-  /**
-   * @param {number} dt  delta time in seconds
-   * @param {import('cannon-es').Vec3} feetPosition  player feet position (body.position)
-   */
-  update(dt, feetPosition) {
-    // --- V key toggle (justPressed fires only once per keypress) -------------
-    if (this.input.justPressed('KeyV')) {
-      this.toggleView();
-    }
+  reset() {
+    this.yawObject.rotation.set(0, 0, 0);
+    this.pitchObject.rotation.set(0, 0, 0);
+    this._offset.set(0, 0, 0);
+    this.shakeIntensity = this._recoil = this._bob = 0;
+    this._height = 1.25;
+  }
 
-    // --- Mouse look ---------------------------------------------------------
-    if (this.input.mouse.locked) {
-      this.yawObject.rotation.y -= this.input.mouse.dx * this.sensitivity;
-      this.pitchObject.rotation.x -= this.input.mouse.dy * this.sensitivity;
-      this.pitchObject.rotation.x = THREE.MathUtils.clamp(
-        this.pitchObject.rotation.x,
-        -this.pitchLimit,
-        this.pitchLimit
-      );
-    }
-
-    // --- Arrow key turning (works without pointer lock) ---------------------
-    // Hold Shift for precision aiming — quarter speed makes it possible to
-    // line up shots on distant weak points without the mouse.
+  update(dt, position, state = {}) {
+    if (this.input.justPressed('KeyV')) this.toggleView();
+    const aim = !!state.aiming;
+    const lookScale = aim ? 0.5 : 1;
     const keys = this.input.keys;
-    const precision = keys['ShiftLeft'] || keys['ShiftRight'];
-    const turnSpeed = precision ? this.precisionTurnSpeed : this.keyTurnSpeed;
-    if (keys['ArrowLeft'])  this.yawObject.rotation.y += turnSpeed * dt;
-    if (keys['ArrowRight']) this.yawObject.rotation.y -= turnSpeed * dt;
-    if (keys['ArrowUp']) {
-      this.pitchObject.rotation.x += turnSpeed * dt;
-      this.pitchObject.rotation.x = Math.min(this.pitchObject.rotation.x, this.pitchLimit);
+    if (this.input.mouse.locked) {
+      this.yawObject.rotation.y -= this.input.mouse.dx * this.sensitivity * lookScale;
+      this.pitchObject.rotation.x -= this.input.mouse.dy * this.sensitivity * lookScale;
     }
-    if (keys['ArrowDown']) {
-      this.pitchObject.rotation.x -= turnSpeed * dt;
-      this.pitchObject.rotation.x = Math.max(this.pitchObject.rotation.x, -this.pitchLimit);
+    const turn = (aim || keys.ShiftLeft || keys.ShiftRight ? 0.32 : this.keyTurnSpeed) * dt;
+    if (keys.ArrowLeft) this.yawObject.rotation.y += turn;
+    if (keys.ArrowRight) this.yawObject.rotation.y -= turn;
+    if (keys.ArrowUp) this.pitchObject.rotation.x += turn;
+    if (keys.ArrowDown) this.pitchObject.rotation.x -= turn;
+    this.pitchObject.rotation.x = THREE.MathUtils.clamp(this.pitchObject.rotation.x, -this.pitchLimit, this.pitchLimit);
+
+    const blend = 1 - Math.exp(-12 * dt);
+    const height = state.crouching ? 0.72 : this.isFirstPerson ? 1.25 : 1.12;
+    this._height += (height - this._height) * blend;
+    this.yawObject.position.set(position.x, position.y + this._height, position.z);
+    this._target.set(this.isFirstPerson ? 0 : aim ? 0.42 : 0.52, this.isFirstPerson ? 0 : 0.12,
+      this.isFirstPerson ? 0 : aim ? 1.5 : this.tpDistance);
+    this._offset.lerp(this._target, blend);
+    this.camera.position.copy(this._offset);
+    this.yawObject.updateMatrixWorld(true);
+
+    // Sweep the camera's near-plane corners, not just its centre, around cover.
+    if (this._offset.lengthSq() > 0.01) {
+      this.pitchObject.getWorldPosition(this._origin);
+      this.camera.getWorldPosition(this._end);
+      this._direction.subVectors(this._end, this._origin);
+      const distance = this._direction.length();
+      this._direction.normalize();
+      this._right.setFromMatrixColumn(this.camera.matrixWorld, 0);
+      this._up.setFromMatrixColumn(this.camera.matrixWorld, 1);
+      let allowed = distance;
+      this._ray.far = distance + 0.18;
+      for (const [x, y] of this._corners) {
+        this._rayOrigin.copy(this._origin).addScaledVector(this._right, x).addScaledVector(this._up, y);
+        this._ray.set(this._rayOrigin, this._direction);
+        this._hits.length = 0;
+        this._ray.intersectObjects(this.occluders, false, this._hits);
+        if (this._hits.length) allowed = Math.min(allowed, Math.max(0, this._hits[0].distance - 0.18));
+      }
+      this.camera.position.multiplyScalar(allowed / distance);
     }
+    this.isBodyOccluded = !this.isFirstPerson && this.camera.position.length() < 0.65;
 
-    // --- Smooth FP↔TP pivot height + camera offset transition ---------------
-    //
-    // The yaw pivot height changes between eye level (FP) and shoulder
-    // level (TP) so that the character is framed correctly in TP view.
-    // The camera offset moves from (0,0,0) to (0, tpHeight, tpDistance)
-    // behind and above the pivot.  Exponential smoothing gives a cinematic
-    // lerp without allocating any objects per frame.
-    const lerpFactor = 1 - Math.exp(-this.transitionSpeed * dt);
-
-    const targetPivotY = this.isFirstPerson ? this.fpPivotHeight : this.tpPivotHeight;
-    this._pivotPos.y += (targetPivotY - this._pivotPos.y) * lerpFactor;
-    this.yawObject.position.set(
-      feetPosition.x,
-      feetPosition.y + this._pivotPos.y,
-      feetPosition.z
-    );
-
+    const moving = state.moving && state.grounded;
+    this._phase += dt * (state.sprinting ? 12 : 8);
+    const bobTarget = moving && this.motionEnabled ? (state.sprinting ? 0.025 : 0.012) * (aim ? 0.3 : 1) : 0;
+    this._bob += (bobTarget - this._bob) * blend;
     if (this.isFirstPerson) {
-      this._targetOffset.set(0, 0, 0);
-    } else {
-      this._targetOffset.set(0, this.tpHeight, this.tpDistance);
+      this.camera.position.y += Math.sin(this._phase * 2) * this._bob;
+      this.camera.position.x += Math.cos(this._phase) * this._bob * 0.5;
     }
-
-    this._currentOffset.lerp(this._targetOffset, lerpFactor);
-    this.camera.position.set(
-      this._currentOffset.x,
-      this._currentOffset.y,
-      -this._currentOffset.z   // negative Z = behind the player
-    );
-
-    // --- Screen shake (first-person only — feels wrong in third-person) -----
-    if (this.shakeIntensity > 0 && this.isFirstPerson) {
-      this.camera.position.x += (Math.random() - 0.5) * this.shakeIntensity;
-      this.camera.position.y += (Math.random() - 0.5) * this.shakeIntensity;
-      this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt);
-    } else if (!this.isFirstPerson) {
-      // Decay shake even when in TP so it's clean on switch back.
-      this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt);
+    this._recoil *= Math.exp(-18 * dt);
+    this.camera.rotation.x = this._recoil;
+    this.camera.rotation.z = this.motionEnabled && this.isFirstPerson ? Math.sin(this._phase) * this._bob * 0.12 : 0;
+    if (this.motionEnabled) {
+      this.camera.position.x += (Math.random() - 0.5) * this.shakeIntensity * 0.25;
+      this.camera.position.y += (Math.random() - 0.5) * this.shakeIntensity * 0.25;
     }
-
-    // --- Refresh world matrices NOW -----------------------------------------
-    // Three.js normally computes matrixWorld during render (end of frame).
-    // The PulseTool raycast runs earlier in the game loop and needs the
-    // camera's CURRENT world position/direction — so update the rig
-    // (yaw → pitch → camera) explicitly here.
+    this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 2.5);
+    const fov = aim ? 56 : state.sprinting && this.motionEnabled ? 80 : 74;
+    this.camera.fov += (fov - this.camera.fov) * blend;
+    this.camera.updateProjectionMatrix();
     this.yawObject.updateMatrixWorld(true);
   }
 
-  /** Trigger screen shake (e.g. explosion, boss hit). */
-  shake(intensity = 0.3) {
-    this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
+  recoil() {
+    if (this.motionEnabled) this._recoil = 0.022;
   }
 
-  /** Clean up the resize listener when the game is torn down. */
+  shake(intensity = 0.3) {
+    this.shakeIntensity = Math.max(this.shakeIntensity, Math.min(intensity, 0.7));
+  }
+
   dispose() {
     window.removeEventListener('resize', this._onResize);
   }

@@ -326,8 +326,19 @@ export default class Game {
 
     // Only update simulation while playing.
     if (this.gameState.isPlaying) {
+      // Stance/aim from raw input — feeds both the player (move speed) and
+      // the camera (FOV zoom, shoulder tighten, pivot height).
+      const aiming = this.input.mouse.rightDown === true;
+      const crouching = this.input.keys['KeyC'] === true;
+      this.player.setStance(crouching, aiming);
       this.player.update(dt);
-      this.camera.update(dt, this.player.position);
+      this.camera.update(dt, this.player.position, {
+        aiming,
+        crouching,
+        moving: this.player._charState.moving,
+        sprinting: this.player._charState.sprinting,
+        grounded: this.player._charState.grounded,
+      });
       this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
@@ -418,10 +429,11 @@ export default class Game {
         this._healthFillEl.style.width = pct + '%';
       }
 
-      // Sync the third-person character model every frame.
+      // Sync the character model every frame, then apply the view mode:
+      // first-person hides the upper body (legs stay visible looking down),
+      // third-person renders the full operator.
       this.player.syncModel();
-      // Hide model in first-person, show in third-person.
-      this.player.setModelVisible(!this.camera.isFirstPerson);
+      this.player.setViewMode(this.camera.isFirstPerson);
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.position);
@@ -443,6 +455,11 @@ export default class Game {
   _loadLevel(levelNum) {
     // 1. Build level geometry and physics (Person B's LevelManager).
     this.levels.load(levelNum);
+
+    // 1b. Camera: clear view/aim offsets from the last level and pick up this
+    //     level's occluders so the third-person camera sweeps around walls.
+    this.camera.reset();
+    this.camera.occluders = this.levels.occluders || [];
 
     // 2. Spawn the player at the level's spawn point.
     const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };

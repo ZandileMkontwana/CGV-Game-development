@@ -85,6 +85,24 @@ export default class PlayerController {
     this._lastDt = 0.016;
     this._charState = { moving: false, sprinting: false, grounded: true };
 
+    // --- Stance / aim state (drives camera + speed) ------------------------
+    this.isCrouching = false;
+    this.isAiming = false;
+    this._crouchBlend = 0; // smoothed 0..1 for the model squash
+
+    // Hidden upper body in first-person (legs stay visible when looking down).
+    // The engineer builds everything above the hips under one joint at y 0.9,
+    // while legs (y 0.78) and pelvis (0.82) sit directly on the group — so a
+    // simple height split cleanly separates "body above camera" from "legs".
+    this._upperParts = [];
+    this._lowerParts = [];
+    this.playerModel.updateMatrixWorld(true);
+    for (const child of this.playerModel.children) {
+      const bucket = child.position.y > 0.85 ? this._upperParts : this._lowerParts;
+      child.traverse((o) => { if (o.isMesh) bucket.push(o); });
+    }
+    this.isFirstPerson = true;
+
     // Hidden by default — starts in first-person mode.
     this.playerModel.visible = false;
     scene.add(this.playerModel);
@@ -105,8 +123,10 @@ export default class PlayerController {
   update(dt) {
     this._lastDt = dt;
     const keys = this.input.keys;
-    const sprint = keys['ShiftLeft'] || keys['ShiftRight'];
-    const speed = this.moveSpeed * (sprint ? this.sprintMultiplier : 1);
+    const sprint = (keys['ShiftLeft'] || keys['ShiftRight']) && !this.isCrouching && !this.isAiming;
+    let speed = this.moveSpeed * (sprint ? this.sprintMultiplier : 1);
+    if (this.isCrouching) speed *= 0.5;   // sneaking — slower, quieter
+    if (this.isAiming) speed *= 0.6;      // ADS — careful steps
 
     // --- Movement direction relative to camera yaw -------------------------
     let moveX = 0;
@@ -160,7 +180,7 @@ export default class PlayerController {
   }
 
   /**
-   * Sync the placeholder character model with the physics body.
+   * Sync the character model with the physics body.
    * Call once per frame from the game loop so the model tracks
    * position and yaw regardless of who is driving the update.
    */
@@ -176,11 +196,42 @@ export default class PlayerController {
     if (this.cameraPivot) {
       this.playerModel.rotation.y = this.cameraPivot.rotation.y;
     }
+
+    // Smooth crouch: squash the model toward the floor. The camera lowers
+    // itself via the crouching state — this keeps the silhouette matching.
+    const target = this.isCrouching ? 0.68 : 1;
+    this._crouchBlend += (target - this._crouchBlend) * Math.min(1, this._lastDt * 10);
+    this.playerModel.scale.y = this._crouchBlend;
+
     // Drive the limb animation from the movement state captured in update().
     this.character.update(this._lastDt, this._charState);
   }
 
-  /** Show or hide the character model (called by CameraController). */
+  /**
+   * Set stance/aim flags for this frame (called by Game with input state).
+   * @param {boolean} crouching
+   * @param {boolean} aiming
+   */
+  setStance(crouching, aiming) {
+    this.isCrouching = crouching;
+    this.isAiming = aiming;
+  }
+
+  /**
+   * Switch between first- and third-person body rendering.
+   * FP: hide everything above the hips (torso/head/arms/backpack) so the
+   * camera never sits inside geometry — legs remain visible looking down.
+   * TP: the full operator silhouette is rendered.
+   * @param {boolean} firstPerson
+   */
+  setViewMode(firstPerson) {
+    this.isFirstPerson = firstPerson;
+    this.playerModel.visible = true;
+    for (const m of this._upperParts) m.visible = !firstPerson;
+    for (const m of this._lowerParts) m.visible = true;
+  }
+
+  /** Show or hide the character model entirely (cutscenes, spawning). */
   setModelVisible(visible) {
     this.playerModel.visible = visible;
   }

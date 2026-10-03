@@ -18,7 +18,7 @@ export default class InputManager {
     this._pressedThisFrame = {};
 
     /** Mouse state (deltas + clicked reset every frame after consumption) */
-    this.mouse = { dx: 0, dy: 0, locked: false, clicked: false };
+    this.mouse = { dx: 0, dy: 0, locked: false, clicked: false, rightDown: false };
 
     this._canvas = canvas;
     this._bind();
@@ -56,10 +56,22 @@ export default class InputManager {
     });
 
     // Left-click while pointer-locked → mark as fire click.
+    // Right button held → aim (ADS) for the camera/shooter.
     this._canvas.addEventListener('mousedown', (e) => {
       if (this.mouse.locked && e.button === 0) {
         this.mouse.clicked = true;
       }
+      if (e.button === 2) this.mouse.rightDown = true;
+    });
+
+    this._canvas.addEventListener('mouseup', (e) => {
+      if (e.button === 2) this.mouse.rightDown = false;
+    });
+
+    // Right-click opens the browser context menu — suppress it while locked
+    // so aiming doesn't pop a menu over the game.
+    this._canvas.addEventListener('contextmenu', (e) => {
+      if (this.mouse.locked) e.preventDefault();
     });
 
     // --- Lose focus → release all keys so nothing sticks --------------------
