@@ -40,7 +40,7 @@ export default class PlayerController {
     this.body = new CANNON.Body({
       mass: 70,
       shape: new CANNON.Sphere(this.playerRadius),
-      material: physicsWorld.defaultMaterial,
+      material: physicsWorld.actorMaterial,
       position: new CANNON.Vec3(0, 2, 0),
       linearDamping: 0.9,   // ground friction feel
       angularDamping: 1.0,  // prevent spinning
@@ -132,12 +132,14 @@ export default class PlayerController {
     if (this.isCrouching) speed *= 0.5;   // sneaking — slower, quieter
     if (this.isAiming) speed *= 0.6;      // ADS — careful steps
 
-    // --- Grounding: short ray from just under the sphere down to 0.2 below --
-    // Starting below our own collider means the ray can never self-hit (and
-    // cannon's skipBackfaces doesn't cover spheres); collisionFilterMask 1
-    // additionally ignores the player body (group 2).
-    this._rayFrom.set(this.body.position.x, this.body.position.y - this.playerRadius - 0.02, this.body.position.z);
-    this._rayTo.set(this.body.position.x, this.body.position.y - this.playerRadius - 0.22, this.body.position.z);
+    // --- Grounding: short ray each frame ------------------------------------
+    // Starts just INSIDE the sphere's lower half (0.05 above its bottom) and
+    // points down past the feet. skipBackfaces makes our own sphere invisible
+    // to the ray (interior surfaces face away from the ray), so it only sees
+    // the world — starting BELOW the feet would put the ray under the floor
+    // plane itself, where it can never hit anything.
+    this._rayFrom.set(this.body.position.x, this.body.position.y - this.playerRadius + 0.05, this.body.position.z);
+    this._rayTo.set(this.body.position.x, this.body.position.y - this.playerRadius - 0.25, this.body.position.z);
     this._rayResult.reset();
     this.physicsWorld.world.raycastClosest(
       this._rayFrom, this._rayTo,

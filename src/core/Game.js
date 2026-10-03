@@ -29,12 +29,13 @@ export default class Game {
     // --- Renderer -----------------------------------------------------------
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     container.appendChild(this.renderer.domElement);
+    if (import.meta.env.DEV) window.__game = this; // dev-only debug handle
 
     // --- Scene --------------------------------------------------------------
     this.scene = new THREE.Scene();
@@ -319,7 +320,7 @@ export default class Game {
   // --- Main loop ------------------------------------------------------------
   _loop = () => {
     requestAnimationFrame(this._loop);
-    const dt = Math.min(this._clock.getDelta(), 0.1); // cap to avoid spiral
+    const dt = Math.min(this._clock.getDelta(), 0.2); // cap to avoid spiral
 
     // FPS counter.
     this._frameCount++;

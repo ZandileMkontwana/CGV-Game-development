@@ -83,7 +83,7 @@ export default class MonsterAI {
     this.body = new CANNON.Body({
       mass: 120,
       shape: new CANNON.Sphere(0.6),
-      material: physicsWorld.defaultMaterial,
+      material: physicsWorld.actorMaterial,
       position: new CANNON.Vec3(0, 2, 0),
       linearDamping: 0.9,
       angularDamping: 1.0,

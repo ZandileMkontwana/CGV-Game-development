@@ -89,8 +89,10 @@ export default class PostFX {
    */
   constructor(renderer, scene, camera) {
     this._renderer = renderer;
+    this._scene = scene;
     this._dangerTarget = 0;
     this._time = 0;
+    this._degradeLevel = 0;
 
     this.composer = new EffectComposer(renderer);
     // Cap the post pipeline below the canvas DPR — bloom + grade at full
@@ -118,7 +120,7 @@ export default class PostFX {
     this.composer.addPass(this.grade);
 
     this._onResize = () => {
-      this.composer.setPixelRatio(this._maxPixelRatio);
+      this.composer.setPixelRatio(this._maxPixelRatio * this._dynScale);
       this.composer.setSize(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', this._onResize);
@@ -153,6 +155,25 @@ export default class PostFX {
         this._dynScale = scale;
         this.composer.setPixelRatio(this._maxPixelRatio * scale);
         this.composer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      // --- One-way quality fallback -------------------------------------------
+      // If even 0.65x resolution can't hold ~30fps, shed whole features
+      // instead of blurring further: first bloom, then shadow maps. Never
+      // recovers — avoids flip-flopping between quality tiers mid-game.
+      if (this._dynScale <= 0.66 && avg > 0.032) {
+        if (this._degradeLevel === 0) {
+          this._degradeLevel = 1;
+          this.composer.removePass(this.bloom);
+        } else if (this._degradeLevel === 1) {
+          this._degradeLevel = 2;
+          this._renderer.shadowMap.enabled = false;
+          this._scene.traverse((o) => {
+            if (!o.material) return;
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            for (const m of mats) m.needsUpdate = true;
+          });
+        }
       }
     }
 
