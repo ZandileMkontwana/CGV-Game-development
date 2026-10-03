@@ -281,8 +281,9 @@ export default class Game {
         // Fresh start — load level 1 geometry, lighting, and spawn player.
         this._loadLevel(1);
       }
-      if (newState === 'playing' && oldState === 'levelTransition') {
-        // Load the next level after transition.
+      if (newState === 'levelTransition') {
+        // Build the next level NOW, behind the black transition overlay, so
+        // the level-load shader warm-up stall never shows as a frozen frame.
         this._loadLevel(this.gameState.currentLevel);
       }
       if (newState === 'playing' && (oldState === 'gameover' || oldState === 'victory')) {
@@ -320,6 +321,21 @@ export default class Game {
   // --- Main loop ------------------------------------------------------------
   _loop = () => {
     requestAnimationFrame(this._loop);
+    // try/catch keeps the frame presenting no matter what throws below —
+    // an exception before postfx.render() would otherwise freeze the canvas
+    // permanently while the loop keeps silently rescheduling.
+    try {
+      this._tick();
+    } catch (err) {
+      const now = performance.now();
+      if (!this._lastLoopErr || now - this._lastLoopErr > 2000) {
+        this._lastLoopErr = now;
+        console.error('[Game] frame error:', err);
+      }
+    }
+  };
+
+  _tick = () => {
     const dt = Math.min(this._clock.getDelta(), 0.2); // cap to avoid spiral
 
     // FPS counter.

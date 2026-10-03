@@ -159,7 +159,7 @@ export default class PostFX {
 
       // --- One-way quality fallback -------------------------------------------
       // If even 0.65x resolution can't hold ~30fps, shed whole features
-      // instead of blurring further: first bloom, then shadow maps. Never
+      // instead of blurring further: first bloom, then shadow updates. Never
       // recovers — avoids flip-flopping between quality tiers mid-game.
       if (this._dynScale <= 0.66 && avg > 0.032) {
         if (this._degradeLevel === 0) {
@@ -167,12 +167,10 @@ export default class PostFX {
           this.composer.removePass(this.bloom);
         } else if (this._degradeLevel === 1) {
           this._degradeLevel = 2;
-          this._renderer.shadowMap.enabled = false;
-          this._scene.traverse((o) => {
-            if (!o.material) return;
-            const mats = Array.isArray(o.material) ? o.material : [o.material];
-            for (const m of mats) m.needsUpdate = true;
-          });
+          // Stop re-rendering shadow maps instead of disabling them: flipping
+          // shadowMap.enabled changes shader program defines, forcing a full
+          // scene-wide recompile that stalls for seconds on weak GPUs.
+          this._renderer.shadowMap.autoUpdate = false;
         }
       }
     }
