@@ -8,8 +8,8 @@
  *   Level 3  emergency  — red alert, arena + collapse escape
  *
  * Teardown rules (important):
- *   - Kit meshes carry userData.kitShared and are removed from the scene but
- *     NOT disposed — their geometry/material caches live for the session.
+ *   - Kit meshes and cached model roots carry userData.kitShared and are
+ *     removed but NOT disposed — shared geometry/material caches stay alive.
  *   - Texture maps are never disposed here (all cached/shared).
  *   - Only per-level creations (doors, targets, decals, steam sprites) own
  *     their resources, flagged via userData.ownsGeometry / ownsMaterial.
@@ -27,6 +27,7 @@
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import LevelKit from './LevelKit.js';
 import { getThemeMaterials } from './LevelMaterials.js';
 
@@ -86,6 +87,9 @@ export default class LevelManager {
     /** Rotating hazard meshes {mesh, speed} (rebuilt each load). */
     this._rotatingHazards = [];
 
+    /** Dust-mote Points clouds with a slow drift (rebuilt each load). */
+    this._dustFields = [];
+
     /** Meshes the dissolve shader fades during the L3 collapse. */
     this._dissolveWalls = [];
 
@@ -105,6 +109,15 @@ export default class LevelManager {
     this.fogColor = null;
     this.fogNear = 25;
     this.fogFar = 90;
+
+    /** GLTF loader for Blender .glb models (reused across levels). */
+    this._gltfLoader = new GLTFLoader();
+
+    /** Path → GLTF promise; shared resources live for this manager's lifetime. */
+    this._modelCache = new Map();
+
+    /** Invalidates pending model placements on every teardown, even reloads. */
+    this._levelGeneration = 0;
 
     /** Theme material bundle + kit instance for the active level. */
     this._mats = null;
@@ -153,6 +166,7 @@ export default class LevelManager {
 
   /** Remove the active level; keep shared kit/material caches alive. */
   _teardown() {
+    ++this._levelGeneration;
     for (const entry of this._disposables) {
       if (entry.body) this.physics.world.removeBody(entry.body);
       const mesh = entry.mesh;
@@ -174,6 +188,7 @@ export default class LevelManager {
     this._doors = [];
     this._steamVents = [];
     this._rotatingHazards = [];
+    this._dustFields = [];
     this._dissolveWalls = [];
     this._exitDoor = null;
     this.scriptedReveal = null;
@@ -230,6 +245,71 @@ export default class LevelManager {
     this._track(mesh);
     this.shootables.push(mesh);
     return mesh;
+  }
+
+  // ── Blender model loading (.glb) ────────────────────────────────────────
+
+  /**
+   * Load an explicitly supplied asset URL and place a clone in this level.
+   * Concurrent requests share a cached promise; failed requests can retry.
+   * Returns null on failure or if the requesting level was torn down.
+   *
+   * @param {string} path   served model URL
+   * @param {number} x      world x
+   * @param {number} y      world y
+   * @param {number} z      world z
+   * @param {object} opts   optional overrides
+   * @param {number} opts.scale     uniform scale (default 1)
+   * @param {number} opts.rotY      Y-axis rotation in radians (default 0)
+   * @param {boolean} opts.collision add a static physics body (default false)
+   * @param {number} opts.collisionRadius world-space box half-extent (default 0.5)
+   * @returns {Promise<THREE.Group|null>}
+   */
+  async _loadModel(path, x, y, z, opts = {}) {
+    const generation = this._levelGeneration;
+    const { scale = 1, rotY = 0, collision = false, collisionRadius = 0.5 } = opts;
+    try {
+      let pending = this._modelCache.get(path);
+      if (!pending) {
+        pending = this._gltfLoader.loadAsync(path).catch((err) => {
+          if (this._modelCache.get(path) === pending) this._modelCache.delete(path);
+          throw err;
+        });
+        this._modelCache.set(path, pending);
+      }
+      const gltf = await pending;
+      if (generation !== this._levelGeneration) return null;
+
+      const model = gltf.scene.clone();
+      // Clones share cached geometry, materials and textures, just like kit meshes.
+      model.userData.kitShared = true;
+      model.position.set(x, y, z);
+      model.scale.setScalar(scale);
+      model.rotation.y = rotY;
+      model.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+
+      // Static colliders need no sync pair (which would move the model's origin
+      // to the collider centre and retain it after teardown).
+      let body = null;
+      if (collision) {
+        body = this.physics.createBox(
+          0, collisionRadius, collisionRadius, collisionRadius,
+          new CANNON.Vec3(x, y + collisionRadius, z)
+        );
+        body.quaternion.setFromEuler(0, rotY, 0);
+      }
+      this.scene.add(model);
+      this._track(model, body);
+      return model;
+    } catch (err) {
+      console.warn(`[LevelManager] Model not loaded: ${path} — ${err.message || err}`);
+      return null;
+    }
   }
 
   /**
@@ -357,6 +437,82 @@ export default class LevelManager {
     kit.box(this._mats.exitGreen, 0.12, 2.2, 0.12, x + r, 1.1, z, { cast: false });
   }
 
+  /**
+   * A dying practical light (bare bulb / damaged fixture). Tagged with
+   * userData.flicker so load() collects it into _flickerLights and the
+   * update() driver stutters it — idle stretches, then bursts, faster in
+   * collapse mode. Never toggle `visible` on lights: that changes the
+   * renderer's light inventory and forces a full shader recompile.
+   */
+  _flickerLight(x, y, z, color, intensity, distance) {
+    const light = new THREE.PointLight(color, intensity, distance, 2);
+    light.position.set(x, y, z);
+    light.userData.flicker = true;
+    this.scene.add(light);
+    this._track(light);
+    return light;
+  }
+
+  /**
+   * Fake volumetric light shaft — an additive open-ended cone suggesting a
+   * beam streaming down from a ceiling breach. Purely visual (no real light,
+   * depth-write off) so it costs almost nothing.
+   */
+  _lightShaft(x, yBottom, z, height, color = 0xffd9a0, radius = 0.8) {
+    const geo = new THREE.CylinderGeometry(0.1, radius, height, 12, 1, true);
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.08,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const shaft = new THREE.Mesh(geo, mat);
+    shaft.position.set(x, yBottom + height / 2, z);
+    shaft.renderOrder = 5;
+    shaft.userData.ownsGeometry = true;
+    shaft.userData.ownsMaterial = true;
+    this.scene.add(shaft);
+    this._track(shaft);
+    return shaft;
+  }
+
+  /**
+   * Drifting dust motes — a cheap Points cloud that slowly swirls around the
+   * room centre. Mote positions are stored relative to the object position,
+   * so rotating the object keeps the swirl in place (motes farther from the
+   * centre drift faster, which reads as natural air movement).
+   */
+  _dustMotes(count, cx, cz, radius, yMin, yMax) {
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * radius;
+      pos[i * 3] = Math.cos(a) * r;
+      pos[i * 3 + 1] = yMin + Math.random() * (yMax - yMin);
+      pos[i * 3 + 2] = Math.sin(a) * r;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xcfe0ea,
+      size: 0.035,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+    });
+    const motes = new THREE.Points(geo, mat);
+    motes.position.set(cx, 0, cz);
+    motes.userData.ownsGeometry = true;
+    motes.userData.ownsMaterial = true;
+    this.scene.add(motes);
+    this._track(motes);
+    this._dustFields.push(motes);
+    return motes;
+  }
+
   // ── Per-frame update: doors, vents, rotating hazards (zero allocations) ───
 
   update(dt) {
@@ -404,6 +560,11 @@ export default class LevelManager {
     // Rotating hazards.
     for (const { mesh, speed } of this._rotatingHazards) {
       mesh.rotation.y += speed * dt;
+    }
+
+    // Dust motes: slow in-place swirl.
+    for (const d of this._dustFields) {
+      d.rotation.y += dt * 0.04;
     }
 
     // Flickering lights — dying fluorescents. Each fixture idles for a few
@@ -547,6 +708,8 @@ export default class LevelManager {
     // Alarm beacon near containment (the scripted beat's visual anchor).
     kit.lamp(-7.6, -27.5, { y: 2.6, color: 'red', light: false });
     this._scorchDecal(-5.0, 0, -28.4, 1.6, 0.4);
+    // Dust hanging in the lab's overhead light.
+    this._dustMotes(70, 0, -26, 6.5, 0.3, 2.7);
 
     // ── Maintenance C2 (x -2..2, z -32..-40) ─────────────────────────────
     kit.floorSlab(4.3, 8.0, 0, -36.15, { lines: [{ axis: 'z', len: 6.5, color: 'accent' }] });
@@ -604,6 +767,8 @@ export default class LevelManager {
     kit.floorLine(0, -44.0, 7, { axis: 'x', color: 'warn' });
     this._scorchDecal(-5.5, 0, -45.2, 1.3);
     this._scorchDecal(5.0, 0, -49.0, 1.1);
+    // Dust around the reactor core.
+    this._dustMotes(60, 0, -47, 6.5, 0.4, 2.7);
 
     // ── Control room (x -5..5, z -54..-64) ───────────────────────────────
     kit.floorSlab(10.6, 10.0, 0, -59.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
@@ -755,6 +920,12 @@ export default class LevelManager {
     kit.valveWheel(-7.9, 1.2, -26.2, 'e');
     const v1 = this._shootableTarget(0.4, 0.3, -7.94, 1.2, -26.2, 'hazard', Math.PI / 2);
     v1.userData.ventId = 'l2-vent-1';
+    // Dying bulbs over the quarters — one right on the monster's route.
+    this._flickerLight(0, 2.55, -25.5, 0xffaa66, 1.1, 7);
+    this._flickerLight(-6.4, 2.55, -20.5, 0xffaa66, 0.8, 6);
+    // Dusty beam through the ceiling gap the fallen panel dropped from.
+    this._lightShaft(1.8, 0.45, -26.4, 2.6, 0xffd9a0, 0.9);
+    this._dustMotes(80, 0, -24, 7, 0.3, 2.8);
 
     // ── Maintenance C2 (x -2..2, z -30..-40) — hazards ───────────────────
     kit.floorSlab(4.3, 10.0, 0, -35.15, { lines: [{ axis: 'z', len: 8, color: 'warn' }] });
@@ -829,6 +1000,10 @@ export default class LevelManager {
     this._createSteamVent('l2-sparks-2', -4.9, 2.1, -44.0, {
       color: 0xffcc66, rate: 0.3, rise: -0.55, lifeSpan: 0.45, count: 8, drift: 0.05, alpha: 0.8,
     });
+    // Flicker bulb in the rack maze's far corner + hanging dust.
+    this._flickerLight(-6.5, 2.55, -50.5, 0xffaa66, 0.8, 6);
+    this._dustMotes(60, 0, -46, 6.5, 0.3, 2.7);
+    kit.canister(4.1, -43.2);
 
     // ── C3 (x -2..2, z -52..-58) — final stretch ────────────────────────
     kit.floorSlab(4.3, 6.0, 0, -55.15, { lines: [{ axis: 'z', len: 4.5, color: 'exit' }] });
@@ -959,6 +1134,15 @@ export default class LevelManager {
     ]) {
       kit.box(m.emergencyRed, 0.22, 0.22, 0.12, bx, 2.6, bz, { rotY: kit.faceAngle(face), cast: false });
     }
+    // Dying red strobes over the arena centre and the failsafe seal — the
+    // boss's patrol loop runs right beneath both.
+    this._flickerLight(0, 3.3, -26.5, 0xff3311, 1.5, 10);
+    this._flickerLight(0, 3.3, -40.5, 0xff4422, 1.1, 8);
+    this._flickerLight(-9, 3.3, -14.5, 0xff5533, 0.9, 8);
+    // Ash and dust hanging in the emergency light.
+    this._dustMotes(90, 0, -26, 12, 0.4, 3.6);
+    kit.barrel(6.9, -19.6);
+    kit.canister(-6.6, -35.4);
 
     // ── Sealed failsafe door 'l3-exit' (opened by Game.js on boss death) ──
     kit.doorway(2.6, 3.4, 0, 1.7, -42.15, 's');

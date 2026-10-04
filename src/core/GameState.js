@@ -38,6 +38,8 @@ export default class GameState {
 
     this._menuOverlay = document.getElementById('menu-overlay');
     this._pauseOverlay = document.getElementById('pause-overlay');
+    this._transitionOverlay = document.getElementById('transition-overlay');
+    this._transitionText = document.getElementById('transition-text');
     this._loadingScreen = document.getElementById('loading-screen');
     this._loadingBar = document.getElementById('loading-bar');
     this._levelIndicator = document.getElementById('level-indicator');
@@ -169,6 +171,17 @@ export default class GameState {
     // Pause overlay.
     if (this._pauseOverlay) {
       this._pauseOverlay.style.display = this._state === 'paused' ? 'flex' : 'none';
+    }
+
+    // Level transition — a black screen while the next level rebuilds, so the
+    // level-load shader warm-up stall is never visible as a frozen frame.
+    if (this._transitionOverlay) {
+      this._transitionOverlay.style.display =
+        this._state === 'levelTransition' ? 'flex' : 'none';
+    }
+    if (this._transitionText) {
+      this._transitionText.textContent =
+        `ENTERING LEVEL ${this._currentLevel}…`;
     }
 
     // Game over / victory overlay.

@@ -25,6 +25,16 @@ export default class PhysicsWorld {
     this.world.addContactMaterial(contact);
     this.world.defaultContactMaterial = contact;
 
+    // Actors (player, monster) set their velocity directly every frame —
+    // ground friction then fights that target and the body crawls at a
+    // fraction of its intended speed. Zero-friction contacts for actors
+    // let the controllers own accel/decel themselves.
+    this.actorMaterial = new CANNON.Material('actor');
+    this.world.addContactMaterial(new CANNON.ContactMaterial(
+      this.actorMaterial, this.defaultMaterial,
+      { friction: 0.0, restitution: 0.0 }
+    ));
+
     // Static ground plane (y = 0).
     const groundBody = new CANNON.Body({
       type: CANNON.Body.STATIC,
@@ -64,8 +74,11 @@ export default class PhysicsWorld {
 
   /** Advance the simulation and copy transforms to meshes. */
   step(dt) {
-    // Fixed timestep keeps physics deterministic regardless of frame rate.
-    this.world.step(1 / 60, dt, 3);
+    // Fixed timestep with interpolation. maxSubSteps must cover the worst
+    // frame (0.2s / 60Hz = 12) or the sim falls behind real time and
+    // movement looks like slow motion on low-end machines. CPU cost per
+    // substep is trivial for this scene size — the GPU is the bottleneck.
+    this.world.step(1 / 60, dt, 12);
 
     for (const { body, mesh } of this.syncPairs) {
       mesh.position.copy(body.position);

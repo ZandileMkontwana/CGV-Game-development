@@ -12,6 +12,9 @@ import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
 import { createScientist, faceToRotY } from './CharacterFactory.js';
 import AudioManager from '../audio/AudioManager.js';
+import PostFX from './PostFX.js';
+import WeaponViewmodel from './WeaponViewmodel.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /**
  * Game — top-level orchestrator.
@@ -24,20 +27,28 @@ import AudioManager from '../audio/AudioManager.js';
 export default class Game {
   constructor(container) {
     // --- Renderer -----------------------------------------------------------
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     container.appendChild(this.renderer.domElement);
+    if (import.meta.env.DEV) window.__game = this; // dev-only debug handle
 
     // --- Scene --------------------------------------------------------------
     this.scene = new THREE.Scene();
     // TODO (Person C): Set skybox / fog per level.
     this.scene.background = new THREE.Color(0x0a0a0a);
     this.scene.fog = new THREE.Fog(0x0a0a0a, 20, 80);
+
+    // Image-based lighting: metals (rifle) and PBR characters render black
+    // and flat without reflections. Kept dim so the horror grade survives.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.25;
+    pmrem.dispose();
 
     // --- Subsystems ---------------------------------------------------------
     this.input = new InputManager(this.renderer.domElement);
@@ -51,6 +62,10 @@ export default class Game {
 
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
+
+    // CoD-style first-person rifle + cinematic post-processing chain.
+    this.weapon = new WeaponViewmodel(this.camera.camera, this.input);
+    this.postfx = new PostFX(this.renderer, this.scene, this.camera.camera);
 
     this.pulseTool._bolt.material = this.shaders.createPulseGlowMaterial();
     this._pulseTrail = this.shaders.createPulseTrail();
@@ -137,6 +152,7 @@ export default class Game {
 
     // --- Objective HUD -----------------------------------------------------
     this._objectiveEl = document.getElementById('objective');
+    this._hitMarkerEl = document.getElementById('hit-marker');
 
     // --- Collapse timer (Level 3 escape sequence) -------------------------
     this._collapseTimerEl = document.getElementById('collapse-timer');
@@ -183,6 +199,7 @@ export default class Game {
     this.pulseTool.on('hit', (target) => {
       // Impact feedback for every landed shot.
       this.audio.play('pulseHit');
+      this._flashHitMarker();
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       // Level 1's creature is a scripted cameo — never killable there.
@@ -215,6 +232,8 @@ export default class Game {
     this.pulseTool.on('fire', () => {
       if (this._tut) this._tut.fired = true;
       this.audio.play('pulseShot');
+      this.weapon.fire();
+      this.camera.recoil();
     });
 
     // Airy whoosh when a pulse shot hits nothing.
@@ -264,8 +283,9 @@ export default class Game {
         // Fresh start — load level 1 geometry, lighting, and spawn player.
         this._loadLevel(1);
       }
-      if (newState === 'playing' && oldState === 'levelTransition') {
-        // Load the next level after transition.
+      if (newState === 'levelTransition') {
+        // Build the next level NOW, behind the black transition overlay, so
+        // the level-load shader warm-up stall never shows as a frozen frame.
         this._loadLevel(this.gameState.currentLevel);
       }
       if (newState === 'playing' && (oldState === 'gameover' || oldState === 'victory')) {
@@ -303,7 +323,22 @@ export default class Game {
   // --- Main loop ------------------------------------------------------------
   _loop = () => {
     requestAnimationFrame(this._loop);
-    const dt = Math.min(this._clock.getDelta(), 0.1); // cap to avoid spiral
+    // try/catch keeps the frame presenting no matter what throws below —
+    // an exception before postfx.render() would otherwise freeze the canvas
+    // permanently while the loop keeps silently rescheduling.
+    try {
+      this._tick();
+    } catch (err) {
+      const now = performance.now();
+      if (!this._lastLoopErr || now - this._lastLoopErr > 2000) {
+        this._lastLoopErr = now;
+        console.error('[Game] frame error:', err);
+      }
+    }
+  };
+
+  _tick = () => {
+    const dt = Math.min(this._clock.getDelta(), 0.2); // cap to avoid spiral
 
     // FPS counter.
     this._frameCount++;
@@ -326,8 +361,19 @@ export default class Game {
 
     // Only update simulation while playing.
     if (this.gameState.isPlaying) {
+      // Stance/aim from raw input — feeds both the player (move speed) and
+      // the camera (FOV zoom, shoulder tighten, pivot height).
+      const aiming = this.input.mouse.rightDown === true;
+      const crouching = this.input.keys['KeyC'] === true;
+      this.player.setStance(crouching, aiming);
       this.player.update(dt);
-      this.camera.update(dt, this.player.position);
+      this.camera.update(dt, this.player.position, {
+        aiming,
+        crouching,
+        moving: this.player._charState.moving,
+        sprinting: this.player._charState.sprinting,
+        grounded: this.player._charState.grounded,
+      });
       this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
@@ -340,6 +386,15 @@ export default class Game {
         this._scientist.update(dt, this._scientistState);
       }
 
+      // First-person rifle: sway/bob/ADS driven by the same stance state,
+      // hidden in third person so it doesn't float beside the body.
+      this.weapon.setVisible(this.camera.isFirstPerson);
+      this.weapon.update(dt, {
+        moving: this.player._charState.moving,
+        sprinting: this.player._charState.sprinting,
+        aiming,
+      });
+
       // Procedural soundscape: footsteps, heartbeat, growls, distant creaks,
       // the creature's own heavy footfalls, and muffled breath while hiding.
       const mon = this.monster;
@@ -348,6 +403,10 @@ export default class Game {
       const mdz = mon.position.z - this.player.position.z;
       const mDist = mon.isActive ? Math.sqrt(mdx * mdx + mdz * mdz) : 999;
       const chasingNow = mon.state === 'chase' || mon.state === 'attack';
+
+      // Danger drives the PostFX red vignette pulse — the screen closes in
+      // as the creature closes distance, heard or not.
+      this.postfx.setDanger(mon.isActive ? Math.max(0, 1 - mDist / 13) : 0);
       const hidingNow = mon.isActive && !mon.canSeePlayer && mon.threatLevel > 0.2;
       this.audio.update(
         dt,
@@ -418,19 +477,23 @@ export default class Game {
         this._healthFillEl.style.width = pct + '%';
       }
 
-      // Sync the third-person character model every frame.
+      // Sync the character model every frame, then apply the view mode:
+      // first-person hides the upper body (legs stay visible looking down),
+      // third-person renders the full operator.
       this.player.syncModel();
-      // Hide model in first-person, show in third-person.
-      this.player.setModelVisible(!this.camera.isFirstPerson);
+      this.player.setViewMode(this.camera.isFirstPerson);
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.position);
+      // No rifle floating in the menu shot; no danger pulse either.
+      this.weapon.setVisible(false);
+      this.postfx.setDanger(0);
       // Clear stealth HUD when monster isn't active.
       this._clearStealthHUD();
     }
 
     this.input.endFrame();
-    this.renderer.render(this.scene, this.camera.camera);
+    this.postfx.render(dt);
   };
 
   // --- Level loading --------------------------------------------------------
@@ -443,6 +506,11 @@ export default class Game {
   _loadLevel(levelNum) {
     // 1. Build level geometry and physics (Person B's LevelManager).
     this.levels.load(levelNum);
+
+    // 1b. Camera: clear view/aim offsets from the last level and pick up this
+    //     level's occluders so the third-person camera sweeps around walls.
+    this.camera.reset();
+    this.camera.occluders = this.levels.occluders || [];
 
     // 2. Spawn the player at the level's spawn point.
     const sp = this._spawnPoints[levelNum] || { x: 0, y: 2, z: 0 };
@@ -547,6 +615,14 @@ export default class Game {
    */
   _setObjective(text) {
     if (this._objectiveEl) this._objectiveEl.textContent = text;
+  }
+
+  /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
+  _flashHitMarker() {
+    if (!this._hitMarkerEl) return;
+    this._hitMarkerEl.classList.remove('flash');
+    void this._hitMarkerEl.offsetWidth; // force reflow so the animation restarts
+    this._hitMarkerEl.classList.add('flash');
   }
 
   /**

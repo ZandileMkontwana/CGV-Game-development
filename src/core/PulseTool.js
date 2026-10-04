@@ -81,8 +81,10 @@ export default class PulseTool {
     this._boltSpeed = 40; // m/s travel speed
 
     // --- Impact flash (point light + ring, pre-allocated) -------------------
-    this._impactLight = new THREE.PointLight(0x00ddff, 3, 6, 2);
-    this._impactLight.visible = false;
+    // The light stays in the scene permanently with intensity 0 — toggling
+    // `visible` changes the renderer's light inventory, which forces a full
+    // shader-program recompile and visibly stalls the frame on every hit.
+    this._impactLight = new THREE.PointLight(0x00ddff, 0, 6, 2);
     scene.add(this._impactLight);
 
     const ringGeo = new THREE.RingGeometry(0.05, 0.15, 12);
@@ -178,7 +180,7 @@ export default class PulseTool {
       this._impactRing.material.opacity = 1 - progress;
 
       if (this._impactTimer <= 0) {
-        this._impactLight.visible = false;
+        this._impactLight.intensity = 0;
         this._impactRing.visible = false;
       }
     }
@@ -232,7 +234,6 @@ export default class PulseTool {
 
       // Show impact flash at hit point.
       this._impactLight.position.copy(hit.point);
-      this._impactLight.visible = true;
       this._impactLight.intensity = 3;
 
       this._impactRing.position.copy(hit.point);

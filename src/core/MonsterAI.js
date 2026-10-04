@@ -55,6 +55,7 @@ export default class MonsterAI {
     this._waypointIndex = 0;
     this._attackTimer = 0;
     this._escapeTimer = 0;
+    this._lungeTimer = 0;       // brief chase-speed burst on first spotting
     this._health = 3;          // number of remaining weak points
     this._phaseSpeedBonus = 0; // added to chase speed as weak points are destroyed
     this._phaseDamageBonus = 0;  // added to attack damage per destroyed weak point
@@ -82,7 +83,7 @@ export default class MonsterAI {
     this.body = new CANNON.Body({
       mass: 120,
       shape: new CANNON.Sphere(0.6),
-      material: physicsWorld.defaultMaterial,
+      material: physicsWorld.actorMaterial,
       position: new CANNON.Vec3(0, 2, 0),
       linearDamping: 0.9,
       angularDamping: 1.0,
@@ -104,6 +105,17 @@ export default class MonsterAI {
     this.hitMeshes = character.hitMeshes;
     this.weakPoints = character.weakPoints;
     this._bodyMat = character.bodyMat; // shared chitin material — hit flash
+
+    // Scare pass: a bigger silhouette reads as a real threat, and a red aura
+    // light makes the ember eyes/spine pustules loom out of the dark. The
+    // model hangs its feet at local y = -0.55, so scaling pushes them to
+    // -0.55*s — the origin must RISE by 0.55*(s-1) to keep feet on the floor.
+    this._modelScale = 1.28;
+    this.model.scale.setScalar(this._modelScale);
+    this._modelYOffset = 0.55 * (this._modelScale - 1);
+    const aura = new THREE.PointLight(0xff2a14, 7, 9, 1.8);
+    aura.position.set(0, 1.7, 0.3);
+    this.model.add(aura);
 
     this.model.visible = false;
     scene.add(this.model);
@@ -245,7 +257,7 @@ export default class MonsterAI {
       this.model.rotation.x = t * Math.PI * 0.45; // topple backward
       this.model.position.set(
         this.body.position.x,
-        this.body.position.y - t * 0.3,   // sink as it falls
+        this.body.position.y + this._modelYOffset - t * 0.3,   // sink as it falls
         this.body.position.z
       );
 
@@ -320,6 +332,7 @@ export default class MonsterAI {
         if (detected) {
           this._setState(State.CHASE);
           this._escapeTimer = 0;
+          this._lungeTimer = 1.5; // burst of speed the moment it sees you
         }
         break;
 
@@ -358,7 +371,7 @@ export default class MonsterAI {
     // --- Sync model to physics body ----------------------------------------
     this.model.position.set(
       this.body.position.x,
-      this.body.position.y,
+      this.body.position.y + this._modelYOffset,
       this.body.position.z
     );
 
@@ -423,9 +436,11 @@ export default class MonsterAI {
 
   /** CHASE: run toward the player. */
   _doChase(dt, dx, dz, dist) {
+    this._lungeTimer = Math.max(0, this._lungeTimer - dt);
     if (dist > 0.1) {
       this._dir.set(dx, 0, dz).normalize();
-      const speed = this.chaseSpeed + this._phaseSpeedBonus;
+      const lunge = this._lungeTimer > 0 ? 2.4 * (this._lungeTimer / 1.5) : 0;
+      const speed = this.chaseSpeed + this._phaseSpeedBonus + lunge;
       this.body.velocity.x = this._dir.x * speed;
       this.body.velocity.z = this._dir.z * speed;
     }
