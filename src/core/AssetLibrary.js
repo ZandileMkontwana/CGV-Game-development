@@ -27,13 +27,15 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /**
  * Credit roll for the menu's credits screen and CREDITS.md.
- * Updated as real files land in public/assets/.
+ * Updated as real files land in public/assets/ (and public/models/ drops).
  */
 export const CREDITS = [
-  { asset: 'Monster, scientist, engineer, rifle & prop models', author: 'CGV team (Blender)', license: 'Made for this project' },
-  { asset: 'Environment PBR texture sets', author: 'CGV team (Blender bakes)', license: 'Made for this project' },
-  { asset: 'Sampled sound cues', author: 'CGV team', license: 'Made for this project' },
-  { asset: 'Soldier.glb (third-person operator fallback)', author: 'three.js examples', license: 'Three.js examples' },
+  { asset: 'Blender prop models (lockers, console desks, containment tube, ceiling lights, pipe runs)', author: 'CGV team (Blender)', license: 'Made for this project' },
+  { asset: 'Character & weapon models (monster, scientist, engineer, pulse rifle)', author: 'CGV team (Blender)', license: 'Made for this project' },
+  { asset: 'Soldier.glb (third-person operator fallback)', author: 'three.js examples', license: 'MIT — bundled with three.js' },
+  { asset: 'Environment PBR texture sets (lab / damaged / emergency)', author: 'CGV team (Blender bakes)', license: 'Made for this project' },
+  { asset: 'Sampled sound cues (roar, spotted, transform, …)', author: 'CGV team', license: 'Made for this project' },
+  { asset: 'Menu background art', author: 'CGV team', license: 'Made for this project' },
   { asset: 'three.js', author: 'mrdoob & contributors', license: 'MIT' },
   { asset: 'cannon-es', author: 'pmndrs', license: 'MIT' },
   { asset: 'Vite', author: 'Evan You & Vite team', license: 'MIT' },
