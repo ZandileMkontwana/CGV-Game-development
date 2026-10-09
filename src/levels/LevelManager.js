@@ -31,6 +31,30 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import LevelKit from './LevelKit.js';
 import { getThemeMaterials } from './LevelMaterials.js';
 
+// ── Blender props (public/models/*.glb) ─────────────────────────────────────
+// Extra hero props placed on top of the procedural LevelKit geometry.
+// x / z are world metres, rotY is radians. The models face +Z at rotY 0:
+//   rotY 0 = faces north (+Z)    rotY -PI/2 = faces west (-X)
+//   rotY PI = faces south (-Z)   rotY  PI/2 = faces east (+X)
+// collision: adds a solid box so the player cannot walk through it (box half
+// size = collisionRadius). occlude: blocks the monster's line of sight and the
+// third-person camera, so it works as stealth cover.
+const PROP_PLACEMENTS = {
+  1: [
+    { file: 'locker',    x: 4.6,  z: -9.0,  rotY: -Math.PI / 2, collision: true, collisionRadius: 0.3 },
+    { file: 'pipe_run',  x: 0,    z: -13.5, rotY: 0 },
+    { file: 'console',   x: 6.0,  z: -22.0, rotY: -Math.PI / 2, collision: true, collisionRadius: 0.5 },
+  ],
+  2: [
+    { file: 'console',   x: -2.8, z: -7.6,  rotY: 0,             collision: true, collisionRadius: 0.5 },
+    { file: 'locker',    x: 3.2,  z: -23.0, rotY: -Math.PI / 2, collision: true, collisionRadius: 0.3, occlude: true },
+    { file: 'locker',    x: -3.4, z: -21.6, rotY: Math.PI / 2,  collision: true, collisionRadius: 0.3, occlude: true },
+    { file: 'pipe_run',  x: 0,    z: -31.8, rotY: 0 },
+    { file: 'pipe_run',  x: 0,    z: -39.0, rotY: 0 },
+  ],
+  3: [],
+};
+
 // ── Shared scorch decal texture (created once, kept for the session) ────────
 let _scorchTex = null;
 function scorchTexture() {
@@ -144,6 +168,8 @@ export default class LevelManager {
       case 3: this._buildLevel3(); break;
       default: throw new Error(`Unknown level: ${levelNum}`);
     }
+
+    this._placeProps(levelNum);
 
     // Collect flicker-capable fixtures (marked in LevelKit's lamp builders)
     // for the horror-lighting driver in update(). Built once per load, so
@@ -309,6 +335,30 @@ export default class LevelManager {
     } catch (err) {
       console.warn(`[LevelManager] Model not loaded: ${path} — ${err.message || err}`);
       return null;
+    }
+  }
+
+  /**
+   * Load this level's Blender props from PROP_PLACEMENTS. Loading is async and
+   * never blocks the level: a missing file just logs a warning and is skipped.
+   * @param {number} levelNum
+   */
+  _placeProps(levelNum) {
+    const list = PROP_PLACEMENTS[levelNum] || [];
+    for (const p of list) {
+      this._loadModel(`models/${p.file}.glb`, p.x, 0, p.z, {
+        rotY: p.rotY || 0,
+        collision: !!p.collision,
+        collisionRadius: p.collisionRadius || 0.5,
+      }).then((model) => {
+        if (!model) return; // failed, or the level was torn down meanwhile
+        model.updateMatrixWorld(true);
+        if (p.occlude) {
+          model.traverse((child) => {
+            if (child.isMesh) this.occluders.push(child);
+          });
+        }
+      });
     }
   }
 

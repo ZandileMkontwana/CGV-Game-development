@@ -627,7 +627,7 @@ export default class Game {
 
   /**
    * Configure and spawn the monster for a given level.
-   * Level 1: scripted cameo only — the scientist mutates, creature flees.
+   * Level 1: scripted cameo only — the scientist mutates, creature prowls.
    * Level 2: monster hunts the player through damaged corridors.
    * Level 3: boss fight in the arena.
    * @param {number} levelNum
@@ -637,7 +637,8 @@ export default class Game {
     switch (levelNum) {
       case 1:
         // Scripted cameo only: the bitten scientist mutates into the
-        // creature, which flees into the ducts (see _updateL1Reveal).
+        // creature, which lunges for the ducts and then prowls the
+        // facility on a patrol loop (see _updateL1Reveal).
         this.monster.spawn(0, -50, 0);      // parked out of play
         this.monster.setPatrolWaypoints([]);
         this.monster.setOccluders(this.levels.occluders);
@@ -689,8 +690,10 @@ export default class Game {
    *   3. 'burst'  — the scientist is gone: the creature appears in his place
    *                 at a fraction of its size, facing the player, and
    *                 visibly swells to full size in the strobe light,
-   *   4. 'flee'   — it lurches along the escape path into the ducts, then
-   *                 deactivates once it reaches the end (body parked).
+   *   4. 'flee'   — it lurches along the escape path toward the ducts, then
+   *                 settles into a patrol loop that circles the facility
+   *                 (lab → corridor → reception → back) for the rest of the
+   *                 level — it never disappears.
    * detectionRange stays 0 the whole time, so it can never chase or attack.
    * @param {number} dt
    */
@@ -792,17 +795,19 @@ export default class Game {
     }
 
     if (r.phase === 'flee') {
-      // Deactivate once it has vanished into the ducts (or as a safety cap).
+      // At the duct it doesn't vanish — it turns and starts circling the
+      // facility on the patrol loop (the timer cap handles any path snag).
       const end = reveal.escape[reveal.escape.length - 1];
       const edx = this.monster.position.x - end.x;
       const edz = this.monster.position.z - end.z;
       if (r.timer > 1.2 && (edx * edx + edz * edz < 2.25 || r.timer > 7)) {
-        r.phase = 'done';
-        this.monster.setActive(false);
+        r.phase = 'done'; // beat over — from here it just prowls
         this.monster.model.scale.setScalar(1);     // safety — never stay small
-        this.monster.body.position.set(0, -50, 0); // park out of play
-        this.monster.patrolSpeed = 2.0;            // restore default tuning
-        this._setObjective(this._baseObjective);   // back to the level goal
+        this.monster.patrolSpeed = 2.0;            // settle from the panic-lurch
+        this.monster.setPatrolWaypoints(
+          reveal.patrol.map(p => ({ x: p.x, y: 0, z: p.z }))
+        );
+        this._setObjective('THE CREATURE PROWLS THE FACILITY — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR');
       }
     }
   }

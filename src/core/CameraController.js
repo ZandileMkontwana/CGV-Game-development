@@ -22,6 +22,8 @@ export default class CameraController {
     this._phase = 0;
     this._bob = 0;
     this._recoil = 0;
+    this._landTarget = 0; // landing dip: target depth, decays back to 0
+    this._landCur = 0;    // landing dip: smoothed depth actually applied
     this._offset = new THREE.Vector3();
     this._target = new THREE.Vector3();
     this._origin = new THREE.Vector3();
@@ -59,6 +61,7 @@ export default class CameraController {
     this.pitchObject.rotation.set(0, 0, 0);
     this._offset.set(0, 0, 0);
     this.shakeIntensity = this._recoil = this._bob = 0;
+    this._landTarget = this._landCur = 0;
     this._height = 1.25;
   }
 
@@ -120,6 +123,10 @@ export default class CameraController {
       this.camera.position.y += Math.sin(this._phase * 2) * this._bob;
       this.camera.position.x += Math.cos(this._phase) * this._bob * 0.5;
     }
+    // Landing dip: drop fast, recover slowly, like knees absorbing the impact.
+    this._landCur += (this._landTarget - this._landCur) * (1 - Math.exp(-30 * dt));
+    this._landTarget *= Math.exp(-7 * dt);
+    if (this.motionEnabled) this.camera.position.y -= this._landCur;
     this._recoil *= Math.exp(-18 * dt);
     this.camera.rotation.x = this._recoil;
     this.camera.rotation.z = this.motionEnabled && this.isFirstPerson ? Math.sin(this._phase) * this._bob * 0.12 : 0;
@@ -136,6 +143,11 @@ export default class CameraController {
 
   recoil() {
     if (this.motionEnabled) this._recoil = 0.022;
+  }
+
+  /** Camera dip after a landing. `speed` is the fall speed in m/s. */
+  landImpact(speed) {
+    if (this.motionEnabled) this._landTarget = Math.min(0.22, speed * 0.012);
   }
 
   shake(intensity = 0.3) {

@@ -11,6 +11,8 @@
  *
  * Other systems subscribe via `onChange(callback)` to react to state changes.
  */
+import { CREDITS } from './AssetLibrary.js';
+
 
 const STATES = new Set([
   'loading',
@@ -45,6 +47,12 @@ export default class GameState {
     this._levelIndicator = document.getElementById('level-indicator');
     this._hud = document.getElementById('hud');
 
+    // Credits overlay (content comes from AssetLibrary's credit roll).
+    this._creditsOverlay = document.getElementById('credits-overlay');
+    this._creditsList = document.getElementById('credits-list');
+    this._btnCreditsBack = document.getElementById('btn-credits-back');
+    this._populateCredits();
+
     // Game over / victory overlays.
     this._gameOverOverlay = document.getElementById('gameover-overlay');
     this._gameOverTitle = document.getElementById('gameover-title');
@@ -54,6 +62,8 @@ export default class GameState {
 
     // Button listeners.
     this._btnStart?.addEventListener('click', () => this.startGame());
+    this._btnCredits?.addEventListener('click', () => this._showCredits(true));
+    this._btnCreditsBack?.addEventListener('click', () => this._showCredits(false));
     this._btnResume?.addEventListener('click', () => this.resume());
     this._btnRestart?.addEventListener('click', () => this.restart());
     this._btnMainMenu?.addEventListener('click', () => this.goToMenu());
@@ -218,6 +228,34 @@ export default class GameState {
   _updateLevelIndicator() {
     if (this._levelIndicator) {
       this._levelIndicator.textContent = `LEVEL ${this._currentLevel}`;
+    }
+  }
+
+  /** Build the credits list rows from AssetLibrary's credit roll. */
+  _populateCredits() {
+    if (!this._creditsList) return;
+    for (const c of CREDITS) {
+      const row = document.createElement('div');
+      row.className = 'credit-row';
+
+      const asset = document.createElement('span');
+      asset.className = 'credit-asset';
+      asset.textContent = c.asset;
+
+      const detail = document.createElement('span');
+      detail.className = 'credit-detail';
+      detail.textContent = `${c.author} — ${c.license}`;
+
+      row.appendChild(asset);
+      row.appendChild(detail);
+      this._creditsList.appendChild(row);
+    }
+  }
+
+  /** Toggle the credits overlay (menu context only). */
+  _showCredits(show) {
+    if (this._creditsOverlay) {
+      this._creditsOverlay.style.display = show ? 'flex' : 'none';
     }
   }
 }

@@ -60,6 +60,12 @@ export default class PlayerController {
     this._rayTo = new CANNON.Vec3();
     this._rayResult = new CANNON.RaycastResult();
 
+    // --- Landing detection (drives the camera dip and the noise a landing makes)
+    this._wasOnGround = false;
+    this._peakFall = 0;        // fastest downward speed since leaving the ground
+    this._landImpact = 0;      // pending impact speed, cleared by consumeLanding()
+    this._skipLanding = true;  // ignore the drop onto the floor right after a spawn
+
     // --- Reusable vectors (avoid per-frame allocation) ---------------------
     this._forward = new THREE.Vector3();
     this._right = new THREE.Vector3();
@@ -117,6 +123,10 @@ export default class PlayerController {
     this.body.velocity.setZero();
     this.body.angularVelocity.setZero();
     this._groundTime = -10;
+    this._peakFall = 0;
+    this._landImpact = 0;
+    this._wasOnGround = false;
+    this._skipLanding = true;
   }
 
   /**
@@ -146,7 +156,18 @@ export default class PlayerController {
       { skipBackfaces: true, collisionFilterMask: 1 },
       this._rayResult
     );
-    if (this._rayResult.hasHit) this._groundTime = this._clock;
+    const onGround = this._rayResult.hasHit;
+    if (onGround) {
+      this._groundTime = this._clock;
+      if (!this._wasOnGround && !this._skipLanding && this._peakFall > 3.5) {
+        this._landImpact = Math.max(this._landImpact, this._peakFall);
+      }
+      this._skipLanding = false;
+      this._peakFall = 0;
+    } else {
+      this._peakFall = Math.max(this._peakFall, -this.body.velocity.y);
+    }
+    this._wasOnGround = onGround;
     this.grounded = (this._clock - this._groundTime) < this.coyoteTime;
 
     // --- Movement direction relative to camera yaw -------------------------
@@ -195,6 +216,29 @@ export default class PlayerController {
     this._charState.moving = (moveX !== 0 || moveZ !== 0);
     this._charState.sprinting = sprint;
     this._charState.grounded = this.grounded;
+  }
+
+  /**
+   * How loud the player is right now, 0..1. The monster's hearing reads this:
+   * sprinting is loud, crouch-walking is nearly silent, standing still is quiet.
+   */
+  get noiseLevel() {
+    const cs = this._charState;
+    if (!this.grounded) return 0.3;
+    if (!cs.moving) return 0.05;
+    if (cs.sprinting) return 1;
+    if (this.isCrouching) return 0.22;
+    return this.isAiming ? 0.4 : 0.55;
+  }
+
+  /**
+   * Returns the impact speed (m/s) of a landing since the last call, or 0.
+   * Game feeds it to the camera (dip) and the monster (noise).
+   */
+  consumeLanding() {
+    const v = this._landImpact;
+    this._landImpact = 0;
+    return v;
   }
 
   /** World-space position of the player's feet. */

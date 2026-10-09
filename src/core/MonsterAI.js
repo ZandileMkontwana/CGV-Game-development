@@ -11,6 +11,18 @@ import { createMonster } from './CharacterFactory.js';
  *   ATTACK  — when close enough to player, deals damage on a cooldown
  *   Returns to PATROL if player stays out of range for `escapeTimeout` seconds.
  *
+ * Stealth AI (opt-in via `stealthAI = true`, used on Level 2):
+ *   - vision is a forward cone with a short peripheral radius, not 360 degrees
+ *   - spotting takes time: an awareness meter fills faster when you are close
+ *   - hearing: sprinting is loud, crouching is nearly silent, shots and hard
+ *     landings are loud one-off noises (see hearNoise)
+ *   - SEARCH state: investigates a noise or your last known position, then
+ *     sweeps its head before giving up and returning to PATROL
+ *   - when it loses sight it runs to where it LAST SAW you, not to your real
+ *     position
+ * With `stealthAI = false` (Levels 1 and 3) the original omniscient behaviour
+ * is kept, so the boss fight plays exactly as before.
+ *
  * Health: 3 weak points (glowing spheres).  Each destroyed weak point
  * can trigger behaviour changes (faster, more aggressive) for the boss fight.
  *
@@ -24,6 +36,7 @@ import { createMonster } from './CharacterFactory.js';
 const State = {
   PATROL: 'patrol',
   CHASE:  'chase',
+  SEARCH: 'search',
   ATTACK: 'attack',
   DEAD:   'dead',
 };
@@ -50,6 +63,15 @@ export default class MonsterAI {
     this.attackCooldown = 1.5; // seconds between attacks
     this.escapeTimeout = 10;  // seconds out of range before returning to PATROL
 
+    // --- Stealth AI tuning (only used when stealthAI is true) ---------------
+    this.stealthAI = false;       // set per level by Game._setupMonster
+    this.visionHalfAngle = 1.05;  // radians either side of facing (~120 degree cone)
+    this.peripheralRange = 3;     // metres — it notices you this close even outside the cone
+    this.hearingRange = 9;        // metres at noise level 1 (sprinting)
+    this.searchSpeed = 3.2;       // m/s while investigating a noise
+    this.searchLookTime = 3.5;    // seconds spent sweeping its head at the search spot
+    this.playerNoise = 0;         // 0..1, set by Game every frame from the player
+
     // --- Runtime state ------------------------------------------------------
     this._waypoints = [];       // array of {x, y, z}
     this._waypointIndex = 0;
@@ -61,6 +83,28 @@ export default class MonsterAI {
     this._phaseDamageBonus = 0;  // added to attack damage per destroyed weak point
     this._phaseAttackBonus = 0;  // subtracted from attack cooldown per destroyed WP
     this._animTime = 0;          // drives the weak point glow pulse
+
+    // --- Movement smoothing / facing ---------------------------------------
+    this._yaw = 0;               // smoothed facing (model faces +Z at yaw 0)
+    this._desiredYaw = 0;
+    this._speed = 0;             // current horizontal speed, ramped
+    this._driveX = 0;
+    this._driveZ = 1;
+
+    // --- Stealth runtime state ---------------------------------------------
+    this._awareness = 0;         // 0..1, chase starts at 1
+    this._lastKnownX = 0;
+    this._lastKnownZ = 0;
+    this._lostTimer = 0;         // seconds since it last saw you while chasing
+    this._searchX = 0;
+    this._searchZ = 0;
+    this._searchPhase = 'go';    // 'go' = walk to the spot, 'look' = sweep head
+    this._searchTimer = 0;
+    this._searchSpeedNow = 3.2;
+    this._lookTimer = 0;
+    this._lookBaseYaw = 0;
+    this._pauseTimer = 0;        // idle pause at a patrol waypoint
+    this._retargetTimer = 0;     // throttles noise re-targeting
 
     // --- Death animation state ---------------------------------------------
     this._dying = false;         // true while the topple animation plays
@@ -147,6 +191,11 @@ export default class MonsterAI {
     this._dying = false;
     this._deathTimer = 0;
     this._hitFlashTimer = 0;
+    this._speed = 0;
+    this._awareness = 0;
+    this._lostTimer = 0;
+    this._pauseTimer = 0;
+    this._retargetTimer = 0;
     this.model.rotation.x = 0; // reset any topple from a previous death
     this._bodyMat.emissive.setHex(0x000000);
     // Reset weak points.
@@ -220,6 +269,28 @@ export default class MonsterAI {
 
   /** Whether the monster has unobstructed line of sight to the player. */
   get canSeePlayer() { return this._canSeePlayer; }
+
+  /** 0..1 — how close the monster is to spotting the player (stealth AI only). */
+  get awareness() { return this._awareness; }
+
+  /**
+   * A one-off noise at the player's position (a shot, a hard landing).
+   * Only the stealth AI reacts; a chasing monster already knows where you are.
+   * Walls muffle it: without line of sight the audible radius is 60%.
+   * @param {number} x world x of the noise
+   * @param {number} z world z of the noise
+   * @param {number} loudness 1 = as loud as sprinting
+   */
+  hearNoise(x, z, loudness = 1) {
+    if (!this.isActive || !this.stealthAI || this._dying) return;
+    if (this.state === State.CHASE || this.state === State.ATTACK || this.state === State.DEAD) return;
+    const dx = x - this.body.position.x;
+    const dz = z - this.body.position.z;
+    const radius = this.hearingRange * loudness * (this._canSeePlayer ? 1 : 0.6);
+    if (dx * dx + dz * dz > radius * radius) return;
+    this._retargetTimer = 0.6;
+    this._beginSearch(x, z, this.searchSpeed);
+  }
 
   /** Normalised threat level 0..1 (1 = monster right on top of player). */
   get threatLevel() {
@@ -315,16 +386,56 @@ export default class MonsterAI {
     const wasSeeing = this._canSeePlayer;
     this._canSeePlayer = losHits.length === 0; // no obstruction = visible
 
-    // Fire spotted/hidden events on transitions.
-    if (this._canSeePlayer && !wasSeeing && distToPlayer < this.detectionRange) {
-      this._emit('spotted');
-    } else if (!this._canSeePlayer && wasSeeing) {
-      this._emit('hidden');
+    this._retargetTimer -= dt;
+    this._desiredYaw = this._yaw;
+
+    if (this.stealthAI) {
+      this._updateStealth(dt, dx, dz, distToPlayer);
+    } else {
+      // Original omniscient behaviour (Level 3 boss fight).
+      if (this._canSeePlayer && !wasSeeing && distToPlayer < this.detectionRange) {
+        this._emit('spotted');
+      } else if (!this._canSeePlayer && wasSeeing) {
+        this._emit('hidden');
+      }
+      this._updateClassic(dt, dx, dz, distToPlayer);
     }
 
-    // --- State transitions --------------------------------------------------
-    // Player can only be detected if the monster has line of sight AND
-    // is within detection range.  Hiding behind objects breaks detection.
+    // --- Smooth turning: no more snapping to face the player ---------------
+    const chasingNow = this.state === State.CHASE || this.state === State.ATTACK;
+    this._turnYaw(this._desiredYaw, chasingNow ? 9 : 3.5, dt);
+    this.model.rotation.y = this._yaw;
+
+    // --- Sync model to physics body ----------------------------------------
+    this.model.position.set(
+      this.body.position.x,
+      this.body.position.y + this._modelYOffset,
+      this.body.position.z
+    );
+
+    // --- Weak point glow pulse (reads as "shoot me") -----------------------
+    for (let i = 0; i < this.weakPoints.length; i++) {
+      const wp = this.weakPoints[i];
+      if (!wp.userData.destroyed) {
+        wp.material.emissiveIntensity = 0.7 + 0.5 * Math.sin(this._animTime * 4);
+      }
+    }
+
+    // --- Limb animation (CharacterFactory — zero per-frame allocs) ---------
+    this._char.update(dt, this.state === State.SEARCH ? State.PATROL : this.state, this.body.velocity);
+
+    // --- Refresh world matrices NOW ---------------------------------------
+    // Three.js normally updates matrixWorld during render (end of frame).
+    // The PulseTool raycast runs right after this in Game._loop, so we
+    // update the model's world matrices explicitly — otherwise the ray
+    // tests against the monster's position from the PREVIOUS frame.
+    this.model.updateMatrixWorld(true);
+  }
+
+  // ── Update paths ──────────────────────────────────────────────────────────
+
+  /** Original state logic (Levels 1 and 3), now with ramped movement. */
+  _updateClassic(dt, dx, dz, distToPlayer) {
     const detected = this._canSeePlayer && distToPlayer < this.detectionRange;
 
     switch (this.state) {
@@ -340,116 +451,222 @@ export default class MonsterAI {
         if (distToPlayer < this.attackRange) {
           this._setState(State.ATTACK);
         } else if (!detected) {
-          // Player hidden or out of range — start escape timer.
           this._escapeTimer += dt;
           if (this._escapeTimer >= this.escapeTimeout) {
             this._setState(State.PATROL);
             this._escapeTimer = 0;
           }
         } else {
-          // Player still detected — reset escape timer.
           this._escapeTimer = 0;
         }
         break;
 
       case State.ATTACK:
         if (distToPlayer > this.attackRange * 1.5) {
-          // Player moved out of melee range — resume chase.
           this._setState(State.CHASE);
           this._escapeTimer = 0;
         }
         break;
     }
 
-    // --- State behaviour ----------------------------------------------------
     switch (this.state) {
-      case State.PATROL:  this._doPatrol(dt); break;
-      case State.CHASE:   this._doChase(dt, dx, dz, distToPlayer); break;
-      case State.ATTACK:  this._doAttack(dt); break;
+      case State.PATROL:  this._doPatrol(dt, false); break;
+      case State.CHASE:   this._doChase(dt, this._playerPos.x, this._playerPos.z); break;
+      case State.ATTACK:  this._doAttack(dt, dx, dz); break;
+    }
+  }
+
+  /** Stealth logic (Level 2): cone vision, awareness, hearing, search. */
+  _updateStealth(dt, dx, dz, dist) {
+    const chasing = this.state === State.CHASE || this.state === State.ATTACK;
+    const px = this._playerPos.x;
+    const pz = this._playerPos.z;
+
+    // --- Vision: forward cone + short peripheral radius ---------------------
+    let visible = false;
+    if (this._canSeePlayer) {
+      if (chasing) {
+        // Already tracking you — no cone needed, slightly longer reach.
+        visible = dist < this.detectionRange * 1.25;
+      } else if (dist < this.detectionRange) {
+        const nx = dist > 0.001 ? dx / dist : 0;
+        const nz = dist > 0.001 ? dz / dist : 0;
+        const facing = Math.sin(this._yaw) * nx + Math.cos(this._yaw) * nz;
+        visible = facing > Math.cos(this.visionHalfAngle) || dist < this.peripheralRange;
+      }
+    }
+    if (visible) {
+      this._lastKnownX = px;
+      this._lastKnownZ = pz;
     }
 
-    // --- Sync model to physics body ----------------------------------------
-    this.model.position.set(
-      this.body.position.x,
-      this.body.position.y + this._modelYOffset,
-      this.body.position.z
-    );
-
-    // Face movement direction (or player when chasing/attacking).
-    if (this.state === State.CHASE || this.state === State.ATTACK) {
-      this.model.rotation.y = Math.atan2(dx, dz);
-    } else if (this._waypoints.length > 0) {
-      const wp = this._waypoints[this._waypointIndex];
-      const wdx = wp.x - this.body.position.x;
-      const wdz = wp.z - this.body.position.z;
-      this.model.rotation.y = Math.atan2(wdx, wdz);
+    // --- Awareness meter: spotting takes time, faster when close -----------
+    if (chasing) {
+      this._awareness = 1;
+    } else if (visible) {
+      const closeness = 1 - Math.min(1, dist / this.detectionRange);
+      const alerted = this.state === State.SEARCH ? 1.8 : 1;
+      this._awareness = Math.min(1, this._awareness + (0.9 + closeness * 2.2) * alerted * dt);
+    } else {
+      this._awareness = Math.max(0, this._awareness - 0.45 * dt);
     }
 
-    // --- Weak point glow pulse (reads as "shoot me") -----------------------
-    for (let i = 0; i < this.weakPoints.length; i++) {
-      const wp = this.weakPoints[i];
-      if (!wp.userData.destroyed) {
-        wp.material.emissiveIntensity = 0.7 + 0.5 * Math.sin(this._animTime * 4);
+    // --- Hearing: footsteps carry, walls muffle them ------------------------
+    if (!chasing && this._retargetTimer <= 0 && this.playerNoise > 0) {
+      const radius = this.hearingRange * this.playerNoise * (this._canSeePlayer ? 1 : 0.6);
+      if (dist < radius) {
+        this._retargetTimer = 0.6;
+        const err = dist * 0.12; // sound is imprecise
+        this._beginSearch(
+          px + (Math.random() - 0.5) * 2 * err,
+          pz + (Math.random() - 0.5) * 2 * err,
+          this.searchSpeed
+        );
       }
     }
 
-    // --- Limb animation (CharacterFactory — zero per-frame allocs) ---------
-    this._char.update(dt, this.state, this.body.velocity);
+    // --- State transitions --------------------------------------------------
+    switch (this.state) {
+      case State.PATROL:
+      case State.SEARCH:
+        if (this._awareness >= 1) {
+          this._setState(State.CHASE);
+          this._escapeTimer = 0;
+          this._lostTimer = 0;
+          this._lungeTimer = 1.5;
+          this._emit('spotted');
+        }
+        break;
 
-    // --- Refresh world matrices NOW ---------------------------------------
-    // Three.js normally updates matrixWorld during render (end of frame).
-    // The PulseTool raycast runs right after this in Game._loop, so we
-    // update the model's world matrices explicitly — otherwise the ray
-    // tests against the monster's position from the PREVIOUS frame.
-    this.model.updateMatrixWorld(true);
+      case State.CHASE:
+        if (dist < this.attackRange) {
+          this._setState(State.ATTACK);
+        } else if (visible) {
+          this._lostTimer = 0;
+        } else {
+          // Lost sight: keep running to where it LAST SAW you, then search.
+          this._lostTimer += dt;
+          const ldx = this._lastKnownX - this.body.position.x;
+          const ldz = this._lastKnownZ - this.body.position.z;
+          if (ldx * ldx + ldz * ldz < 1.4 * 1.4 || this._lostTimer > this.escapeTimeout) {
+            this._enterSearchLook();
+            this._emit('hidden');
+          }
+        }
+        break;
+
+      case State.ATTACK:
+        if (dist > this.attackRange * 1.5) {
+          this._setState(State.CHASE);
+          this._lostTimer = 0;
+        }
+        break;
+    }
+
+    // --- Behaviour ----------------------------------------------------------
+    const suspicious = visible && this._awareness > 0.25 && !chasing;
+    switch (this.state) {
+      case State.PATROL:
+      case State.SEARCH:
+        if (suspicious) {
+          // "Did I just see something?" — freeze and stare at you.
+          this._drive(0, 0, 0, 10, dt);
+          this._desiredYaw = Math.atan2(dx, dz);
+        } else if (this.state === State.PATROL) {
+          this._doPatrol(dt, true);
+        } else {
+          this._doSearch(dt);
+        }
+        break;
+      case State.CHASE:
+        if (visible) this._doChase(dt, px, pz);
+        else this._doChase(dt, this._lastKnownX, this._lastKnownZ);
+        break;
+      case State.ATTACK:
+        this._doAttack(dt, dx, dz);
+        break;
+    }
   }
 
   // ── State behaviours ──────────────────────────────────────────────────────
 
   /** PATROL: walk toward the current waypoint, advance when close. */
-  _doPatrol(dt) {
+  _doPatrol(dt, pauses) {
     if (this._waypoints.length === 0) {
-      this.body.velocity.x = 0;
-      this.body.velocity.z = 0;
+      this._drive(0, 0, 0, 10, dt);
+      return;
+    }
+
+    if (this._pauseTimer > 0) {
+      // Standing at a waypoint, looking around (the model sways its head).
+      this._pauseTimer -= dt;
+      this._drive(0, 0, 0, 10, dt);
       return;
     }
 
     const wp = this._waypoints[this._waypointIndex];
-    this._dir.set(
-      wp.x - this.body.position.x,
-      0,
-      wp.z - this.body.position.z
-    );
+    this._dir.set(wp.x - this.body.position.x, 0, wp.z - this.body.position.z);
     const dist = this._dir.length();
 
     if (dist < 0.5) {
-      // Reached waypoint — advance to next.
       this._waypointIndex = (this._waypointIndex + 1) % this._waypoints.length;
-      this.body.velocity.x = 0;
-      this.body.velocity.z = 0;
+      if (pauses) this._pauseTimer = 1 + Math.random() * 1.5;
+      this._drive(0, 0, 0, 10, dt);
     } else {
       this._dir.normalize();
-      this.body.velocity.x = this._dir.x * this.patrolSpeed;
-      this.body.velocity.z = this._dir.z * this.patrolSpeed;
+      this._drive(this._dir.x, this._dir.z, this.patrolSpeed, 8, dt);
+      this._desiredYaw = Math.atan2(this._dir.x, this._dir.z);
     }
   }
 
-  /** CHASE: run toward the player. */
-  _doChase(dt, dx, dz, dist) {
+  /** SEARCH: walk to the noise / last known spot, then sweep the head. */
+  _doSearch(dt) {
+    this._searchTimer += dt;
+    if (this._searchPhase === 'go') {
+      this._dir.set(this._searchX - this.body.position.x, 0, this._searchZ - this.body.position.z);
+      const d = this._dir.length();
+      if (d < 0.9 || this._searchTimer > 12) {
+        this._searchPhase = 'look';
+        this._lookTimer = 0;
+        this._lookBaseYaw = this._yaw;
+        this._drive(0, 0, 0, 10, dt);
+      } else {
+        this._dir.normalize();
+        this._drive(this._dir.x, this._dir.z, this._searchSpeedNow, 10, dt);
+        this._desiredYaw = Math.atan2(this._dir.x, this._dir.z);
+      }
+    } else {
+      this._drive(0, 0, 0, 10, dt);
+      this._lookTimer += dt;
+      this._desiredYaw = this._lookBaseYaw + Math.sin(this._lookTimer * 1.6) * 1.2;
+      if (this._lookTimer >= this.searchLookTime) {
+        this._setState(State.PATROL);
+        this._awareness = 0;
+      }
+    }
+  }
+
+  /** CHASE: run toward a target point (the player, or where it last saw them). */
+  _doChase(dt, tx, tz) {
     this._lungeTimer = Math.max(0, this._lungeTimer - dt);
-    if (dist > 0.1) {
-      this._dir.set(dx, 0, dz).normalize();
+    const cdx = tx - this.body.position.x;
+    const cdz = tz - this.body.position.z;
+    const d = Math.sqrt(cdx * cdx + cdz * cdz);
+    if (d > 0.1) {
+      this._dir.set(cdx, 0, cdz).normalize();
       const lunge = this._lungeTimer > 0 ? 2.4 * (this._lungeTimer / 1.5) : 0;
       const speed = this.chaseSpeed + this._phaseSpeedBonus + lunge;
-      this.body.velocity.x = this._dir.x * speed;
-      this.body.velocity.z = this._dir.z * speed;
+      this._drive(this._dir.x, this._dir.z, speed, 20, dt);
+      this._desiredYaw = Math.atan2(cdx, cdz);
+    } else {
+      this._drive(0, 0, 0, 20, dt);
     }
   }
 
   /** ATTACK: stop and deal damage on a cooldown. */
-  _doAttack(dt) {
-    this.body.velocity.x = 0;
-    this.body.velocity.z = 0;
+  _doAttack(dt, dx, dz) {
+    this._drive(0, 0, 0, 20, dt);
+    this._desiredYaw = Math.atan2(dx, dz);
 
     this._attackTimer -= dt;
     const cooldown = Math.max(0.5, this.attackCooldown - this._phaseAttackBonus);
@@ -460,6 +677,49 @@ export default class MonsterAI {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Start investigating a point (noise source or last known position). */
+  _beginSearch(x, z, speed) {
+    this._searchX = x;
+    this._searchZ = z;
+    this._searchSpeedNow = speed;
+    this._searchPhase = 'go';
+    this._searchTimer = 0;
+    if (this.state !== State.SEARCH) this._setState(State.SEARCH);
+  }
+
+  /** Arrived where it last saw you: stop and sweep its head. */
+  _enterSearchLook() {
+    this._searchPhase = 'look';
+    this._lookTimer = 0;
+    this._lookBaseYaw = this._yaw;
+    this._awareness = Math.min(this._awareness, 0.6);
+    this._setState(State.SEARCH);
+  }
+
+  /**
+   * Ramp horizontal speed toward `target` along (dirX, dirZ). Braking is
+   * twice as strong as accelerating so it stops crisply but starts with weight.
+   */
+  _drive(dirX, dirZ, target, accel, dt) {
+    if (target > 0) {
+      this._driveX = dirX;
+      this._driveZ = dirZ;
+    }
+    const rate = (target > this._speed ? accel : accel * 2) * dt;
+    const diff = target - this._speed;
+    this._speed += Math.abs(diff) <= rate ? diff : Math.sign(diff) * rate;
+    this.body.velocity.x = this._driveX * this._speed;
+    this.body.velocity.z = this._driveZ * this._speed;
+  }
+
+  /** Turn the facing toward `target` radians at no more than `rate` rad/s. */
+  _turnYaw(target, rate, dt) {
+    let d = target - this._yaw;
+    d = Math.atan2(Math.sin(d), Math.cos(d)); // wrap to [-PI, PI]
+    const step = rate * dt;
+    this._yaw += Math.abs(d) <= step ? d : Math.sign(d) * step;
+  }
 
   /** Transition to a new state and emit an event. */
   _setState(newState) {
