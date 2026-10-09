@@ -1,11 +1,14 @@
 /**
- * AudioManager — procedural horror soundscape built entirely with the Web
- * Audio API. Every sound is synthesised at runtime: no audio files to ship,
- * download, or case-match on the LAMP server, and fear can be modulated in
- * real time (heartbeat speed, growl proximity, ambience ducking).
+ * AudioManager — horror soundscape built with the Web Audio API.
  *
- * Event interface (called from Game.js — keep names stable so Person D can
- * later swap individual voices for recorded samples):
+ * One-shot event cues prefer recorded samples preloaded by AssetLibrary
+ * (public/assets/audio/{cue}.ogg|.mp3): play() checks the decoded buffer
+ * first and plays it through the master chain with a per-cue gain, while
+ * the synth voice below stays as the fallback for missing files. Ambient
+ * beds, the heartbeat, footsteps and the proximity-modulated growl remain
+ * fully procedural — they react to game state in real time.
+ *
+ * Event interface (called from Game.js — names are stable API):
  *   play('pulseShot' | 'pulseHit' | 'pulseMiss' | 'doorOpen' | 'ventHiss' |
  *        'spark' | 'growl' | 'roar' | 'spotted' | 'attack' | 'transform' |
  *        'death' | 'alarm' | 'beep' | 'creak' | 'clang' | 'collapse' |
@@ -22,6 +25,8 @@
  * No per-frame allocations: update() only mutates counters and reads input.
  */
 
+import AssetLibrary from '../core/AssetLibrary.js';
+
 const MIN_GAIN = 0.0001;
 
 export default class AudioManager {
@@ -33,6 +38,7 @@ export default class AudioManager {
     this._level = 1;
     this._noise = null;
     this._dist = null;      // cached waveshaper curve
+    this._samples = new Map(); // decoded one-shot cues (id → AudioBuffer)
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -89,6 +95,7 @@ export default class AudioManager {
     if (this.ctx.state === 'suspended') this.ctx.resume();
     this._unlocked = true;
     this._startBed(this._level);
+    this._decodeSamples(); // background decode — synth covers until done
   }
 
   toggleMute() {
@@ -117,23 +124,75 @@ export default class AudioManager {
       case 'pulseHit': this._spark(); this._chirp(2400, 1700, 0.07, 0.14); break;
       case 'pulseMiss': this._whoosh(); break;
       case 'spark': this._spark(); break;
-      case 'doorOpen': this._door(); break;
+      case 'doorOpen': if (!this._sample('door_open', 0.5)) this._door(); break;
       case 'ventHiss': this._hiss(1.0, 0.3); break;
-      case 'growl': this._growl(opt === undefined ? 0.4 : opt); break;
-      case 'roar': this._roar(); break;
-      case 'spotted': this._sting(); break;
-      case 'jumpscare': this._jumpscare(); break;
-      case 'attack': this._impact(); break;
-      case 'transform': this._transform(); break;
-      case 'death': this._death(); break;
-      case 'alarm': this._alarm(); break;
+      case 'growl': this._growlCue(opt === undefined ? 0.4 : opt); break;
+      case 'roar': if (!this._sample('roar', 0.6)) this._roar(); break;
+      case 'spotted': if (!this._sample('spotted', 0.4)) this._sting(); break;
+      case 'jumpscare': if (!this._sample('jumpscare', 0.8)) this._jumpscare(); break;
+      case 'attack': if (!this._sample('attack', 0.75)) this._impact(); break;
+      case 'transform': if (!this._sample('transform', 0.7)) this._transform(); break;
+      case 'death': if (!this._sample('death', 0.65)) this._death(); break;
+      case 'alarm': if (!this._sample('alarm', 0.35)) this._alarm(); break;
       case 'beep': this._beep(opt === true); break;
       case 'creak': this._creak(); break;
       case 'clang': this._clang(); break;
-      case 'collapse': this._startRumble(); break;
-      case 'win': this._win(); break;
-      case 'gameover': this._gameOver(); break;
+      case 'collapse':
+        // Sampled crash as the one-shot; the procedural rumble bed sustains.
+        this._sample('collapse', 0.75);
+        this._startRumble();
+        break;
+      case 'win': if (!this._sample('win', 0.3)) this._win(); break;
+      case 'gameover': if (!this._sample('gameover', 0.6)) this._gameOver(); break;
     }
+  }
+
+  // ── Sampled cues ──────────────────────────────────────────────────────────
+
+  /**
+   * Decode every sampled cue preloaded by AssetLibrary. Fire-and-forget:
+   * until a buffer lands the synth voice covers, and a failed decode simply
+   * keeps that cue procedural. Runs once on unlock (decodeAudioData detaches
+   * the source ArrayBuffer — the encoded form is never needed again).
+   */
+  async _decodeSamples() {
+    const ids = ['roar', 'spotted', 'jumpscare', 'attack', 'transform',
+      'alarm', 'death', 'door_open', 'collapse', 'win', 'gameover', 'growl'];
+    for (const id of ids) {
+      const raw = AssetLibrary.getAudio(id);
+      if (!raw) continue;
+      try {
+        this._samples.set(id, await this.ctx.decodeAudioData(raw));
+      } catch (e) { /* undecodable file — keep the synth voice */ }
+    }
+  }
+
+  /**
+   * Play a decoded sample through the master chain (short attack so the
+   * recording never clicks in).
+   * @returns {boolean} false when no sample exists — caller falls back
+   */
+  _sample(id, vol, rate) {
+    const buf = this._samples.get(id);
+    if (!buf) return false;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    if (rate !== undefined) src.playbackRate.value = rate;
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+    src.connect(g).connect(this.master);
+    src.onended = () => { try { g.disconnect(); } catch (e) { /* noop */ } };
+    src.start(t);
+    return true;
+  }
+
+  /** Growl cue: sampled when available, else synth — both modulate on prox. */
+  _growlCue(prox) {
+    const k = prox > 1 ? 1 : prox;
+    if (this._sample('growl', 0.1 + 0.4 * k, 0.92 + k * 0.16)) return;
+    this._growl(prox);
   }
 
   // ── Per-frame schedulers ─────────────────────────────────────────────────
@@ -199,7 +258,7 @@ export default class AudioManager {
       this._growlTimer -= dt;
       if (this._growlTimer <= 0) {
         const k = threat > 1 ? 1 : threat;
-        this._growl(0.15 + 0.45 * k);
+        this._growlCue(0.15 + 0.45 * k);
         this._growlTimer = 7 + Math.random() * 9;
       }
     } else if (chasing) {
