@@ -7,6 +7,10 @@
  * cheap and materials/geometries can safely be shared and kept for the
  * whole session instead of being disposed per level.
  *
+ * Authored image sets (public/assets/textures/{theme}_{role}_{col|nrm|rgh}.jpg)
+ * take priority for the wall/floor/trim roles when present — the canvas
+ * generators then serve as the fallback for missing files and channels.
+ *
  * Theme bundles:
  *   lab        — clean research facility (Level 1)
  *   damaged    — rusted, water-stained, collapsed (Level 2)
@@ -17,6 +21,7 @@
  */
 import * as THREE from 'three';
 import { buildPBRMaps } from '../shaders/textures.js';
+import AssetLibrary from '../core/AssetLibrary.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Seeded drawing helpers
@@ -473,8 +478,54 @@ const THEME_CONFIG = {
 
 const _themeCache = new Map();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Authored image sets (public/assets/textures/{theme}_{role}_{col|nrm|rgh}.jpg)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Collect one material role's authored maps, cloned per-call so each use
+ * gets its own repeat (clones share the underlying image — cheap).
+ * Returns null when the albedo is missing (the whole role falls back).
+ * @param {string} theme lab | damaged | emergency
+ * @param {string} role wall | floor | trim
+ * @param {[number, number]} repeat
+ */
+function themeImageSet(theme, role, repeat) {
+  const col = AssetLibrary.getTexture(`${theme}_${role}_col`);
+  if (!col) return null;
+
+  const set = {};
+  for (const key of ['col', 'nrm', 'rgh']) {
+    const tex = AssetLibrary.getTexture(`${theme}_${role}_${key}`);
+    if (!tex) continue;
+    const c = tex.clone();
+    c.repeat.set(repeat[0], repeat[1]);
+    c.needsUpdate = true;
+    set[key] = c;
+  }
+  return set;
+}
+
+/**
+ * Map a role's authored set onto material options — albedo, normal,
+ * roughness — leaving absent channels to the procedural fallbacks.
+ * @param {object|null} set
+ * @param {THREE.Texture} fallbackMap
+ * @param {THREE.Texture} fallbackNrm
+ * @param {THREE.Texture|null} fallbackRgh
+ */
+function withImageMaps(set, fallbackMap, fallbackNrm, fallbackRgh) {
+  return {
+    map: (set && set.col) || fallbackMap,
+    normalMap: (set && set.nrm) || fallbackNrm,
+    roughnessMap: (set && set.rgh) || fallbackRgh,
+  };
+}
+
 /**
  * Build (or return the cached) material bundle for a theme.
+ * Authored image sets replace the canvas-generated wall/floor/trim textures
+ * when present; everything else stays procedural.
  * Materials are shared across meshes and levels — do NOT dispose them on
  * level teardown; the game keeps at most three bundles alive.
  */
@@ -482,10 +533,15 @@ export function getThemeMaterials(themeName) {
   if (_themeCache.has(themeName)) return _themeCache.get(themeName);
   const t = THEME_CONFIG[themeName] || THEME_CONFIG.lab;
 
-  const wallTex = panelTexture({ ...t.wall, seed: t.seed, repeat: [4, 2] });
-  const wallDarkTex = panelTexture({ ...t.wallDark, seed: t.seed + 1, repeat: [4, 2] });
-  const ceilTex = panelTexture({ ...t.ceil, seed: t.seed + 7, repeat: [5, 5] });
-  const floorTex = tileTexture({ ...t.floor, seed: t.seed + 2, repeat: [7, 7] });
+  const imgWall = themeImageSet(themeName, 'wall', [4, 2]);
+  const imgCeil = themeImageSet(themeName, 'wall', [5, 5]);
+  const imgFloor = themeImageSet(themeName, 'floor', [7, 7]);
+  const imgTrim = themeImageSet(themeName, 'trim', [2, 2]);
+
+  const wallTex = imgWall ? null : panelTexture({ ...t.wall, seed: t.seed, repeat: [4, 2] });
+  const wallDarkTex = imgWall ? null : panelTexture({ ...t.wallDark, seed: t.seed + 1, repeat: [4, 2] });
+  const ceilTex = imgCeil ? null : panelTexture({ ...t.ceil, seed: t.seed + 7, repeat: [5, 5] });
+  const floorTex = imgFloor ? null : tileTexture({ ...t.floor, seed: t.seed + 2, repeat: [7, 7] });
   const grateTex = gratingTexture({ ...t.grate, seed: t.seed + 3, repeat: [3, 3] });
   const concreteTex = concreteTexture({ ...t.concrete, seed: t.seed + 4, repeat: [4, 4] });
   const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5 });
@@ -503,17 +559,19 @@ export function getThemeMaterials(themeName) {
 
   const mats = {
     // --- architecture ---
-    wall: std({ map: wallTex, normalMap: wallPBR.normalMap, roughnessMap: wallPBR.roughnessMap, roughness: 1, metalness: 0.35, color: 0xffffff }),
-    wallDark: std({ map: wallDarkTex, normalMap: wallPBR.normalMap, roughness: 1, metalness: 0.4, color: 0xffffff }),
-    ceil: std({ map: ceilTex, normalMap: wallPBR.normalMap, roughness: 0.9, metalness: 0.2, color: 0xffffff }),
-    floor: std({ map: floorTex, normalMap: floorPBR.normalMap, roughnessMap: floorPBR.roughnessMap, roughness: 1, metalness: 0.2, color: 0xffffff }),
+    // Authored image sets (img*) replace the canvas maps channel-by-channel;
+    // wallDark keeps its tint over the shared wall set when authored.
+    wall: std({ color: 0xffffff, roughness: 1, metalness: 0.35, ...withImageMaps(imgWall, wallTex, wallPBR.normalMap, wallPBR.roughnessMap) }),
+    wallDark: std({ color: imgWall ? 0x8a8f99 : 0xffffff, roughness: 1, metalness: 0.4, ...withImageMaps(imgWall, wallDarkTex, wallPBR.normalMap, wallPBR.roughnessMap) }),
+    ceil: std({ color: 0xffffff, roughness: 0.9, metalness: 0.2, ...withImageMaps(imgCeil, ceilTex, wallPBR.normalMap, null) }),
+    floor: std({ color: 0xffffff, roughness: 1, metalness: 0.2, ...withImageMaps(imgFloor, floorTex, floorPBR.normalMap, floorPBR.roughnessMap) }),
     grate: std({ map: grateTex, normalMap: propPBR.normalMap, roughness: 0.7, metalness: 0.6, color: 0xffffff }),
     concrete: std({ map: concreteTex, normalMap: propPBR.normalMap, roughness: 1, metalness: 0.05, color: 0xffffff }),
-    trim: std({ color: t.trim, roughness: 0.6, metalness: 0.5, normalMap: propPBR.normalMap }),
+    trim: std({ color: t.trim, roughness: 0.6, metalness: 0.5, ...withImageMaps(imgTrim, null, propPBR.normalMap, null) }),
     beam: std({ color: t.beam, roughness: 0.6, metalness: 0.55, normalMap: propPBR.normalMap }),
     metal: std({ color: t.metal, roughness: 0.35, metalness: 0.8, normalMap: propPBR.normalMap }),
     metalDark: std({ color: t.metalDark, roughness: 0.5, metalness: 0.7, normalMap: propPBR.normalMap }),
-    panel: std({ color: t.panel, roughness: 0.5, metalness: 0.6, normalMap: propPBR.normalMap }),
+    panel: std({ color: t.panel, roughness: 0.5, metalness: 0.6, ...withImageMaps(imgTrim, null, propPBR.normalMap, null) }),
     pipe: std({ color: t.pipe, roughness: 0.45, metalness: 0.7 }),
     crate: std({ color: t.crate, roughness: 0.85, metalness: 0.1, normalMap: propPBR.normalMap }),
     locker: std({ color: t.locker, roughness: 0.55, metalness: 0.6, normalMap: propPBR.normalMap }),
