@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { createMonster } from './CharacterFactory.js';
+import { createMonsterModel } from './MonsterModel.js';
 
 /**
  * MonsterAI — mutated scientist enemy with PATROL → CHASE → ATTACK states.
@@ -140,10 +140,11 @@ export default class MonsterAI {
     this._toPlayer = new THREE.Vector3();
     this._playerPos = new THREE.Vector3();
 
-    // --- Creature model (code-built via CharacterFactory) -------------------
-    // The factory supplies the tagged hit meshes and the three mounted weak
-    // points with the exact same userData contract as the old placeholder.
-    const character = createMonster();
+    // --- Creature model (Blender GLB via AssetLibrary, procedural fallback) --
+    // MonsterModel normalises the GLB into the same local space the code-built
+    // creature occupied, and supplies the tagged hit meshes and the three
+    // mounted weak points with the exact same userData contract.
+    const character = createMonsterModel();
     this._char = character;
     this.model = character.group;
     this.hitMeshes = character.hitMeshes;
@@ -325,10 +326,13 @@ export default class MonsterAI {
     if (this._dying) {
       this._deathTimer -= dt;
       const t = 1 - Math.max(0, this._deathTimer) / this._deathDuration;
-      this.model.rotation.x = t * Math.PI * 0.45; // topple backward
+      // A rigged Death clip (Blender creature) carries the fall itself; the
+      // procedural creature topples and sinks rigidly.
+      const clipDeath = this._char.hasDeathClip === true;
+      this.model.rotation.x = clipDeath ? 0 : t * Math.PI * 0.45;
       this.model.position.set(
         this.body.position.x,
-        this.body.position.y + this._modelYOffset - t * 0.3,   // sink as it falls
+        this.body.position.y + this._modelYOffset - (clipDeath ? 0 : t * 0.3),
         this.body.position.z
       );
 
