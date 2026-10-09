@@ -13,12 +13,17 @@
  *   - Physics bodies are axis-aligned AABBs. Props may be rotated by the four
  *     cardinal faces; quarter-turns swap the half-extents handed to cannon so
  *     the collision matches the visuals.
+ *   - Props prefer authored Blender exports preloaded through AssetLibrary:
+ *     _glb() normalises a clone into the builder's footprint and registers
+ *     physics/occluders exactly like the primitive path. When a file is
+ *     missing the procedural build runs unchanged (fallback law).
  *
  * Everything here runs at level-load time only — nothing per frame.
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { signMaterial, decalMaterial } from './LevelMaterials.js';
+import AssetLibrary from '../core/AssetLibrary.js';
 
 // ── Shared geometry cache ────────────────────────────────────────────────────
 const _geoCache = new Map();
@@ -87,14 +92,15 @@ export default class LevelKit {
       const hw = o.w !== undefined ? o.w / 2 : 0.5;
       const hh = o.h !== undefined ? o.h / 2 : 0.5;
       const hd = o.d !== undefined ? o.d / 2 : 0.5;
-      const body = this.physics.createBox(
+      this.physics.createBox(
         0,
         quarter ? hd : hw,
         hh,
         quarter ? hw : hd,
         new CANNON.Vec3(mesh.position.x, mesh.position.y, mesh.position.z)
       );
-      this.physics.addSyncPair(body, mesh);
+      // No sync pair for static kit bodies: they never move, and the per-step
+      // quaternion copy would flatten rotY to the body's identity rotation.
     }
     if (o.occluder) this.host.occluders.push(mesh);
     return mesh;
@@ -138,6 +144,69 @@ export default class LevelKit {
     m.receiveShadow = true;
     parent.add(m);
     return m;
+  }
+
+  // ── Authored (Blender) props ───────────────────────────────────────────────
+
+  /**
+   * Place a preloaded Blender prop from the AssetLibrary, normalised into
+   * the calling builder's footprint. Returns the pivot group, or null when
+   * the model is missing — the caller then runs its procedural build.
+   *
+   * @param {string} id   AssetLibrary model id ('props/crate', …)
+   * @param {number} w/h/d footprint the model is scaled to fit
+   * @param {number} x/y/z anchor point: footprint floor centre (default), or
+   *   the top plane for o.anchor = 'top' (hanging fixtures)
+   * @param {object} o    physics/rotY/occluder as in _add, plus:
+   *   mode    'fit' (default) scales to fit all of w×h×d; 'width' matches w
+   *           only — fixtures own their height
+   *   anchor  'floor' (default) stands the model on y; 'top' hangs it below
+   */
+  _glb(id, w, h, d, x, y, z, o = {}) {
+    const src = AssetLibrary.cloneModel(id);
+    return src ? this._placeGLB(src, w, h, d, x, y, z, o) : null;
+  }
+
+  /** Placement + registration for an already-cloned prop scene (see _glb). */
+  _placeGLB(src, w, h, d, x, y, z, o = {}) {
+    const box = new THREE.Box3().setFromObject(src);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    if (size.x < 1e-4 || size.y < 1e-4) return null; // degenerate export
+    const s = o.mode === 'width' ? w / size.x
+      : Math.min(w / size.x, h / size.y, d / size.z);
+    src.scale.multiplyScalar(s);
+    src.position.set(
+      -(box.min.x + box.max.x) * 0.5 * s,
+      (o.anchor === 'top' ? -box.max.y : -box.min.y) * s,
+      -(box.min.z + box.max.z) * 0.5 * s
+    );
+    const pivot = new THREE.Group();
+    pivot.position.set(x, y, z);
+    if (o.rotY) pivot.rotation.y = o.rotY;
+    pivot.add(src);
+    pivot.userData.kitShared = true; // clones share the cached geometry/materials
+    this.scene.add(pivot);
+    this.host._track(pivot);
+
+    if (o.physics) {
+      const quarter = Math.abs(Math.abs(o.rotY || 0) - Math.PI / 2) < 0.01;
+      this.physics.createBox(
+        0,
+        quarter ? d / 2 : w / 2,
+        h / 2,
+        quarter ? w / 2 : d / 2,
+        new CANNON.Vec3(x, y + h / 2, z)
+      );
+    }
+    // The LOS and camera raycasts are non-recursive, so a group cannot
+    // occlude on its own — every mesh inside the clone is registered.
+    if (o.occluder) {
+      src.traverse((child) => {
+        if (child.isMesh) this.host.occluders.push(child);
+      });
+    }
+    return pivot;
   }
 
   // ── Architecture ───────────────────────────────────────────────────────────
@@ -220,14 +289,17 @@ export default class LevelKit {
     return null;
   }
 
-  /** Ceiling lamp: housing + diffuser + optional real point light. */
+  /** Ceiling lamp: authored fixture (or housing + diffuser) + point light. */
   lamp(x, z, o = {}) {
     const y = o.y !== undefined ? o.y : 2.85;
     const colorName = o.color || 'cool';
-    const panel = colorName === 'amber' ? this.mats.beaconAmber
-      : colorName === 'red' ? this.mats.emergencyRed : this.mats.lampPanel;
-    this.box(this.mats.metalDark, 1.0, 0.07, 0.30, x, y, z);
-    this.box(panel, 0.86, 0.05, 0.22, x, y - 0.05, z, { cast: false });
+    const glb = this._glb('props/ceiling_light', 1.0, 0.45, 0.30, x, y + 0.04, z, { mode: 'width', anchor: 'top' });
+    if (!glb) {
+      const panel = colorName === 'amber' ? this.mats.beaconAmber
+        : colorName === 'red' ? this.mats.emergencyRed : this.mats.lampPanel;
+      this.box(this.mats.metalDark, 1.0, 0.07, 0.30, x, y, z);
+      this.box(panel, 0.86, 0.05, 0.22, x, y - 0.05, z, { cast: false });
+    }
     if (o.light !== false) {
       const c = colorName === 'amber' ? this.mats.colors.warn
         : colorName === 'red' ? this.mats.colors.emer : this.mats.colors.lampLight;
@@ -489,6 +561,8 @@ export default class LevelKit {
     const w = o.w || 2.0;
     const d = o.d || 1.0;
     const rotY = this.faceAngle(face);
+    const glb = this._glb('props/console_desk', w, 1.15, d, x, 0, z, { rotY, physics: true });
+    if (glb) return glb;
     const main = this.box(this.mats.panel, w, 0.76, d, x, 0.38, z, { physics: true, rotY });
     this._child(main, this.mats.metalDark, w + 0.06, 0.05, d + 0.06, 0, 0.38, 0);
     this._child(main, this.mats.metalDark, w - 0.2, 0.5, 0.06, 0, -0.08, d / 2 - 0.03);
@@ -506,6 +580,8 @@ export default class LevelKit {
   labBench(x, z, face, o = {}) {
     const len = o.len || 2.4;
     const rotY = this.faceAngle(face);
+    const glb = this._glb('props/lab_bench', len, 1.0, 0.75, x, 0, z, { rotY, physics: true });
+    if (glb) return glb;
     const main = this.box(this.mats.panel, len, 0.88, 0.75, x, 0.44, z, { physics: true, rotY });
     this._child(main, this.mats.metal, len + 0.06, 0.05, 0.8, 0, 0.44, 0);
     // Lower cabinet doors.
@@ -525,6 +601,8 @@ export default class LevelKit {
   /** Simple lab chair (physics on the seat footprint). */
   chair(x, z, face, o = {}) {
     const rotY = this.faceAngle(face);
+    const glb = this._glb('props/chair', 0.5, 0.92, 0.5, x, 0, z, { rotY, physics: true });
+    if (glb) return glb;
     const main = this.box(this.mats.rubber, 0.46, 0.08, 0.46, x, 0.46, z, { physics: true, rotY });
     this._child(main, this.mats.rubber, 0.44, 0.5, 0.07, 0, 0.33, -0.2);
     this._child(main, this.mats.metalDark, 0.08, 0.42, 0.08, 0, -0.25, 0);
@@ -538,6 +616,20 @@ export default class LevelKit {
     const h = o.h || 2.0;
     const w = count * 0.62;
     const rotY = this.faceAngle(face);
+    // A full-bank export wins; a single-locker export is repeated once per
+    // bay along the bank's axis so the footprint and cover value are kept.
+    const bank = this._glb('props/locker_bank', w, h, 0.55, x, 0, z, { rotY, physics: true, occluder: true });
+    if (bank) return bank;
+    const ax = Math.cos(rotY);
+    const az = -Math.sin(rotY);
+    let first = null;
+    for (let i = 0; i < count; i++) {
+      const off = -w / 2 + 0.31 + i * 0.62;
+      const unit = this._glb('props/locker', 0.62, h, 0.55, x + ax * off, 0, z + az * off, { rotY, physics: true, occluder: true });
+      if (!unit) break; // no locker model — procedural bank below
+      if (!first) first = unit;
+    }
+    if (first) return first;
     const main = this.box(this.mats.locker, w, h, 0.55, x, h / 2, z, { physics: true, occluder: true, rotY });
     for (let i = 0; i < count; i++) {
       const dx = -w / 2 + 0.31 + i * 0.62;
@@ -554,6 +646,8 @@ export default class LevelKit {
   cabinet(x, z, face, o = {}) {
     const h = o.h || 1.8;
     const rotY = this.faceAngle(face);
+    const glb = this._glb('props/cabinet', 0.9, h + 0.3, 0.5, x, 0, z, { rotY, physics: true, occluder: h >= 1.5 });
+    if (glb) return glb;
     const main = this.box(this.mats.panel, 0.9, h, 0.5, x, h / 2, z, { physics: true, occluder: h >= 1.5, rotY });
     this._child(main, this.mats.metalDark, 0.8, h - 0.12, 0.03, 0, 0, 0.26);
     this._child(main, this.mats.metal, 0.05, 0.16, 0.03, 0.32, 0, 0.28);
@@ -582,6 +676,8 @@ export default class LevelKit {
   crate(x, z, o = {}) {
     const s = o.s || 0.8;
     const rotY = o.rotY || 0;
+    const glb = this._glb('props/crate', s, s, s, x, 0, z, { rotY, physics: true, occluder: s >= 1.5 });
+    if (glb) return glb;
     const main = this.box(this.mats.crate, s, s, s, x, s / 2, z, { physics: true, occluder: s >= 1.5, rotY });
     const e = s * 0.09;
     this._child(main, this.mats.metalDark, e, s + 0.01, e, s / 2 - e / 2, 0, s / 2 - e / 2);
@@ -611,6 +707,8 @@ export default class LevelKit {
   barrel(x, z, o = {}) {
     const r = 0.32;
     const h = 0.95;
+    const glb = this._glb('props/barrel', r * 2, h, r * 2, x, 0, z, { physics: true });
+    if (glb) return glb;
     const main = this.cyl(this.mats.hazard, r, r, h, x, h / 2, z, { physics: true, seg: 12 });
     for (const ry of [-0.22, 0.22]) {
       const ring = new THREE.Mesh(cylGeo(r + 0.02, r + 0.02, 0.06, 12), this.mats.metalDark);
@@ -633,6 +731,8 @@ export default class LevelKit {
   serverRack(x, z, face, o = {}) {
     const h = o.h || 2.1;
     const rotY = this.faceAngle(face);
+    const glb = this._glb('props/server_rack', 0.72, h, 0.95, x, 0, z, { rotY, physics: true, occluder: true });
+    if (glb) return glb;
     const main = this.box(this.mats.metalDark, 0.72, h, 0.95, x, h / 2, z, { physics: true, occluder: true, rotY });
     this._child(main, this.mats.rubber, 0.6, h - 0.16, 0.03, 0, 0, 0.49);
     for (let i = 0; i < 3; i++) {
@@ -657,6 +757,20 @@ export default class LevelKit {
   containmentTube(x, z, o = {}) {
     const r = o.r || 0.85;
     const h = o.h || 2.6;
+    const main = this._glb('props/containment_tube', r * 2, h + 0.28, r * 2, x, 0, z, { physics: true })
+      || this._containmentTubeProcedural(r, h, x, z);
+    if (o.light !== false) {
+      const light = new THREE.PointLight(0x54ff8a, 0.9, 9, 2);
+      light.userData.flicker = true;
+      light.position.set(x, 1.6, z);
+      this.scene.add(light);
+      this.host._track(light);
+    }
+    return main;
+  }
+
+  /** Procedural tube fallback: plinth, glass, specimen and cables. */
+  _containmentTubeProcedural(r, h, x, z) {
     this.box(this.mats.metalDark, r * 3, 0.28, r * 3, x, 0.14, z, { physics: true });
     const glass = this.cyl(this.mats.tubeGlass, r, r, h, x, 0.28 + h / 2, z, { physics: true, seg: 18, cast: false });
     for (const ry of [0, h]) {
@@ -679,13 +793,6 @@ export default class LevelKit {
       cable.position.set(s * 0.3, -h / 2 + 0.2, r + 0.05);
       glass.add(cable);
     }
-    if (o.light !== false) {
-      const light = new THREE.PointLight(0x54ff8a, 0.9, 9, 2);
-            light.userData.flicker = true;
-      light.position.set(x, 1.6, z);
-      this.scene.add(light);
-      this.host._track(light);
-    }
     return glass;
   }
 
@@ -693,6 +800,20 @@ export default class LevelKit {
   reactorCore(x, z, o = {}) {
     const r = o.r || 1.5;
     const h = o.h || 3.0;
+    const main = this._glb('props/reactor_core', r * 2, h + 0.3, r * 2, x, 0, z, { physics: true })
+      || this._reactorCoreProcedural(r, h, x, z, o);
+    if (o.light !== false) {
+      const light = new THREE.PointLight(this.mats.colors.accent, 1.2, 14, 2);
+      light.userData.flicker = true;
+      light.position.set(x, 2.2, z);
+      this.scene.add(light);
+      this.host._track(light);
+    }
+    return main;
+  }
+
+  /** Procedural core fallback: plinth, shell, glow column and coolant pipes. */
+  _reactorCoreProcedural(r, h, x, z, o) {
     this.box(this.mats.metalDark, r * 2.6, 0.3, r * 2.6, x, 0.15, z, { physics: true });
     const core = this.cyl(this.mats.metalDark, r, r, h, x, 0.3 + h / 2, z, { physics: true, seg: 20 });
     const glowMat = o.glowMat || this.mats.accent;
@@ -708,13 +829,6 @@ export default class LevelKit {
       pipe.position.set(Math.cos(a) * r, h / 2 - 0.5, Math.sin(a) * r);
       pipe.rotation.y = -a;
       core.add(pipe);
-    }
-    if (o.light !== false) {
-      const light = new THREE.PointLight(this.mats.colors.accent, 1.2, 14, 2);
-            light.userData.flicker = true;
-      light.position.set(x, 2.2, z);
-      this.scene.add(light);
-      this.host._track(light);
     }
     return core;
   }

@@ -17,6 +17,10 @@
  * synchronously at build time.
  *
  * Ids are stable API: 'monster', 'props/crate', 'lab_wall_col', 'roar', …
+ *
+ * Manifest values may list several candidate paths per id (canonical export
+ * first, a teammate's drop-in folder such as public/models/ second); the
+ * loader tries them in order and keeps the first that loads.
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -38,7 +42,10 @@ export const CREDITS = [
 
 /**
  * Manifest of optional assets. Paths are relative (vite base './') so the
- * LAMP deployment under a subdirectory keeps working.
+ * LAMP deployment under a subdirectory keeps working. A model value may be
+ * a single path or a list of candidates tried in order — the first entry is
+ * the canonical export location, later entries pick up Blender drops that
+ * landed under public/models/ in the meantime.
  * Texture ids carry the map role suffix: _col (albedo), _nrm, _rgh.
  */
 const MANIFEST = {
@@ -47,16 +54,18 @@ const MANIFEST = {
     'scientist': 'assets/models/scientist.glb',
     'engineer': 'assets/models/engineer.glb',
     'pulse_rifle': 'assets/models/pulse_rifle.glb',
-    'props/console_desk': 'assets/models/props/console_desk.glb',
+    'props/console_desk': ['assets/models/props/console_desk.glb', 'models/console.glb'],
     'props/chair': 'assets/models/props/chair.glb',
     'props/server_rack': 'assets/models/props/server_rack.glb',
-    'props/containment_tube': 'assets/models/props/containment_tube.glb',
+    'props/containment_tube': ['assets/models/props/containment_tube.glb', 'models/containment_tube.glb'],
     'props/reactor_core': 'assets/models/props/reactor_core.glb',
     'props/crate': 'assets/models/props/crate.glb',
     'props/barrel': 'assets/models/props/barrel.glb',
     'props/cabinet': 'assets/models/props/cabinet.glb',
     'props/locker_bank': 'assets/models/props/locker_bank.glb',
+    'props/locker': ['assets/models/props/locker.glb', 'models/locker.glb'],
     'props/lab_bench': 'assets/models/props/lab_bench.glb',
+    'props/ceiling_light': ['assets/models/props/ceiling_light.glb', 'models/ceiling_light.glb'],
   },
   textures: {
     // Level 1 — clean lab
@@ -109,6 +118,21 @@ const MANIFEST = {
 /** Hard cap on preload time — after this, whatever arrived is used. */
 const PRELOAD_TIMEOUT_MS = 15000;
 
+/**
+ * Load the first URL that resolves. Manifest candidates are tried in order
+ * so a canonical export overrides a drop-in copy of the same prop.
+ * Resolves null when every candidate fails.
+ */
+function loadFirst(gltfLoader, urls) {
+  return new Promise((resolve) => {
+    const attempt = (i) => {
+      if (i >= urls.length) { resolve(null); return; }
+      gltfLoader.load(urls[i], resolve, undefined, () => attempt(i + 1));
+    };
+    attempt(0);
+  });
+}
+
 class AssetLibrary {
   constructor() {
     /** @type {Map<string, object>} id → gltf ({scene, animations, …}) */
@@ -144,23 +168,27 @@ class AssetLibrary {
     };
 
     // Models — store the whole gltf (scene + animations + clips).
-    for (const [id, url] of Object.entries(MANIFEST.models)) {
+    for (const [id, paths] of Object.entries(MANIFEST.models)) {
       this._total++;
-      tasks.push(new Promise((resolve) => {
-        gltfLoader.load(url,
-          (gltf) => {
-            // Uniform defaults matching the procedural art's look; per-model
-            // tweaks (e.g. frustumCulled=false for skinned meshes) stay with
-            // the consumers.
-            gltf.scene.traverse((o) => {
-              if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
-            });
-            this._models.set(id, gltf);
-            resolve();
-          },
-          undefined,
-          () => resolve()); // 404 / parse error → fallback
-      }).then(settle));
+      const urls = Array.isArray(paths) ? paths : [paths];
+      tasks.push(loadFirst(gltfLoader, urls).then((gltf) => {
+        if (gltf) {
+          // Uniform defaults matching the procedural art's look; per-model
+          // tweaks (e.g. frustumCulled=false for skinned meshes) stay with
+          // the consumers.
+          const lights = [];
+          gltf.scene.traverse((o) => {
+            if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+            else if (o.isLight) lights.push(o);
+          });
+          // Exported lights are stripped: every clone of a prop would add its
+          // own, and gameplay lighting is owned by LevelKit/Game (flicker,
+          // alarms). Removing them once here covers all clones.
+          for (const l of lights) l.parent?.remove(l);
+          this._models.set(id, gltf);
+        }
+        settle();
+      }));
     }
 
     // Textures — colour space by suffix, repeat-wrapped for level materials.
