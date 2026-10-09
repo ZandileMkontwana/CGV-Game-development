@@ -111,6 +111,15 @@ export default class LevelManager {
     /** Rotating hazard meshes {mesh, speed} (rebuilt each load). */
     this._rotatingHazards = [];
 
+    /**
+     * Power-routing nodes {id, mesh, led, lit, lights, doorIds}
+     * (rebuilt each load) — the Level 1 puzzle layer.
+     */
+    this._powerNodes = [];
+
+    /** Lights fading in after their node fired {light, target, ramp}. */
+    this._powerLights = [];
+
     /** Dust-mote Points clouds with a slow drift (rebuilt each load). */
     this._dustFields = [];
 
@@ -214,6 +223,8 @@ export default class LevelManager {
     this._doors = [];
     this._steamVents = [];
     this._rotatingHazards = [];
+    this._powerNodes = [];
+    this._powerLights = [];
     this._dustFields = [];
     this._dissolveWalls = [];
     this._exitDoor = null;
@@ -364,9 +375,13 @@ export default class LevelManager {
 
   /**
    * Sliding door that opens when its linked target is shot. Slides up (Y+)
-   * and its collision body is removed once fully open.
+   * and its collision body is removed once fully open. A status beacon
+   * beside the frame burns sealed-red until the door opens, then flips to
+   * green — colour changes only, so the light inventory never changes.
+   * Pass o.needPower = [nodeIds] to require power nodes before it unlocks
+   * (checked in _activatePowerNode).
    */
-  _createDoor(id, w, h, x, y, z, rotY, mat) {
+  _createDoor(id, w, h, x, y, z, rotY, mat, o = {}) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.15), mat);
     mesh.position.set(x, y, z);
     mesh.rotation.y = rotY;
@@ -380,12 +395,32 @@ export default class LevelManager {
     );
     this._track(mesh, body);
     this.occluders.push(mesh); // a closed door blocks line of sight
+    // Status beacon beside the frame (own material — safe to recolor).
+    const ledMat = new THREE.MeshStandardMaterial({
+      color: 0xff4030, emissive: 0xff4030, emissiveIntensity: 1.0,
+    });
+    const led = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.06), ledMat);
+    const sideX = Math.cos(rotY) * (w / 2 + 0.28);
+    const sideZ = -Math.sin(rotY) * (w / 2 + 0.28);
+    led.position.set(x + sideX, y + h / 2 + 0.22, z + sideZ);
+    led.rotation.y = rotY;
+    led.userData.ownsGeometry = true;
+    led.userData.ownsMaterial = true;
+    this.scene.add(led);
+    this._track(led);
+    const beacon = new THREE.PointLight(0xff4030, 0.45, 5, 2);
+    beacon.position.set(x + sideX, y + h / 2 + 0.1, z + sideZ);
+    this.scene.add(beacon);
+    this._track(beacon);
     this._doors.push({
       id, mesh, body,
       closedY: y,
       openY: y + h + 0.3,
       progress: 0,
       opening: false,
+      needPower: o.needPower || null,
+      led,
+      beacon,
     });
     return mesh;
   }
@@ -393,7 +428,15 @@ export default class LevelManager {
   /** Trigger a door to open by its id. */
   openDoor(id) {
     const door = this._doors.find(d => d.id === id);
-    if (door && !door.opening) door.opening = true;
+    if (door && !door.opening) {
+      door.opening = true;
+      // Status beacon flips from sealed red to open green.
+      if (door.led) {
+        door.led.material.color.setHex(0x5cff8a);
+        door.led.material.emissive.setHex(0x5cff8a);
+      }
+      if (door.beacon) door.beacon.color.setHex(0x5cff8a);
+    }
   }
 
   // ── Steam / spark vents (pre-allocated pools — zero per-frame allocs) ─────
@@ -408,6 +451,7 @@ export default class LevelManager {
     for (let i = 0; i < n; i++) {
       const mat = new THREE.SpriteMaterial({
         color: o.color ?? 0xc9d2da, transparent: true, opacity: 0, depthWrite: false,
+        blending: o.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
       });
       const s = new THREE.Sprite(mat);
       s.scale.set(0.25, 0.25, 1);
@@ -421,6 +465,8 @@ export default class LevelManager {
     this._steamVents.push({
       id, x, y, z, pool, idx: 0, timer: 0,
       active: true,
+      age: 0,
+      stopAt: o.stopAt || 0, // > 0: one-shot emitter that dies after this many seconds
       life: new Float32Array(n),
       vy: new Float32Array(n),
       rate: o.rate || 0.07,
@@ -435,6 +481,110 @@ export default class LevelManager {
   disableVent(id) {
     const vent = this._steamVents.find(v => v.id === id);
     if (vent) vent.active = false;
+  }
+
+  /**
+   * One-shot spark burst at a world point (event time, not per-frame). A
+   * tiny additive sprite pool that emits for ~0.12 s and then dies out with
+   * the remaining particles. Used for power-node activation feedback.
+   */
+  _sparkBurst(x, y, z) {
+    this._createSteamVent(
+      `burst-${this._levelGeneration}-${Math.random()}`,
+      x, y, z,
+      {
+        count: 7, color: 0xffc060, rate: 0.015, rise: 1.7, drift: 0.55,
+        lifeSpan: 0.35, alpha: 0.95, stopAt: 0.12, additive: true,
+      }
+    );
+  }
+
+  // ── Power-routing nodes (Level 1 puzzle) ─────────────────────────────────
+
+  /**
+   * Place a shootable power node: a dark panel with a red standby LED and a
+   * flickering red halo so it is findable in an unlit alcove. o.lights lists
+   * PointLights that fade in when the node fires (built with kit.lamp's
+   * `powered` option); o.doorIds lists doors unlocked once every node they
+   * need is live (doors carry needPower themselves).
+   *
+   * @param {string} id    unique node id ('l1-power-a')
+   * @param {number} x     world x
+   * @param {number} y     panel centre height
+   * @param {number} z     world z
+   * @param {number} rotY  panel facing (radians — toward the approach)
+   * @param {object} o     { lights: PointLight[], doorIds: string[] }
+   */
+  _addPowerNode(id, x, y, z, rotY = 0, o = {}) {
+    const mesh = this._shootableTarget(0.55, 0.7, x, y, z, 'terminal', rotY);
+    mesh.userData.powerNode = { id };
+    // Offline state: dim red instead of the default terminal green.
+    mesh.material.color.setHex(0xff4030);
+    mesh.material.emissive.setHex(0xff4030);
+    mesh.material.emissiveIntensity = 0.5;
+    // Housing box behind the panel.
+    const kit = this._kit;
+    kit.box(kit.mats.metalDark, 0.8, 1.0, 0.16,
+      x - Math.sin(rotY) * 0.1, y, z - Math.cos(rotY) * 0.1, { rotY, occluder: false });
+    // Status LED above the panel (own material — recolored on activation).
+    const led = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, 0.1, 0.05),
+      new THREE.MeshStandardMaterial({ color: 0xff4030, emissive: 0xff4030, emissiveIntensity: 1.0 })
+    );
+    led.position.set(x + Math.cos(rotY) * 0.34, y + 0.46, z - Math.sin(rotY) * 0.34);
+    led.rotation.y = rotY;
+    led.userData.ownsGeometry = true;
+    led.userData.ownsMaterial = true;
+    this.scene.add(led);
+    this._track(led);
+    // A flickering red halo so the node reads in a dark alcove.
+    this._flickerLight(
+      x + Math.sin(rotY) * 0.3, y + 0.2, z + Math.cos(rotY) * 0.3,
+      0xff4030, 0.32, 4.5
+    );
+    this._powerNodes.push({
+      id, mesh, led, lit: false,
+      lights: o.lights || [],
+      doorIds: o.doorIds || [],
+    });
+    return mesh;
+  }
+
+  /**
+   * Fire a power node (PulseTool hit). Lights the panel/LED green, starts
+   * the linked lights fading in, sparks, and unlocks doors whose needPower
+   * set is now fully live. Returns null when unknown or already live;
+   * otherwise { live, total, unlockedDoor } for the caller's HUD/audio.
+   */
+  _activatePowerNode(id) {
+    const node = this._powerNodes.find((n) => n.id === id);
+    if (!node || node.lit) return null;
+    node.lit = true;
+    node.mesh.material.color.setHex(0x2bd96a);
+    node.mesh.material.emissive.setHex(0x2bd96a);
+    node.mesh.material.emissiveIntensity = 0.9;
+    node.led.material.color.setHex(0x2bd96a);
+    node.led.material.emissive.setHex(0x2bd96a);
+    for (const l of node.lights) {
+      this._powerLights.push({ light: l, target: l.userData.powerTarget || 0.9, ramp: 0 });
+    }
+    this._sparkBurst(node.mesh.position.x, node.mesh.position.y, node.mesh.position.z);
+    let unlockedDoor = null;
+    for (const door of this._doors) {
+      if (!door.needPower || door.opening) continue;
+      const ready = door.needPower.every((nid) => {
+        const n2 = this._powerNodes.find((n) => n.id === nid);
+        return n2 && n2.lit;
+      });
+      if (ready) {
+        this.openDoor(door.id);
+        unlockedDoor = door.id;
+      }
+    }
+    // Event-time allocations only (a PulseTool hit, never per frame).
+    let live = 0;
+    for (const n of this._powerNodes) if (n.lit) live++;
+    return { live, total: this._powerNodes.length, unlockedDoor };
   }
 
   /** Add a rotating hazard mesh (fan blades, spinning debris). */
@@ -579,6 +729,8 @@ export default class LevelManager {
 
     // Steam / spark vents: recycle the sprite pool, fade by remaining life.
     for (const v of this._steamVents) {
+      v.age += dt;
+      if (v.stopAt > 0 && v.age > v.stopAt) v.active = false;
       if (v.active) {
         v.timer += dt;
         while (v.timer >= v.rate) {
@@ -615,6 +767,14 @@ export default class LevelManager {
     // Dust motes: slow in-place swirl.
     for (const d of this._dustFields) {
       d.rotation.y += dt * 0.04;
+    }
+
+    // Power-routed lights — fade in after their node fired, then hand off.
+    for (let i = this._powerLights.length - 1; i >= 0; i--) {
+      const p = this._powerLights[i];
+      p.ramp = Math.min(1, p.ramp + dt * 1.6);
+      p.light.intensity = p.target * p.ramp;
+      if (p.ramp >= 1) this._powerLights.splice(i, 1);
     }
 
     // Flickering lights — dying fluorescents. Each fixture idles for a few

@@ -99,6 +99,33 @@
         max-width: 45%;
       }
 
+      /* Power-routing progress chip (levels with power nodes) */
+      #power-chip {
+        position: absolute;
+        top: 58px; left: 10px;
+        font-size: 13px;
+        font-weight: bold;
+        letter-spacing: 3px;
+        color: #7fe7ff;
+        text-shadow: 0 0 10px rgba(60, 200, 255, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+      #power-chip.active { opacity: 1; }
+      #power-chip.done {
+        color: #5cff8a;
+        text-shadow: 0 0 10px rgba(60, 255, 130, 0.5);
+      }
+      #power-chip .power-label {
+        display: block;
+        font-size: 9px;
+        font-weight: normal;
+        letter-spacing: 4px;
+        color: #9fd9e8;
+        margin-bottom: 2px;
+      }
+
       /* Menu overlay — industrial backdrop with story briefing */
       #menu-overlay {
         position: absolute;
@@ -661,6 +688,12 @@
 
       <!-- Boss phase indicator (Level 3) -->
       <div id="boss-phase"></div>
+
+      <!-- Power-routing progress (levels with power nodes) -->
+      <div id="power-chip">
+        <span class="power-label">SYSTEMS ONLINE</span>
+        <span id="power-chip-value">0/3</span>
+      </div>
     </div>
 
     <!-- Main menu -->

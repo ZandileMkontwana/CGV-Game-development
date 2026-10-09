@@ -247,6 +247,51 @@ export default class LevelKit {
     return base;
   }
 
+  /**
+   * Glass observation panel in a framed wall opening. Solid to walk
+   * against (one cannon body) but deliberately NOT an occluder: the
+   * monster's line of sight passes through glass, which creates glimpse
+   * moments across observation windows.
+   */
+  glassWall(w, h, x, y, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const g = new THREE.Group();
+    g.position.set(x, y, z);
+    g.rotation.y = rotY;
+    for (const px of [-w / 2, w / 2]) {
+      const post = new THREE.Mesh(boxGeo(0.14, h, 0.14), this.mats.metalDark);
+      post.position.set(px, h / 2, 0);
+      post.castShadow = true; post.receiveShadow = true;
+      g.add(post);
+    }
+    const head = new THREE.Mesh(boxGeo(w + 0.14, 0.12, 0.12), this.mats.metalDark);
+    head.position.set(0, h - 0.06, 0);
+    g.add(head);
+    const sill = new THREE.Mesh(boxGeo(w + 0.14, 0.10, 0.14), this.mats.trim);
+    sill.position.set(0, 0.05, 0);
+    g.add(sill);
+    const glass = new THREE.Mesh(boxGeo(w - 0.28, h - 0.2, 0.04), this.mats.glass);
+    glass.position.set(0, h / 2, 0);
+    glass.castShadow = false; glass.receiveShadow = false;
+    g.add(glass);
+    for (const mx of [-w / 6, w / 6]) {
+      const mullion = new THREE.Mesh(boxGeo(0.06, h - 0.2, 0.06), this.mats.metalDark);
+      mullion.position.set(mx, h / 2, 0);
+      g.add(mullion);
+    }
+    this.scene.add(g);
+    this.host._track(g);
+    const quarter = Math.abs(Math.abs(rotY) - Math.PI / 2) < 0.01;
+    this.physics.createBox(
+      0,
+      quarter ? 0.07 : w / 2,
+      h / 2,
+      quarter ? w / 2 : 0.07,
+      new CANNON.Vec3(x, y + h / 2, z)
+    );
+    return g;
+  }
+
   /** Floor slab with a border trim and optional glowing guide lines. */
   floorSlab(w, d, x, z, o = {}) {
     const y = o.y || 0;
@@ -303,11 +348,19 @@ export default class LevelKit {
     if (o.light !== false) {
       const c = colorName === 'amber' ? this.mats.colors.warn
         : colorName === 'red' ? this.mats.colors.emer : this.mats.colors.lampLight;
-      const light = new THREE.PointLight(c, o.intensity || 0.9, 11, 2);
-            light.userData.flicker = true;
+      const intensity = o.intensity || 0.9;
+      const light = new THREE.PointLight(c, o.powered ? 0 : intensity, 11, 2);
+      if (o.powered) {
+        // Dark until its power node fires — never flagged as a flicker light,
+        // or the dying-fixture driver would stomp the fade-in at base 0.
+        light.userData.powerTarget = intensity;
+      } else {
+        light.userData.flicker = true;
+      }
       light.position.set(x, y - 0.35, z);
       this.scene.add(light);
       this.host._track(light);
+      return light;
     }
     return null;
   }
@@ -420,6 +473,75 @@ export default class LevelKit {
       this.box(mat, 0.05, 0.05, length, x, y + h * 0.55, z, { cast: false });
     }
     return null;
+  }
+
+  /**
+   * Raised platform (grated deck, fascia, corner supports) with one solid
+   * collider spanning floor to deck-top so nothing walks through the
+   * underside. Reach it with stairs(). o.rails lists open edges
+   * ('n','s','e','w') that get safety railings.
+   */
+  mezzanine(w, d, x, z, o = {}) {
+    const h = o.h || 1.2;
+    const top = h + 0.12; // walkable deck surface height
+    this.box(o.mat || this.mats.grate, w, 0.12, d, x, top - 0.06, z, {});
+    this.box(this.mats.metalDark, w, h, 0.09, x, h / 2, z - d / 2 + 0.045, { cast: false });
+    this.box(this.mats.metalDark, w, h, 0.09, x, h / 2, z + d / 2 - 0.045, { cast: false });
+    this.box(this.mats.metalDark, 0.09, h, d - 0.18, x - w / 2 + 0.045, h / 2, z, { cast: false });
+    this.box(this.mats.metalDark, 0.09, h, d - 0.18, x + w / 2 - 0.045, h / 2, z, { cast: false });
+    for (const [cx, cz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      this.box(this.mats.metal, 0.15, h, 0.15, x + cx * (w / 2 - 0.12), h / 2, z + cz * (d / 2 - 0.12), { cast: false });
+    }
+    this.physics.createBox(0, w / 2, top / 2, d / 2, new CANNON.Vec3(x, top / 2, z));
+    for (const side of o.rails || []) {
+      if (side === 'n') this.railing('x', w, x, top, z - d / 2 + 0.1);
+      else if (side === 's') this.railing('x', w, x, top, z + d / 2 - 0.1);
+      else if (side === 'e') this.railing('z', d, x + w / 2 - 0.1, top, z);
+      else if (side === 'w') this.railing('z', d, x - w / 2 + 0.1, top, z);
+    }
+    return null;
+  }
+
+  /**
+   * Solid steel stairs climbing toward `face` up to o.h. Each step is its
+   * own AABB collider (the rise is small enough for the player sphere to
+   * walk straight up); the visible steps ARE the colliders, so there is no
+   * ramp/visual mismatch.
+   */
+  stairs(x, z, face, o = {}) {
+    const rise = o.h || 1.2;
+    const width = o.width || 1.7;
+    const stepD = o.stepD || 0.34;
+    const n = Math.max(1, Math.ceil(rise / 0.18));
+    const run = n * stepD;
+    const rotY = this.faceAngle(face);
+    const cos = Math.cos(rotY);
+    const sin = Math.sin(rotY);
+    const quarter = Math.abs(Math.abs(rotY) - Math.PI / 2) < 0.01;
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = rotY;
+    for (let i = 0; i < n; i++) {
+      const hh = rise * (i + 1) / n; // step top height — solid to the floor
+      const zl = -run / 2 + (i + 0.5) * stepD;
+      const step = new THREE.Mesh(boxGeo(width, hh, stepD), this.mats.metal);
+      step.position.set(0, hh / 2, zl);
+      step.castShadow = true; step.receiveShadow = true;
+      g.add(step);
+      const nose = new THREE.Mesh(boxGeo(width, 0.04, 0.08), this.mats.trim);
+      nose.position.set(0, hh + 0.015, zl - stepD / 2 + 0.04);
+      g.add(nose);
+      this.physics.createBox(
+        0,
+        quarter ? stepD / 2 : width / 2,
+        hh / 2,
+        quarter ? width / 2 : stepD / 2,
+        new CANNON.Vec3(x + zl * sin, hh / 2, z + zl * cos)
+      );
+    }
+    this.scene.add(g);
+    this.host._track(g);
+    return g;
   }
 
   /** Door frame around a wall opening (the door itself is LevelManager's). */
@@ -880,6 +1002,95 @@ export default class LevelKit {
       main.add(c);
     }
     return main;
+  }
+
+  /**
+   * Environmental-storytelling cluster: a workstation abandoned mid-shift —
+   * dead monitor, shoved keyboard, cold coffee, chair knocked flat and
+   * paperwork scattered across the floor. `face` is the desk's front.
+   */
+  abandonedWorkstation(x, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const fx = Math.sin(rotY); // desk forward direction (front faces the chair)
+    const fz = Math.cos(rotY);
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = rotY;
+    // Desk shell (local: front toward +z).
+    const desk = new THREE.Mesh(boxGeo(1.6, 0.75, 0.7), this.mats.panel);
+    desk.position.set(0, 0.375, 0);
+    desk.castShadow = true; desk.receiveShadow = true;
+    g.add(desk);
+    // Monitor tilted back, screen dark (alt = the amber standby texture).
+    const mon = new THREE.Mesh(boxGeo(0.62, 0.44, 0.07), this.mats.metalDark);
+    mon.position.set(-0.2, 0.98, -0.12);
+    mon.rotation.x = -0.12;
+    mon.castShadow = true;
+    g.add(mon);
+    const screen = new THREE.Mesh(planeGeo(0.54, 0.36), this.mats.screenAlt);
+    screen.position.set(-0.2, 0.98, -0.078);
+    screen.rotation.x = -0.12;
+    g.add(screen);
+    // Keyboard shoved aside, cold coffee left standing.
+    const kb = new THREE.Mesh(boxGeo(0.4, 0.03, 0.15), this.mats.rubber);
+    kb.position.set(0.18, 0.775, 0.2);
+    kb.rotation.y = 0.2;
+    g.add(kb);
+    const cup = new THREE.Mesh(cylGeo(0.05, 0.04, 0.11, 8), this.mats.metal);
+    cup.position.set(0.55, 0.81, 0.12);
+    g.add(cup);
+    // Chair knocked flat on its side beside the desk.
+    const chair = new THREE.Group();
+    const seat = new THREE.Mesh(boxGeo(0.48, 0.06, 0.48), this.mats.metalDark);
+    chair.add(seat);
+    const back = new THREE.Mesh(boxGeo(0.48, 0.55, 0.06), this.mats.metalDark);
+    back.position.set(0, 0.25, -0.21);
+    chair.add(back);
+    for (const [lx, lz] of [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]]) {
+      const leg = new THREE.Mesh(boxGeo(0.05, 0.45, 0.05), this.mats.metalDark);
+      leg.position.set(lx, -0.2, lz);
+      chair.add(leg);
+    }
+    chair.rotation.set(0, 0.5, Math.PI / 2 - 0.06);
+    chair.position.set(1.12, 0.3, 0.28);
+    g.add(chair);
+    this.scene.add(g);
+    this.host._track(g);
+    // Desk collider (world space, quarter-turn extents).
+    const quarter = Math.abs(Math.abs(rotY) - Math.PI / 2) < 0.01;
+    this.physics.createBox(
+      0,
+      quarter ? 0.35 : 0.8,
+      0.375,
+      quarter ? 0.8 : 0.35,
+      new CANNON.Vec3(x, 0.375, z)
+    );
+    // Papers scattered in front of the desk + grime under it.
+    this.floorDecal(x + fx * 1.1, z + fz * 1.1, 'papers', { size: 1.2, rotZ: rotY });
+    this.floorDecal(x, z, 'grime', { size: 1.6, rotZ: (o.seed || 3) * 0.7 });
+    // A dying monitor glow so the cluster reads in a dim room.
+    if (o.glow !== false) {
+      this.host._flickerLight(x - fx * 0.1, 1.0, z - fz * 0.1, 0x7fd4ff, 0.3, 4);
+    }
+    return g;
+  }
+
+  /**
+   * Environmental-storytelling cluster: a rushed evacuation — a crate
+   * dropped mid-carry, a canister rolled aside, scorch and spilled papers.
+   */
+  evacCluster(x, z, o = {}) {
+    const rand = mulberry32(o.seed || 13);
+    const crate = this.box(this.mats.crate, 0.8, 0.8, 0.8, x, 0.34, z, { physics: true });
+    crate.rotation.z = 0.32; // tipped on its edge — visual tilt only
+    // Canister rolled away from the crate.
+    const can = this.cyl(this.mats.metal, 0.14, 0.14, 0.55, x + 1.05, 0.15, z + 0.55, { physics: true });
+    can.rotation.z = Math.PI / 2;
+    can.rotation.y = rand() * Math.PI;
+    this.host._scorchDecal(x, 0, z, 1.3, rand() * 3);
+    this.floorDecal(x + 0.7, z - 0.75, 'papers', { size: 1.0, rotZ: rand() * 3 });
+    this.floorDecal(x - 0.8, z + 0.7, 'leak', { size: 1.1, rotZ: rand() * 3 });
+    return crate;
   }
 
   /** Wall sign (canvas-text). No collision. */

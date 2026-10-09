@@ -409,6 +409,74 @@ export function decalMaterial(kind, color = '#e8b23a') {
         for (let y = 0; y < size; y += 32) ctx.fillRect(52, y, 24, 18);
         break;
       }
+      case 'grime': {
+        // Layered dark blotches — wear accumulated around machinery.
+        ctx.fillStyle = 'rgba(16,18,22,0.5)';
+        for (let i = 0; i < 5; i++) {
+          const a = (i * 2.4) % 6.283;
+          ctx.beginPath();
+          ctx.ellipse(
+            64 + Math.cos(a) * 22, 64 + Math.sin(a) * 22,
+            16 + i * 5, 11 + i * 4, a, 0, 6.283
+          );
+          ctx.fill();
+        }
+        break;
+      }
+      case 'leak': {
+        // Long tapering stain — a rust/water run under a pipe.
+        const grad = ctx.createLinearGradient(0, 0, size, 0);
+        grad.addColorStop(0, 'rgba(30,22,14,0.62)');
+        grad.addColorStop(0.6, 'rgba(22,16,10,0.4)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(6, 34, 116, 60);
+        ctx.fillStyle = 'rgba(40,28,16,0.5)';
+        ctx.fillRect(6, 50, 30, 28);
+        break;
+      }
+      case 'scratches': {
+        // Bright abrasion marks — dragged equipment.
+        ctx.strokeStyle = 'rgba(200,214,228,0.5)';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 6; i++) {
+          ctx.beginPath();
+          ctx.moveTo(14 + i * 18, 20 + (i % 3) * 12);
+          ctx.lineTo(30 + i * 16, 96 - (i % 4) * 14);
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'label': {
+        // Hazard placard — warning diamond with an exclamation bar.
+        ctx.fillStyle = color;
+        ctx.save();
+        ctx.translate(64, 64);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillRect(-30, -30, 60, 60);
+        ctx.restore();
+        ctx.fillStyle = '#141414';
+        ctx.fillRect(60, 34, 8, 42);
+        ctx.fillRect(60, 84, 8, 8);
+        break;
+      }
+      case 'papers': {
+        // Scattered documents — evidence of a rushed evacuation.
+        ctx.fillStyle = 'rgba(214,222,230,0.85)';
+        for (const [px, py, rot] of [[30, 40, 0.3], [70, 52, -0.5], [48, 84, 0.9], [92, 30, 0.1]]) {
+          ctx.save();
+          ctx.translate(px, py);
+          ctx.rotate(rot);
+          ctx.fillRect(-14, -10, 28, 20);
+          ctx.restore();
+        }
+        ctx.fillStyle = 'rgba(90,100,112,0.8)';
+        for (const [px, py] of [[30, 40], [70, 52], [48, 84]]) {
+          ctx.fillRect(px - 8, py - 4, 12, 1.5);
+          ctx.fillRect(px - 8, py, 12, 1.5);
+        }
+        break;
+      }
       default: {
         ctx.strokeStyle = color;
         ctx.lineWidth = 10;

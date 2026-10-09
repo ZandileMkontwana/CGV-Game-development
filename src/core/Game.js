@@ -156,6 +156,10 @@ export default class Game {
     this._objectiveEl = document.getElementById('objective');
     this._hitMarkerEl = document.getElementById('hit-marker');
 
+    // --- Power-routing HUD (levels with power nodes) ------------------------
+    this._powerChipEl = document.getElementById('power-chip');
+    this._powerChipValueEl = document.getElementById('power-chip-value');
+
     // --- Collapse timer (Level 3 escape sequence) -------------------------
     this._collapseTimerEl = document.getElementById('collapse-timer');
     this._collapseTimerValueEl = document.getElementById('collapse-timer-value');
@@ -227,6 +231,19 @@ export default class Game {
       if (target.userData.ventId) {
         this.levels.disableVent(target.userData.ventId);
         this.audio.play('ventHiss');
+      }
+      // Power-routing nodes: light up, fade in the linked room lights, and
+      // possibly unlock a power-gated door (feedback comes back in `res`).
+      if (target.userData.powerNode) {
+        const res = this.levels._activatePowerNode(target.userData.powerNode.id);
+        if (res) {
+          this.audio.play('spark');
+          this.audio.play('beep');
+          this._updatePowerHUD(res.live, res.total);
+          if (res.unlockedDoor) {
+            this.audio.play('doorOpen');
+          }
+        }
       }
     });
 
@@ -597,6 +614,18 @@ export default class Game {
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
 
+    // 9b. Power-routing chip: shown only on levels that place power nodes.
+    if (this._powerChipEl) {
+      const n = this.levels._powerNodes.length;
+      if (n > 0) {
+        this._powerChipValueEl.textContent = `0/${n}`;
+        this._powerChipEl.classList.add('active');
+        this._powerChipEl.classList.remove('done');
+      } else {
+        this._powerChipEl.classList.remove('active', 'done');
+      }
+    }
+
     // 10. Level 1 runs the controls tutorial (hints only — no gating).
     if (levelNum === 1) {
       this._tut = {
@@ -617,6 +646,17 @@ export default class Game {
    */
   _setObjective(text) {
     if (this._objectiveEl) this._objectiveEl.textContent = text;
+  }
+
+  /**
+   * Update the SYSTEMS ONLINE chip after a power node fires.
+   * @param {number} live  nodes powered
+   * @param {number} total nodes in the level
+   */
+  _updatePowerHUD(live, total) {
+    if (!this._powerChipEl) return;
+    this._powerChipValueEl.textContent = `${live}/${total}`;
+    this._powerChipEl.classList.toggle('done', live >= total);
   }
 
   /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
