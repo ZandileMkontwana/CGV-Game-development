@@ -10,7 +10,8 @@ import ShaderManager from '../shaders/ShaderManager.js';
 import UIManager from '../ui/UIManager.js';
 import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
-import { createScientist, faceToRotY } from './CharacterFactory.js';
+import { createScientistModel } from './ScientistModel.js';
+import { faceToRotY } from './CharacterFactory.js';
 import AudioManager from '../audio/AudioManager.js';
 import PostFX from './PostFX.js';
 import WeaponViewmodel from './WeaponViewmodel.js';
@@ -76,7 +77,8 @@ export default class Game {
     this.shaders.wireLevelVisuals({ weakPoints: this.monster.weakPoints });
 
     // Scientist NPC — Level 1 intro beat (seated at the lab console).
-    this._scientist = createScientist();
+    // Blender GLB via AssetLibrary, procedural CharacterFactory fallback.
+    this._scientist = createScientistModel();
     this._scientistState = { mode: 'type' }; // mutated per frame — no allocs
     this._scientist.group.visible = false;
     this.scene.add(this._scientist.group);

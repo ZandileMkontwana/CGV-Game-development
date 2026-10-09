@@ -77,7 +77,7 @@ export function createMonsterModel() {
   const size = new THREE.Vector3();
   box.getSize(size);
   const s = size.y > 0.01 ? STAND_HEIGHT / size.y : 1;
-  scene.scale.setScalar(s);
+  scene.scale.multiplyScalar(s); // multiply, not set — exports may carry a root scale
   // Centre on the origin, drop the feet onto FEET_Y, face +Z.
   scene.position.set(
     -(box.min.x + box.max.x) * 0.5 * s,

@@ -10,8 +10,45 @@
  * Hidden in third person (the operator's body takes over).
  */
 import * as THREE from 'three';
+import AssetLibrary from './AssetLibrary.js';
 
 const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, ...o });
+
+/** Procedural rifle envelope, in metres — the GLB is fitted to this. */
+const RIFLE_LENGTH = 1.0; // stock (+z) to muzzle (-z)
+const RIFLE_MID_Z = -0.15; // envelope centre along z
+const RIFLE_GRIP_Y = 0;     // grip sits at local y 0
+
+/**
+ * Adopt a Blender pulse rifle (`public/assets/models/pulse_rifle.glb`,
+ * origin at the grip, barrel pointing -Z): scale it into the procedural
+ * rifle's envelope so the hip/ADS poses keep working.
+ * @returns {THREE.Group|null} null when no GLB was preloaded
+ */
+function buildRifleFromGLB() {
+  const gltf = AssetLibrary.getModel('pulse_rifle');
+  if (!gltf) return null;
+
+  const scene = gltf.scene;
+  scene.updateMatrixWorld(true);
+
+  const box = new THREE.Box3().setFromObject(scene);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const zSpan = Math.max(size.z, 0.01);
+  const s = RIFLE_LENGTH / zSpan;
+  scene.scale.multiplyScalar(s); // multiply, not set — exports may carry a root scale
+  // Centre the envelope on RIFLE_MID_Z, floor the grip at RIFLE_GRIP_Y.
+  scene.position.set(
+    -(box.min.x + box.max.x) * 0.5 * s,
+    -box.min.y * s + RIFLE_GRIP_Y,
+    -(box.min.z + box.max.z) * 0.5 * s + RIFLE_MID_Z
+  );
+
+  const g = new THREE.Group();
+  g.add(scene);
+  return g;
+}
 
 /**
  * Build a tactical pulse rifle. Forward is -Z (camera convention).
@@ -75,7 +112,10 @@ export default class WeaponViewmodel {
   constructor(camera, input) {
     this.input = input;
     this.group = new THREE.Group();
-    this.rifle = buildRifle(1);
+    // Blender rifle when the AssetLibrary has one; procedural fallback.
+    // The muzzle tip (GLB) matches the procedural barrel end, so the flash
+    // light keeps its tuned position either way.
+    this.rifle = buildRifleFromGLB() || buildRifle(1);
     this.group.add(this.rifle);
 
     // Fill light so the weapon reads even in unlit corners (cheap, no shadows).

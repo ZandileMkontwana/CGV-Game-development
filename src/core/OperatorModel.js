@@ -1,15 +1,32 @@
 /**
  * OperatorModel — the realistic third-person operator.
  *
- * Loads the skinned Soldier.glb (three.js sample asset, bundled in
- * public/models/) and drives its Idle / Walk / Run clips through an
- * AnimationMixer, crossfading on movement-state changes.
+ * Preference chain:
+ *   1. `public/assets/models/engineer.glb` (Blender export, via AssetLibrary)
+ *      — clips `Idle`, `Walk`, `Run` (optional `Crouch`).
+ *   2. The skinned Soldier.glb sample (bundled in public/models/) with the
+ *      same clip names — loaded directly, as before.
+ *   3. Neither → `ready` stays false and PlayerController keeps showing the
+ *      procedural engineer.
  *
- * Falls back silently (ready stays false) if the GLB can't be fetched —
- * PlayerController then keeps showing the procedural engineer instead.
+ * The engineer GLB is normalised (standing height 1.8 m, floor at local
+ * y = 0, facing +Z) so the existing PlayerController mounting needs no
+ * change; the Soldier path is used as-is, exactly as it always was.
+ *
+ * Clips crossfade on movement-state changes via an AnimationMixer.
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import AssetLibrary from './AssetLibrary.js';
+
+/** Normalisation target for the engineer export (matches Soldier scale). */
+const STAND_HEIGHT = 1.8;
+/**
+ * Rotation applied to the imported scene to face +Z. Blender front-view
+ * exports normally arrive facing +Z already. If the engineer moonwalks,
+ * flip this to Math.PI.
+ */
+const FACE_YAW = 0;
 
 export default class OperatorModel {
   constructor() {
@@ -19,37 +36,69 @@ export default class OperatorModel {
     this._actions = {};
     this._current = null;
 
-    // Relative path — vite `base: './'` keeps this correct on the LAMP server.
+    // 1. Blender engineer from the preloaded AssetLibrary.
+    const gltf = AssetLibrary.getModel('engineer');
+    if (gltf) {
+      this._adopt(gltf, true);
+      return;
+    }
+
+    // 2. Soldier.glb fallback — direct fetch (relative path; vite base './'
+    //    keeps this correct on the LAMP server).
     new GLTFLoader().load(
       'models/Soldier.glb',
-      (gltf) => {
-        const model = gltf.scene;
-        model.traverse((o) => {
-          if (o.isMesh) {
-            o.castShadow = true;
-            o.receiveShadow = true;
-            // Skinned meshes deform away from their static bounds — disable
-            // culling so limbs never pop out of view mid-animation.
-            o.frustumCulled = false;
-          }
-        });
-        this.group.add(model);
-
-        this._mixer = new THREE.AnimationMixer(model);
-        const find = (name) => THREE.AnimationClip.findByName(gltf.animations, name);
-        for (const [key, clip] of [['idle', find('Idle')], ['walk', find('Walk')], ['run', find('Run')]]) {
-          if (clip) {
-            const action = this._mixer.clipAction(clip);
-            action.play();
-            this._actions[key] = action;
-          }
-        }
-        this._current = 'idle';
-        this.ready = true;
-      },
+      (g) => this._adopt(g, false),
       undefined,
       () => {} // failed — PlayerController falls back to the procedural model
     );
+  }
+
+  /**
+   * Take ownership of a loaded gltf: shadows, optional normalisation, mixer.
+   * @param {object} gltf
+   * @param {boolean} normalise engineer path only — Soldier already fits
+   */
+  _adopt(gltf, normalise) {
+    const model = gltf.scene;
+    model.traverse((o) => {
+      if (o.isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+        // Skinned meshes deform away from their static bounds — disable
+        // culling so limbs never pop out of view mid-animation.
+        o.frustumCulled = false;
+      }
+    });
+
+    if (normalise) {
+      model.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const s = size.y > 0.01 ? STAND_HEIGHT / size.y : 1;
+      model.scale.multiplyScalar(s);
+      // Re-scale the offset from the (pre-scaling) bounds: centre + floor.
+      model.position.set(
+        -(box.min.x + box.max.x) * 0.5 * s,
+        -box.min.y * s,
+        -(box.min.z + box.max.z) * 0.5 * s
+      );
+      model.rotation.y = FACE_YAW;
+    }
+
+    this.group.add(model);
+
+    this._mixer = new THREE.AnimationMixer(model);
+    const find = (name) => THREE.AnimationClip.findByName(gltf.animations, name);
+    for (const [key, clip] of [['idle', find('Idle')], ['walk', find('Walk')], ['run', find('Run')]]) {
+      if (clip) {
+        const action = this._mixer.clipAction(clip);
+        action.play();
+        this._actions[key] = action;
+      }
+    }
+    this._current = 'idle';
+    this.ready = true;
   }
 
   /** Crossfade to a clip (no-op if it's already playing). */
