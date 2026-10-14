@@ -35,7 +35,7 @@ export default class CameraController {
     this._corners = [[0, 0], [-0.12, -0.09], [0.12, -0.09], [-0.12, 0.09], [0.12, 0.09]];
 
     // Tactical flashlight — a spotlight parented to the camera so it always
-    // illuminates exactly where you look (toggle with F). No shadows: a
+    // illuminates exactly where you look (toggle with L). No shadows: a
     // moving shadow-casting spotlight costs a second shadow map per frame.
     this.flashlightOn = true;
     this.flashlight = new THREE.SpotLight(0xfff1d6, 0, 26, 0.5, 0.45, 1.7);
@@ -64,7 +64,7 @@ export default class CameraController {
 
   update(dt, position, state = {}) {
     if (this.input.justPressed('KeyV')) this.toggleView();
-    if (this.input.justPressed('KeyF')) this.flashlightOn = !this.flashlightOn;
+    if (this.input.justPressed('KeyL')) this.flashlightOn = !this.flashlightOn;
     this.flashlight.intensity = this.flashlightOn ? (this.isFirstPerson ? 34 : 24) : 0;
     const aim = !!state.aiming;
     const lookScale = aim ? 0.5 : 1;
@@ -84,7 +84,8 @@ export default class CameraController {
     const height = state.crouching ? 0.72 : this.isFirstPerson ? 1.25 : 1.12;
     this._height += (height - this._height) * blend;
     this.yawObject.position.set(position.x, position.y + this._height, position.z);
-    this._target.set(this.isFirstPerson ? 0 : aim ? 0.42 : 0.52, this.isFirstPerson ? 0 : 0.12,
+    // Leave enough shoulder offset to see the held rifle beside the body.
+    this._target.set(this.isFirstPerson ? 0 : aim ? 0.55 : 0.72, this.isFirstPerson ? 0 : 0.12,
       this.isFirstPerson ? 0 : aim ? 1.5 : this.tpDistance);
     this._offset.lerp(this._target, blend);
     this.camera.position.copy(this._offset);

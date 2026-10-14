@@ -72,6 +72,12 @@ export default class PhysicsWorld {
     this.syncPairs.push({ body, mesh });
   }
 
+  /** Remove a body and any retained mesh references when an object leaves play. */
+  removeBody(body) {
+    this.world.removeBody(body);
+    this.syncPairs = this.syncPairs.filter(pair => pair.body !== body);
+  }
+
   /** Advance the simulation and copy transforms to meshes. */
   step(dt) {
     // Fixed timestep with interpolation. maxSubSteps must cover the worst

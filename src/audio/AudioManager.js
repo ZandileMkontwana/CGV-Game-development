@@ -1,8 +1,8 @@
 /**
  * AudioManager — procedural horror soundscape built entirely with the Web
- * Audio API. Every sound is synthesised at runtime: no audio files to ship,
- * download, or case-match on the LAMP server, and fear can be modulated in
- * real time (heartbeat speed, growl proximity, ambience ducking).
+ * Audio API. Effects and score are synthesized at runtime; the three PA
+ * announcements use bundled WAV clips. Fear can be modulated in real time
+ * through heartbeat speed, growl proximity, and ambience ducking.
  *
  * Event interface (called from Game.js — keep names stable so Person D can
  * later swap individual voices for recorded samples):
@@ -23,12 +23,28 @@
  */
 
 const MIN_GAIN = 0.0001;
+const CALM_NOTES = [329.63, 392, 493.88, 440, 392, 329.63, 293.66, 392];
+const HUNT_NOTES = [220, 233.08, 220, 207.65];
+const BOSS_NOTES = [130.81, 155.56, 146.83, 110];
 
 export default class AudioManager {
   constructor() {
     this.ctx = null;
     this.master = null;
+    this.music = null;
     this.muted = false;
+    this.volume = 0.65;
+    this.musicVolume = 0.8;
+    this._playing = false;
+    this._paused = false;
+    this._contextSync = Promise.resolve();
+    this._announcements = new Map();
+    this._announcementSource = null;
+    this._scoreTime = 0;
+    this._scoreStep = 0;
+    this._rechargeVoice = null;
+    this._recharging = false;
+    this.onSettingsChange = null;
     this._unlocked = false; // AudioContext may only start on a user gesture
     this._level = 1;
     this._noise = null;
@@ -51,10 +67,10 @@ export default class AudioManager {
     // Unlock the AudioContext on the first user gesture (browser autoplay
     // policy): the Start-click or any key press is enough.
     const unlock = () => this.unlock();
-    window.addEventListener('pointerdown', unlock, { once: true });
-    window.addEventListener('keydown', unlock, { once: true });
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyM' && !e.repeat) this.toggleMute();
+      if (e.code === 'KeyM' && !e.repeat && !e.target.closest?.('input, textarea, select')) this.toggleMute();
     });
   }
 
@@ -62,7 +78,10 @@ export default class AudioManager {
 
   /** Create the context + master chain. Safe to call repeatedly. */
   unlock() {
-    if (this._unlocked) return;
+    if (this._unlocked) {
+      if (!this._paused && this.ctx.state !== 'running') this._syncContextState();
+      return;
+    }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     this.ctx = new AC();
@@ -76,8 +95,14 @@ export default class AudioManager {
     comp.connect(this.ctx.destination);
 
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.65;
+    this.master.gain.value = this.muted ? 0 : this.volume;
     this.master.connect(comp);
+
+    // Background music/ambience has its own control; effects and PA voices
+    // still use master directly so their volume does not change with it.
+    this.music = this.ctx.createGain();
+    this.music.gain.value = this._playing ? this.musicVolume : 0;
+    this.music.connect(this.master);
 
     // Shared 2 s white-noise buffer — every noise voice reuses it.
     const len = this.ctx.sampleRate * 2;
@@ -86,20 +111,165 @@ export default class AudioManager {
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
     this._noise = buf;
 
-    if (this.ctx.state === 'suspended') this.ctx.resume();
     this._unlocked = true;
-    this._startBed(this._level);
+    this._syncContextState();
+    if (this._playing) this._startBed(this._level);
+  }
+
+  setVolume(value) {
+    this.volume = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.65));
+    this._applyVolume();
+  }
+
+  setMusicVolume(value) {
+    this.musicVolume = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0.8));
+    this._applyMusicVolume();
+    this.onSettingsChange?.();
+  }
+
+  _applyMusicVolume() {
+    if (!this.music) return;
+    const t = this.ctx.currentTime;
+    this.music.gain.cancelScheduledValues(t);
+    this.music.gain.setTargetAtTime(this._playing ? this.musicVolume : 0, t, 0.08);
+  }
+
+  _syncContextState() {
+    // Serialize rapid pause/resume requests so a pending suspend cannot
+    // complete after resume and leave the entire soundscape silent.
+    this._contextSync = this._contextSync.catch(() => {}).then(() => {
+      if (!this.ctx || this.ctx.state === 'closed') return;
+      return this._paused ? this.ctx.suspend() : this.ctx.resume();
+    });
+  }
+
+  _applyVolume() {
+    if (this.master) {
+      const t = this.ctx.currentTime;
+      this.master.gain.cancelScheduledValues(t);
+      this.master.gain.setTargetAtTime(this.muted ? 0 : this.volume, t, 0.05);
+    }
+    this.onSettingsChange?.();
+  }
+
+  setGameState(state) {
+    this._playing = ['playing', 'paused', 'levelTransition'].includes(state);
+    this._paused = state === 'paused';
+    this._applyMusicVolume();
+    this._syncContextState();
+    if (!this._playing) this.stopAnnouncement();
+  }
+
+  async loadAnnouncements(announcements, manager) {
+    const decoder = new OfflineAudioContext(1, 1, 22050);
+    await Promise.all(Object.entries(announcements).map(async ([name, { url }]) => {
+      manager.itemStart(url);
+      try {
+        const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!response.ok) throw new Error(`Audio request failed: ${response.status}`);
+        this._announcements.set(name, await decoder.decodeAudioData(await response.arrayBuffer()));
+      } catch {
+        manager.itemError(url);
+      } finally {
+        manager.itemEnd(url);
+      }
+    }));
+  }
+
+  playAnnouncement(name) {
+    this.stopAnnouncement();
+    const buffer = this._announcements.get(name);
+    if (!buffer || !this._unlocked) return;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.85;
+    source.connect(gain).connect(this.master);
+    source.onended = () => {
+      gain.disconnect();
+      if (this._announcementSource === source) this._announcementSource = null;
+    };
+    this._announcementSource = source;
+    source.start();
+    this.duck(0.7, buffer.duration * 1000);
+  }
+
+  setRecharge(active) {
+    if (!this._unlocked) return;
+    if (active && !this._rechargeVoice) {
+      const oscillator = this.ctx.createOscillator();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 220;
+      const gain = this.ctx.createGain();
+      gain.gain.value = 0;
+      oscillator.connect(gain).connect(this.master);
+      oscillator.start();
+      this._rechargeVoice = { oscillator, gain };
+    }
+    if (this._rechargeVoice && active !== this._recharging) {
+      this._rechargeVoice.gain.gain.setTargetAtTime(active ? 0.018 : 0, this.ctx.currentTime, 0.15);
+    }
+    this._recharging = active;
+  }
+
+  stopAnnouncement() {
+    if (!this._announcementSource) return;
+    try { this._announcementSource.stop(); } catch { /* Already ended. */ }
+    this._announcementSource = null;
   }
 
   toggleMute() {
     this.muted = !this.muted;
-    if (this.master) {
-      const t = this.ctx.currentTime;
-      this.master.gain.cancelScheduledValues(t);
-      this.master.gain.setTargetAtTime(this.muted ? 0 : 0.65, t, 0.05);
+    this._applyVolume();
+  }
+
+  /** Advance the procedural score while gameplay is running. */
+  _updateScore() {
+    // Sustained notes in the midrange remain audible on smaller speakers.
+    // Game time is capped during slow frames; music follows real audio time
+    // so that low frame rates do not stretch the gaps between notes.
+    const now = this.ctx.currentTime;
+    if (now >= this._scoreTime) {
+      const speechScale = this._announcementSource ? 0.3 : 1;
+      if (this._level === 1) {
+        const note = CALM_NOTES[this._scoreStep % CALM_NOTES.length];
+        this._scoreNote(note, 2.8, 0.18 * speechScale);
+        this._scoreNote(note * 1.5, 2.6, 0.055 * speechScale);
+        this._scoreTime = now + 2.4;
+      } else if (this._level === 2) {
+        const note = HUNT_NOTES[this._scoreStep % HUNT_NOTES.length];
+        this._scoreNote(note, 2.4, 0.12 * speechScale, 'triangle');
+        this._scoreNote(note * 1.05946, 2.2, 0.045 * speechScale);
+        this._scoreTime = now + 2;
+      } else if (this._level === 3) {
+        const note = BOSS_NOTES[Math.floor(this._scoreStep / 4) % BOSS_NOTES.length];
+        this._scoreNote(note, 0.45, 0.18 * speechScale, 'triangle');
+        this._scoreNote(note * 3, 0.42, 0.12 * speechScale, 'triangle');
+        this._chirp(140, 45, 0.18, 0.2 * speechScale, 'sine', undefined, this.music);
+        if (this._scoreStep % 2) this._burst({ dur: 0.1, vol: 0.085 * speechScale, type: 'bandpass', freq: 1600, destination: this.music });
+        this._scoreTime = now + 60 / 112;
+      } else {
+        this._scoreTime = now + 3;
+      }
+      this._scoreStep++;
     }
-    const el = document.getElementById('mute-indicator');
-    if (el) el.classList.toggle('visible', this.muted);
+  }
+
+  _scoreNote(frequency, duration, volume, type = 'sine') {
+    const t = this.ctx.currentTime;
+    const oscillator = this.ctx.createOscillator();
+    oscillator.type = type;
+    oscillator.frequency.value = frequency;
+    const gain = this._gain(MIN_GAIN);
+    // Music needs a sustained envelope; the effect chirp decays too fast.
+    gain.gain.setValueAtTime(MIN_GAIN, t);
+    gain.gain.linearRampToValueAtTime(volume, t + Math.min(0.15, duration * 0.2));
+    gain.gain.setValueAtTime(volume, t + duration * 0.65);
+    gain.gain.exponentialRampToValueAtTime(MIN_GAIN, t + duration);
+    oscillator.connect(gain).connect(this.music || this.master);
+    oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+    oscillator.start(t);
+    oscillator.stop(t + duration + 0.02);
   }
 
   // ── One-shot dispatch ────────────────────────────────────────────────────
@@ -107,8 +277,7 @@ export default class AudioManager {
   /**
    * Trigger a named sound.
    * @param {string} name
-   * @param {*} [opt] voice-specific option (e.g. growl proximity 0..1,
-   *                  beep urgent flag)
+   * @param {*} [opt] Voice-specific option (growl proximity or urgent beep).
    */
   play(name, opt) {
     if (!this._unlocked || this.muted) return;
@@ -117,11 +286,22 @@ export default class AudioManager {
       case 'pulseHit': this._spark(); this._chirp(2400, 1700, 0.07, 0.14); break;
       case 'pulseMiss': this._whoosh(); break;
       case 'spark': this._spark(); break;
+      case 'glassBreak':
+        this._burst({ dur: 0.3, vol: 0.2, type: 'highpass', freq: 2400 });
+        this._chirp(1600, 480, 0.18, 0.16, 'triangle');
+        break;
       case 'doorOpen': this._door(); break;
+      case 'heal':
+        this._chirp(440, 880, 0.22, 0.12, 'sine');
+        this._chirp(660, 1100, 0.3, 0.08, 'sine');
+        break;
       case 'ventHiss': this._hiss(1.0, 0.3); break;
       case 'growl': this._growl(opt === undefined ? 0.4 : opt); break;
       case 'roar': this._roar(); break;
       case 'spotted': this._sting(); break;
+      case 'bossWindup':
+        this._chirp(140, 620, 0.75, 0.16, 'triangle');
+        break;
       case 'jumpscare': this._jumpscare(); break;
       case 'attack': this._impact(); break;
       case 'transform': this._transform(); break;
@@ -143,8 +323,9 @@ export default class AudioManager {
    * facility creaks. Zero allocation — counters only.
    */
   update(dt, moving, sprinting, grounded, threat, chasing, monsterActive, health01,
-         monsterDist, hiding) {
+         monsterDist, hiding, monsterMoving = chasing) {
     if (!this._unlocked || this.muted) return;
+    this._updateScore();
 
     // Footsteps — cadence from walk/sprint, only while grounded.
     if (moving && grounded) {
@@ -175,12 +356,12 @@ export default class AudioManager {
 
     // The creature's own lurching footfalls — the sound that makes players
     // freeze. Volume rises as it closes in.
-    if (monsterActive && chasing && monsterDist < 28) {
+    if (monsterActive && monsterMoving && monsterDist < (chasing ? 28 : 18)) {
       this._mStepTimer -= dt;
       if (this._mStepTimer <= 0) {
         const prox = 1 - monsterDist / 28;
-        this._heavyStep(0.12 + prox * 0.5);
-        this._mStepTimer = 0.34 + Math.random() * 0.14;
+        this._heavyStep(chasing ? 0.12 + prox * 0.5 : 0.08 + prox * 0.24);
+        this._mStepTimer = chasing ? 0.34 + Math.random() * 0.14 : 0.65;
       }
     } else {
       this._mStepTimer = 0.15;
@@ -254,6 +435,14 @@ export default class AudioManager {
   // ── Ambient bed ──────────────────────────────────────────────────────────
 
   setLevel(n) {
+    clearTimeout(this._duckTO);
+    this.setRecharge(false);
+    this._scoreTime = 0;
+    this._scoreStep = 0;
+    this._stepTimer = 0;
+    this._beatTimer = 0.4;
+    this._growlTimer = 6;
+    this._stingTimer = 10;
     const changed = n !== this._level || !this._bed;
     this._level = n;
     if (this._unlocked && changed) this._startBed(n);
@@ -262,10 +451,11 @@ export default class AudioManager {
   stopAmbient() {
     this._stopBed(1.2);
     this.setBreathing(false, 0);
+    this.setRecharge(false);
   }
 
   /** Momentarily pull the ambience down so stingers cut through. */
-  duck(amount) {
+  duck(amount, duration = 1100) {
     if (!this._bed || !this._unlocked) return;
     const g = this._bed.gain.gain;
     const t = this.ctx.currentTime;
@@ -275,7 +465,7 @@ export default class AudioManager {
     this._duckTO = setTimeout(() => {
       if (!this._bed) return;
       this._bed.gain.gain.setTargetAtTime(this._bed.base, this.ctx.currentTime, 0.5);
-    }, 1100);
+    }, duration);
   }
 
   _startBed(level) {
@@ -283,9 +473,9 @@ export default class AudioManager {
     this._stopBed(1.2);
     const ctx = this.ctx;
     const t = ctx.currentTime;
-    const filter = this._filter('lowpass', level === 2 ? 220 : level === 3 ? 260 : 380, 0.6);
+    const filter = this._filter('lowpass', level === 2 ? 720 : level === 3 ? 900 : 650, 0.6);
     const gain = this._gain(MIN_GAIN);
-    filter.connect(gain).connect(this.master);
+    filter.connect(gain).connect(this.music || this.master);
     const bed = { gain, filter, nodes: [], base: 0.42 };
 
     const addOsc = (type, freq, vol, detune) => {
@@ -305,11 +495,14 @@ export default class AudioManager {
       addOsc('sine', 82.7, 0.5, 4);
       addOsc('triangle', 164, 0.1, 0);
       addOsc('sawtooth', 120, 0.03, 6);
+      addOsc('sine', 329.63, 0.1, 0);
     } else if (level === 2) {
       // Damaged corridors: deeper drone + slowly moving air.
       addOsc('sine', 55, 0.5, -3);
       addOsc('sine', 55.8, 0.5, 3);
       addOsc('triangle', 110, 0.12, 0);
+      addOsc('triangle', 220, 0.15, -6);
+      addOsc('sine', 233.08, 0.09, 6);
       const src = this._noiseSource(true);
       const bp = this._filter('bandpass', 300, 0.6);
       const ng = this._gain(0.06);
@@ -327,6 +520,7 @@ export default class AudioManager {
       addOsc('sine', 65, 0.45, -5);
       addOsc('sine', 64.2, 0.45, 5);
       addOsc('triangle', 130, 0.1, 0);
+      addOsc('triangle', 261.63, 0.18, 0);
       const pulse = ctx.createOscillator();
       pulse.type = 'triangle';
       pulse.frequency.value = 174;
@@ -437,7 +631,7 @@ export default class AudioManager {
   }
 
   /** Pitched glide with a soft attack/decay envelope. */
-  _chirp(f0, f1, dur, vol, type, when) {
+  _chirp(f0, f1, dur, vol, type, when, destination) {
     const t = when === undefined ? this.ctx.currentTime : when;
     const o = this.ctx.createOscillator();
     o.type = type || 'sine';
@@ -447,7 +641,7 @@ export default class AudioManager {
     g.gain.setValueAtTime(MIN_GAIN, t);
     g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
     g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
-    o.connect(g).connect(this.master);
+    o.connect(g).connect(destination || this.master);
     o.start(t);
     o.stop(t + dur + 0.02);
   }
@@ -463,7 +657,7 @@ export default class AudioManager {
     g.gain.setValueAtTime(MIN_GAIN, t);
     g.gain.exponentialRampToValueAtTime(o.vol, t + attack);
     g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + o.dur);
-    src.connect(f).connect(g).connect(this.master);
+    src.connect(f).connect(g).connect(o.destination || this.master);
     src.start(t, Math.random() * 1.5);
     src.stop(t + o.dur + 0.02);
   }
@@ -720,14 +914,15 @@ export default class AudioManager {
   }
 
   _step(sprint) {
+    const metal = this._level === 1;
     this._burst({
       dur: 0.1,
       vol: sprint ? 0.15 : 0.1,
       type: 'lowpass',
-      freq: 240 + Math.random() * 120,
+      freq: (metal ? 700 : 240) + Math.random() * 120,
       attack: 0.004,
     });
-    if (Math.random() < 0.4) {
+    if (metal || Math.random() < 0.4) {
       this._burst({ dur: 0.03, vol: 0.04, type: 'bandpass', freq: 2400 + Math.random() * 900, q: 2 });
     }
   }
