@@ -445,6 +445,152 @@ export function createScientist() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Worker — walking station staff (Level 1 pre-breach ambience)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Palette + headgear + hand prop per staff role. */
+const WORKER_VARIANTS = {
+  tech:       { suit: 0xb95c22, suitDark: 0x8a4419, vest: 0x4a505a, hair: 0x2f2620, head: 'cap', prop: 'toolbox' },
+  coat:       { suit: 0xe6e9ee, suitDark: 0xc4cad4, vest: 0x39424c, hair: 0x4a3a2c, head: 'bare', prop: 'clipboard' },
+  supervisor: { suit: 0x3a4a55, suitDark: 0x2c3a44, vest: 0xd8b62a, hair: 0x554838, head: 'hardhat', prop: 'clipboard' },
+};
+
+/**
+ * A walking NPC — reactor-station staff on patrol routes (LevelManager
+ * moves the group; this only animates). Same builder shape as the others:
+ * { group, update(dt, state) }, with state = { moving, speed, fleeing }.
+ *
+ * The stride scales with `speed`, idle is a relaxed sway with a lazy head
+ * scan, and `fleeing` switches to a panicked run — forward lean, pumping
+ * arms and a glance back over the shoulder (the mutation alarm sends them
+ * all running for the entrance).
+ */
+export function createWorker(variant = 'tech') {
+  const cfg = WORKER_VARIANTS[variant] || WORKER_VARIANTS.tech;
+  const group = new THREE.Group();
+
+  const bump = bumpTexture();
+  const suit = std(cfg.suit, { roughness: 0.8, metalness: 0.1, bumpMap: bump, bumpScale: 0.01 });
+  const suitDark = std(cfg.suitDark, { roughness: 0.85, metalness: 0.1, bumpMap: bump, bumpScale: 0.01 });
+  const vest = std(cfg.vest, { roughness: 0.7, metalness: 0.15, bumpMap: bump, bumpScale: 0.008 });
+  const skin = std(0xd8a97c, { roughness: 0.9, metalness: 0 });
+  const hairMat = std(cfg.hair, { roughness: 0.95, metalness: 0 });
+  const shoe = std(0x22262c, { roughness: 0.9 });
+  const badge = std(0x223344, { roughness: 0.4, metalness: 0.3, emissive: 0x38c8ff, emissiveIntensity: 0.5 });
+
+  // Pelvis + torso with hi-vis vest and ID badge.
+  part(group, new THREE.BoxGeometry(0.32, 0.16, 0.22), suitDark, 0, 0.84, 0);
+  const torso = joint(group, 0, 0.92, 0);
+  part(torso, new THREE.BoxGeometry(0.4, 0.48, 0.24), suit, 0, 0.24, 0);
+  part(torso, new THREE.BoxGeometry(0.42, 0.34, 0.27), vest, 0, 0.26, 0);
+  part(torso, new THREE.BoxGeometry(0.09, 0.11, 0.02), badge, -0.13, 0.3, 0.135);
+
+  // Head with variant headgear — work cap, bare, or hi-vis hard hat.
+  const head = joint(torso, 0, 0.56, 0);
+  part(head, new THREE.BoxGeometry(0.19, 0.2, 0.19), skin, 0, 0.08, 0.01);
+  part(head, new THREE.BoxGeometry(0.205, 0.07, 0.205), hairMat, 0, 0.175, -0.015);
+  if (cfg.head === 'cap') {
+    part(head, new THREE.BoxGeometry(0.22, 0.06, 0.22), suitDark, 0, 0.22, 0);
+    part(head, new THREE.BoxGeometry(0.19, 0.025, 0.09), suitDark, 0, 0.2, 0.13);
+  } else if (cfg.head === 'hardhat') {
+    part(head, new THREE.BoxGeometry(0.25, 0.13, 0.25), vest, 0, 0.235, 0);
+    part(head, new THREE.BoxGeometry(0.24, 0.03, 0.12), vest, 0, 0.185, 0.14);
+  }
+
+  // Arms — the left hand holds the clipboard (if any), the right swings free.
+  const buildArm = (side) => {
+    const s = side === 'l' ? -1 : 1;
+    const arm = joint(torso, s * 0.28, 0.44, 0);
+    part(arm, new THREE.BoxGeometry(0.11, 0.28, 0.11), suit, 0, -0.15, 0);
+    const elbow = joint(arm, 0, -0.29, 0);
+    part(elbow, new THREE.BoxGeometry(0.1, 0.26, 0.1), suitDark, 0, -0.13, 0);
+    part(elbow, new THREE.BoxGeometry(0.08, 0.09, 0.08), skin, 0, -0.28, 0);
+    return { arm, elbow };
+  };
+  const { arm: armL, elbow: elbL } = buildArm('l');
+  const { arm: armR, elbow: elbR } = buildArm('r');
+
+  // Role prop in the left hand — toolbox or clipboard.
+  if (cfg.prop === 'toolbox') {
+    const boxMat = std(0x8a2f22, { roughness: 0.6, metalness: 0.3 });
+    part(elbL, new THREE.BoxGeometry(0.26, 0.13, 0.16), boxMat, 0, -0.34, 0.05);
+    part(elbL, new THREE.BoxGeometry(0.1, 0.03, 0.03), boxMat, 0, -0.27, 0.05); // handle
+  } else if (cfg.prop === 'clipboard') {
+    const clipMat = std(0xd9dde3, { roughness: 0.7 });
+    part(elbL, new THREE.BoxGeometry(0.17, 0.23, 0.02), clipMat, 0, -0.31, 0.07);
+    part(elbL, new THREE.BoxGeometry(0.1, 0.04, 0.03), suitDark, 0, -0.21, 0.07); // clamp
+  }
+
+  // Legs.
+  const buildLeg = (side) => {
+    const s = side === 'l' ? -1 : 1;
+    const leg = joint(group, s * 0.11, 0.8, 0);
+    part(leg, new THREE.BoxGeometry(0.14, 0.36, 0.15), suit, 0, -0.18, 0);
+    const knee = joint(leg, 0, -0.36, 0);
+    part(knee, new THREE.BoxGeometry(0.12, 0.34, 0.13), suitDark, 0, -0.17, 0);
+    part(knee, new THREE.BoxGeometry(0.13, 0.08, 0.24), shoe, 0, -0.37, 0.05);
+    return { leg, knee };
+  };
+  const { leg: legL, knee: kneeL } = buildLeg('l');
+  const { leg: legR, knee: kneeR } = buildLeg('r');
+
+  // ── Animation state (closure — no per-frame allocation) ───────────────────
+  const TORSO_BASE_Y = 0.92;
+  const holdsClipboard = cfg.prop === 'clipboard';
+  let t = 0;
+  let phase = 0;   // stride phase
+  let blend = 0;   // smoothed 0..1 move blend
+  let panic = 0;   // smoothed 0..1 flee blend
+
+  const update = (dt, s) => {
+    t += dt;
+    const spd = (s && s.speed) || 1.0;
+    const moving = !!(s && s.moving);
+    const fleeing = !!(s && s.fleeing);
+    blend += ((moving ? 1 : 0) - blend) * Math.min(1, dt * 8);
+    panic += ((fleeing ? 1 : 0) - panic) * Math.min(1, dt * 4);
+    if (blend > 0.02) phase += dt * (3.0 + spd * 2.6 + panic * 3.2);
+
+    const swing = Math.sin(phase) * (0.42 + panic * 0.18) * blend;
+
+    // Legs — plain stride; a touch more knee lift while fleeing.
+    legL.rotation.x = swing;
+    legR.rotation.x = -swing;
+    kneeL.rotation.x = Math.max(0, -swing) * (1.05 + panic * 0.3);
+    kneeR.rotation.x = Math.max(0, swing) * (1.05 + panic * 0.3);
+
+    // Arms — counter-swing; a held prop steadies the left arm, fleeing
+    // raises the right in a pumping guard.
+    const armKeep = holdsClipboard ? 0.3 : 1;
+    armL.rotation.x = -swing * 0.7 * armKeep - panic * 0.3;
+    armR.rotation.x = swing * 0.7 + panic * 0.55;
+    armL.rotation.z = 0.06;
+    armR.rotation.z = -0.06;
+    elbL.rotation.x = -0.3 - blend * 0.2;
+    elbR.rotation.x = -0.3 - blend * 0.25 - panic * 0.5;
+
+    // Torso — upright at idle (breathing sway), forward lean while fleeing.
+    const idle = 1 - blend;
+    torso.rotation.x = blend * 0.06 + panic * 0.22 + Math.sin(t * 2.0) * 0.012 * idle;
+    torso.position.y = TORSO_BASE_Y + Math.abs(Math.cos(phase)) * 0.03 * blend;
+
+    // Head — lazy scan while strolling; glances back over the shoulder
+    // every couple of seconds mid-flee (checking what's behind them).
+    let headYaw = Math.sin(t * 0.6) * 0.35 * idle + Math.sin(t * 0.35) * 0.22 * blend;
+    if (panic > 0.3) {
+      const glance = Math.sin(t * 1.1) > 0.35 ? 1 : 0;
+      headYaw += glance * 1.9 * panic;
+      head.rotation.x = 0.08;
+    } else {
+      head.rotation.x = 0.03;
+    }
+    head.rotation.y += (headYaw - head.rotation.y) * Math.min(1, dt * 6);
+  };
+
+  return { group, update };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Monster — hunched creature, mounted weak points
 // ─────────────────────────────────────────────────────────────────────────────
 

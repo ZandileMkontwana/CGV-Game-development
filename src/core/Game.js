@@ -7,6 +7,7 @@ import CameraController from './CameraController.js';
 import GameState from './GameState.js';
 import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
+import { setMaxAnisotropy } from '../shaders/textures.js';
 import UIManager from '../ui/UIManager.js';
 import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
@@ -34,6 +35,9 @@ export default class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
+    // Sharpen floor/wall detail at grazing angles (long-corridor views) —
+    // applies to every procedural texture built from here on.
+    setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
     container.appendChild(this.renderer.domElement);
     if (import.meta.env.DEV) window.__game = this; // dev-only debug handle
 
@@ -97,15 +101,15 @@ export default class Game {
     this._tutorialSteps = [
       {
         text: 'WASD — MOVE   ·   SHIFT — SPRINT   ·   SPACE — JUMP',
-        sub: 'MOUSE — LOOK   ·   V — TOGGLE FIRST/THIRD PERSON',
+        sub: 'MOUSE — LOOK   ·   V — TOGGLE FIRST/THIRD PERSON   ·   T — TORCH',
       },
       {
         text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
         sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
       },
       {
-        text: 'SHOOT THE GLOWING PANELS — CONDUITS & VALVES',
-        sub: 'THEY OPEN DOORS AND SHUT DOWN HAZARDS',
+        text: 'E — OPEN DOORS AT THE GLOWING PANEL',
+        sub: 'SHOOT GLOWING CONDUITS & VALVES TO SHUT DOWN HAZARDS',
       },
       {
         text: 'LISTEN — GROWLS AND YOUR HEARTBEAT MEAN IT IS NEAR',
@@ -153,6 +157,7 @@ export default class Game {
     // --- Objective HUD -----------------------------------------------------
     this._objectiveEl = document.getElementById('objective');
     this._hitMarkerEl = document.getElementById('hit-marker');
+    this._interactPromptEl = document.getElementById('interact-prompt');
 
     // --- Collapse timer (Level 3 escape sequence) -------------------------
     this._collapseTimerEl = document.getElementById('collapse-timer');
@@ -471,6 +476,9 @@ export default class Game {
       // Check win triggers (player reached objective for this level).
       this._checkWinTriggers();
 
+      // Door interaction: show the E-prompt near closed doors, open on E.
+      this._updateDoorInteraction();
+
       // Update health bar HUD.
       if (this._healthFillEl) {
         const pct = (this.playerHealth / this.playerMaxHealth) * 100;
@@ -490,6 +498,8 @@ export default class Game {
       this.postfx.setDanger(0);
       // Clear stealth HUD when monster isn't active.
       this._clearStealthHUD();
+      // No interact prompt outside gameplay.
+      if (this._interactPromptEl) this._interactPromptEl.classList.remove('visible');
     }
 
     this.input.endFrame();
@@ -588,7 +598,7 @@ export default class Game {
 
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
-      1: 'OBJECTIVE: REACH THE CONTROL ROOM — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR',
+      1: 'OBJECTIVE: REACH THE CONTROL ROOM — PRESS E AT SEALED DOORS TO OPEN',
       2: 'OBJECTIVE: SNEAK PAST THE MONSTER — REACH THE EMERGENCY EXIT (HIDE BEHIND COVER)',
       3: 'OBJECTIVE: DESTROY THE MONSTER\u2019S 3 GLOWING WEAK POINTS',
     };
@@ -600,7 +610,7 @@ export default class Game {
       this._tut = {
         step: 0, timer: 0,
         startX: sp.x, startZ: sp.z,
-        moved: false, fired: false, hit: false,
+        moved: false, fired: false, hit: false, doorOpened: false,
       };
       this._showTutorialStep(0);
     } else {
@@ -623,6 +633,35 @@ export default class Game {
     this._hitMarkerEl.classList.remove('flash');
     void this._hitMarkerEl.offsetWidth; // force reflow so the animation restarts
     this._hitMarkerEl.classList.add('flash');
+  }
+
+  /**
+   * Door interaction — press E near a closed, unlocked door to open it
+   * (no shooting required). Locked doors (the L3 failsafe seal) are skipped:
+   * they open through the scripted boss-death flow only.
+   */
+  _updateDoorInteraction() {
+    const doors = this.levels._doors;
+    let near = null;
+    for (const door of doors) {
+      if (door.opening || door.locked) continue;
+      const dx = this.player.position.x - door.mesh.position.x;
+      const dz = this.player.position.z - door.mesh.position.z;
+      if (dx * dx + dz * dz < 6.25) { // 2.5 m reach
+        near = door;
+        break;
+      }
+    }
+
+    if (this._interactPromptEl) {
+      this._interactPromptEl.classList.toggle('visible', !!near);
+    }
+
+    if (near && this.input.justPressed('KeyE')) {
+      this.levels.openDoor(near.id);
+      this.audio.play('doorOpen');
+      if (this._tut) this._tut.doorOpened = true;
+    }
   }
 
   /**
@@ -712,6 +751,9 @@ export default class Game {
         this._mutateLight.intensity = 0.8;
         this.camera.shake(0.45);
         this.audio.play('alarm');
+        // The alarm empties the station: every staff walker bolts for the
+        // entrance while the player is locked into the mutation beat.
+        this.levels.evacuateWalkers();
         this._setObjective('ALARM — SOMETHING IS WRONG WITH THE SCIENTIST');
       }
       return;
@@ -786,7 +828,7 @@ export default class Game {
         this.monster.setPatrolWaypoints(
           reveal.escape.map(p => ({ x: p.x, y: 0, z: p.z }))
         );
-        this._setObjective('THE SCIENTIST IS GONE — SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR');
+        this._setObjective('THE SCIENTIST IS GONE — PRESS E AT THE DOOR TO CONTINUE');
       }
       return;
     }
@@ -840,7 +882,7 @@ export default class Game {
     const complete =
       (tut.step === 0 && tut.moved) ||
       (tut.step === 1 && tut.fired) ||
-      (tut.step === 2 && tut.hit) ||
+      (tut.step === 2 && (tut.hit || tut.doorOpened)) ||
       (tut.step === 3 && tut.timer > 6); // listen-hint lingers, then fades
 
     if (complete && tut.timer > 1.6) {

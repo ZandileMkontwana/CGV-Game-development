@@ -135,51 +135,59 @@
 **Your branch:** `Kutloano`
 
 ### How to Work
-- Run `npm run dev` to test your changes
-- The ShaderManager already has basic lighting and shader stubs — you refine them
-- All shaders use `ShaderMaterial` with custom GLSL
-- Shaders must use uniforms driven by time or game state ("alive" effects — rubric requirement)
+- Run `npm run dev` and play at `http://localhost:5173` — watch the console for shader compile errors
+- File map: `ShaderManager.js` (custom GLSL + lighting presets), `textures.js` (procedural PBR maps), `LevelMaterials.js` (theme material bundles), `PostFX.js` (bloom + grade chain)
+- Every material ShaderManager hands out registers for `update(dt)` — uniforms driven by time or game state ("alive" effects — rubric requirement)
 
-### Lighting Presets (basics exist, needs polish)
-- [ ] **Level 1:** Cool white ambient + directional — clean, bright lab feel
-- [ ] **Level 2:** Flickering amber point lights — sin-driven intensity pulsing, horror atmosphere
-- [ ] **Level 3:** Red emergency lighting — pulsing, intense, with deep fog
-- [ ] Each preset also sets `scene.background` and `scene.fog` to match the mood
+### Already Done (what the markers will see)
 
-### Three Custom Shaders (10% of the grade — this is the big marks earner)
+**Lighting presets** — `applyLevel1/2/3Lighting()`, each also sets `scene.background` + `scene.fog`
+- [x] **Level 1:** cool white ambient + directional + rim light — clean, bright lab feel
+- [x] **Level 2:** flickering amber point lights — layered base pulse + fast jitter + rare stutter drop-outs (reads as failing wiring, not a metronome)
+- [x] **Level 3:** pulsing red emergency lights + exponential fog — thick, claustrophobic
 
-**1. Heat-Haze / Ripple (Level 2)**
-- [ ] Applied to planes/zones around overheating machinery
-- [ ] Uniforms: `uTime` (drives animation), `uIntensity` (proximity/damage)
-- [ ] Effect: sine-wave UV distortion that warps the view behind it
-- [ ] Must look "alive" — animated, not static
-- [ ] The stub exists in `createHeatHazeMaterial()` — refine it
+**Custom shader 1 — heat-haze** — `createHeatHazeMaterial()` (Level 2)
+- [x] Value-noise distortion field scrolling upward + fast rising streaks + slow "breathing" intensity (upgraded from plain sine bands, which read as synthetic)
+- [x] Uniforms: `uTime` (drives animation), `uIntensity` (proximity/damage)
+- [x] Placed over the overheating machinery in the L2 maintenance corridor (`LevelManager._hazeZone()`)
 
-**2. Dissolve / Noise (Level 3)**
-- [ ] Applied to meshes that crumble during the building collapse
-- [ ] Uniforms: `uTime` (animates noise), `uDissolveAmount` (0 = intact, 1 = gone)
-- [ ] Effect: 3D noise pattern eats away the mesh, glowing edge where it dissolves
-- [ ] Game state drives `uDissolveAmount` as the building collapses
-- [ ] The stub exists in `createDissolveMaterial()` — refine it
+**Custom shader 2 — dissolve** — `createDissolveMaterial()` (Level 3)
+- [x] 3D value noise eats the mesh away; charred scorch band ahead of the burn line, flickering ember edge, pre-heat glow as the collapse progresses
+- [x] Uniforms: `uTime` (animates noise), `uDissolveAmount` (0 = intact, 1 = gone)
+- [x] Driven by the collapse timer in Game.js — ceiling slabs and wall panels visibly crumble during the escape run
 
-**3. Pulse Projectile Glow (new — for the pulse tool)**
-- [ ] Applied to the energy bolt when the player fires
-- [ ] Effect: bright glowing bolt with a fading trail behind it
-- [ ] Should be visible from distance
-- [ ] Coordinate with Zandile — they build the PulseTool.js, you provide the material
+**Custom shader 3 — pulse projectile glow** — `createPulseGlowMaterial()` + `createPulseTrail()`
+- [x] Bright pulsing core with a fresnel rim — visible from distance
+- [x] Fading camera-facing sprite trail behind the bolt (soft radial-glow sprites, not spheres)
 
-### Additional Visual Tasks
-- [ ] Monster weak-point glow material (emissive, pulsing — so player sees where to shoot)
-- [ ] PBR materials for lab surfaces (metallic walls, rough floors)
-- [ ] Bump/normal maps on walls and floors (adds depth without extra geometry)
-- [ ] Skybox (lab interior or exterior through windows)
-- [ ] Shadow configuration: limit which lights cast shadows, keep resolution sensible
-- [ ] Post-processing for final only: bloom on energy effects, vignette during collapse
+**Additional visual work**
+- [x] Monster weak-point glow material — emissive, pulsing, reactive hit-flash on damage (`flashWeakPoint()`)
+- [x] PBR materials for every surface — procedural normal/roughness/AO maps (`textures.js` → `LevelMaterials.js` themes)
+- [x] Anisotropic filtering wired through the whole procedural-texture pipeline (sharp at grazing angles)
+- [x] Per-level gradient skybox + shadow config: limited shadow casters, tuned `bias` + `normalBias` (no acne, no peter-panning)
+- [x] Post-processing: bloom on emissive effects + cinematic grade pass (vignette, film grain, chromatic aberration, danger pulse)
+
+### Next Tasks (Priority Order — beta 16 October)
+
+**1. Heat-haze on the new reactor equipment (Levels 1 + 2)**
+- The steam generator and coolant pumps are hot machinery — place `_hazeZone()` planes over the L1 reactor-hall equipment and the L2 crew-quarters pump
+- Right now the shader only shows in one L2 corridor; this makes it visible across the game
+
+**2. Live-data screen shader (all levels)**
+- Wall screens, console monitors, gauge clusters and radiation-monitor displays all use static emissive materials
+- Write one shared time-driven shader (scrolling scanlines / data flicker) and swap it onto screens via `wireLevelVisuals()` — one material animates the whole station
+
+**3. Collapse grade in PostFX (Level 3)**
+- The vignette/danger pulse currently only reacts to monster proximity (`setDanger`)
+- Feed the collapse countdown into it too, so the screen closes in as demolition approaches
+
+**4. Performance sweep on the equipment-heavy reactor hall**
+- New equipment + 6 walking workers added draw calls and shadow casters — profile in Chrome DevTools, confirm the adaptive-resolution ladder holds 60 fps, trim `castShadow` flags if needed
 
 ### Deadlines
-- Refine the two main shaders first (heat-haze + dissolve)
-- Pulse glow shader after Zandile builds the pulse tool
-- Lighting polish and textures for beta (mid-October)
+- Tasks 1 + 2 before beta (16 October) — the most visible wins
+- Task 3 is small — do it with the L3 boss-fight polish
+- Task 4 any time before final submission
 
 ---
 

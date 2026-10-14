@@ -730,6 +730,292 @@ export default class LevelKit {
     return main;
   }
 
+  // ── Reactor-plant equipment ────────────────────────────────────────────────
+
+  /**
+   * Coolant pump skid — motor with cooling ribs, volute and a rising
+   * discharge pipe. The frame box is the collider; the cylinders are
+   * visual children on top of it.
+   */
+  coolantPump(x, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const frame = this.box(this.mats.metalDark, 1.7, 0.5, 1.05, x, 0.25, z,
+      { physics: true, rotY });
+    // Motor — horizontal cylinder with cooling ribs.
+    const motor = new THREE.Mesh(cylGeo(0.27, 0.27, 0.85, 12), this.mats.metal);
+    motor.rotation.z = Math.PI / 2;
+    motor.position.set(-0.22, 0.5, 0);
+    motor.castShadow = true;
+    frame.add(motor);
+    for (let i = 0; i < 4; i++) {
+      const rib = new THREE.Mesh(cylGeo(0.29, 0.29, 0.05, 12), this.mats.metalDark);
+      rib.rotation.z = Math.PI / 2;
+      rib.position.set(-0.52 + i * 0.2, 0.5, 0);
+      frame.add(rib);
+    }
+    // Volute + rising discharge pipe with an elbow stub.
+    const volute = new THREE.Mesh(cylGeo(0.33, 0.33, 0.42, 14), this.mats.metal);
+    volute.position.set(0.5, 0.6, 0);
+    volute.castShadow = true;
+    frame.add(volute);
+    const discharge = new THREE.Mesh(cylGeo(0.08, 0.08, 0.7, 8), this.mats.pipe);
+    discharge.position.set(0.5, 1.3, 0);
+    discharge.castShadow = true;
+    frame.add(discharge);
+    const elbow = new THREE.Mesh(cylGeo(0.08, 0.08, 0.45, 8), this.mats.pipe);
+    elbow.rotation.z = Math.PI / 2;
+    elbow.position.set(0.72, 1.6, 0);
+    frame.add(elbow);
+    // Suction stub down toward the floor.
+    const suction = new THREE.Mesh(cylGeo(0.11, 0.11, 0.5, 8), this.mats.pipe);
+    suction.position.set(0.5, 0.07, 0);
+    frame.add(suction);
+    // Gauge on a stand at the frame corner + running beacon.
+    this._child(frame, this.mats.metal, 0.05, 0.3, 0.05, -0.72, 0.62, 0);
+    const gauge = new THREE.Mesh(cylGeo(0.08, 0.08, 0.05, 10), this.mats.metalDark);
+    gauge.rotation.x = Math.PI / 2;
+    gauge.position.set(-0.72, 0.82, 0);
+    frame.add(gauge);
+    this._child(frame, this.mats.beaconAmber, 0.08, 0.08, 0.08, 0.5, 1.7, 0);
+    // Hazard band on the frame front.
+    this._child(frame, this.mats.hazard, 1.5, 0.14, 0.03, 0, -0.1, 0.535);
+    return frame;
+  }
+
+  /**
+   * Horizontal steam generator on concrete cradles. The vessel mesh itself
+   * is the LOS occluder; a hidden box inside it provides the collider.
+   * @param {string} axis vessel long axis, 'x' or 'z'
+   */
+  steamGenerator(x, z, axis, o = {}) {
+    const alongX = axis !== 'z';
+    const len = o.len || 3.2;
+    const r = o.r || 0.7;
+    const y = 1.25 + r; // cradle top → vessel centre
+    // Cradle pedestals (with colliders).
+    for (const s of [-1, 1]) {
+      const px = alongX ? x + s * 1.0 : x;
+      const pz = alongX ? z : z + s * 1.0;
+      this.box(this.mats.concrete, alongX ? 0.7 : 1.5, 1.25, alongX ? 1.5 : 0.7,
+        px, 0.625, pz, { physics: true });
+    }
+    // Pressure vessel.
+    const vessel = new THREE.Mesh(cylGeo(r, r, len, 18), this.mats.metal);
+    vessel.position.set(x, y, z);
+    if (alongX) vessel.rotation.z = Math.PI / 2;
+    else vessel.rotation.x = Math.PI / 2;
+    vessel.castShadow = true;
+    vessel.receiveShadow = true;
+    vessel.userData.kitShared = true;
+    this.scene.add(vessel);
+    this.host._track(vessel);
+    if (o.occluder !== false) this.host.occluders.push(vessel);
+    // Hidden collider core inside the vessel (physics only — never visible).
+    this.box(this.mats.metalDark,
+      alongX ? len - 0.6 : 0.9, 0.9, alongX ? 0.9 : len - 0.6,
+      x, y, z, { physics: true, cast: false, receive: false });
+    // Manway on the +axis end cap.
+    const mw = new THREE.Mesh(cylGeo(r * 0.42, r * 0.42, 0.1, 14), this.mats.metalDark);
+    mw.position.set(alongX ? x + len / 2 : x, y, alongX ? z : z + len / 2);
+    if (alongX) mw.rotation.z = Math.PI / 2;
+    else mw.rotation.x = Math.PI / 2;
+    mw.castShadow = true;
+    this.scene.add(mw);
+    this.host._track(mw);
+    // Flange rings around the vessel.
+    for (const s of [-1, 1]) {
+      const flange = new THREE.Mesh(cylGeo(r + 0.05, r + 0.05, 0.14, 18), this.mats.metalDark);
+      flange.position.set(alongX ? x + s * 0.95 : x, y, alongX ? z : z + s * 0.95);
+      if (alongX) flange.rotation.z = Math.PI / 2;
+      else flange.rotation.x = Math.PI / 2;
+      this.scene.add(flange);
+      this.host._track(flange);
+    }
+    // Relief pipes standing on the top flank.
+    for (const s of [-0.7, 0.25]) {
+      const px = alongX ? x + s : x;
+      const pz = alongX ? z : z + s;
+      const pipe = new THREE.Mesh(cylGeo(0.08, 0.08, 0.55, 8), this.mats.pipe);
+      pipe.position.set(px, y + r + 0.18, pz);
+      pipe.castShadow = true;
+      this.scene.add(pipe);
+      this.host._track(pipe);
+      const cap = new THREE.Mesh(cylGeo(0.11, 0.11, 0.06, 8), this.mats.metalDark);
+      cap.position.set(px, y + r + 0.48, pz);
+      this.scene.add(cap);
+      this.host._track(cap);
+    }
+    return vessel;
+  }
+
+  /**
+   * Vertical coolant tank — banded shell, domed cap, ladder cage and a
+   * glowing sight glass on the +z side (face that toward walkable space).
+   */
+  coolantTank(x, z, o = {}) {
+    const r = o.r || 0.65;
+    const h = o.h || 2.4;
+    // Concrete plinth (visual only — the tank body is the collider).
+    this.cyl(this.mats.concrete, r + 0.12, r + 0.14, 0.22, x, 0.11, z, { cast: false, seg: 16 });
+    const tank = this.cyl(this.mats.metal, r, r, h, x, 0.22 + h / 2, z,
+      { physics: true, seg: 16, occluder: o.occluder !== false });
+    // Domed cap + vent stub.
+    const cap = new THREE.Mesh(cylGeo(r * 0.55, r, 0.2, 16), this.mats.metalDark);
+    cap.position.y = h / 2 + 0.1;
+    tank.add(cap);
+    const vent = new THREE.Mesh(cylGeo(0.05, 0.05, 0.3, 8), this.mats.pipe);
+    vent.position.y = h / 2 + 0.32;
+    tank.add(vent);
+    // Shell bands.
+    for (const by of [-0.45, 0.1, 0.65]) {
+      const band = new THREE.Mesh(cylGeo(r + 0.03, r + 0.03, 0.1, 16), this.mats.metalDark);
+      band.position.y = by;
+      tank.add(band);
+    }
+    // Sight glass — glowing level gauge on the front.
+    const glass = new THREE.Mesh(boxGeo(0.09, h * 0.75, 0.05), this.mats.accent);
+    glass.position.set(0, 0, r + 0.04);
+    tank.add(glass);
+    // Ladder cage on the +z side: rails + rungs.
+    for (const s of [-1, 1]) {
+      this._child(tank, this.mats.metal, 0.05, h + 0.15, 0.05, s * 0.19, h / 2, r + 0.16);
+    }
+    for (let i = 0; i < 6; i++) {
+      this._child(tank, this.mats.metal, 0.42, 0.035, 0.035,
+        0, -h * 0.35 + i * (h * 0.7 / 5), r + 0.16);
+    }
+    // Hazard plate near the base.
+    this._child(tank, this.mats.hazard, r * 1.9, 0.16, 0.03, 0, -h / 2 + 0.28, r + 0.03);
+    return tank;
+  }
+
+  /** Wall-mounted bank of pressure gauges (decor only, no collision). */
+  gaugeCluster(x, y, z, face, o = {}) {
+    const g = new THREE.Group();
+    g.position.set(x, y, z);
+    g.rotation.y = this.faceAngle(face);
+    const panel = new THREE.Mesh(boxGeo(0.9, 0.55, 0.08), this.mats.metalDark);
+    panel.receiveShadow = true;
+    g.add(panel);
+    for (let i = 0; i < 3; i++) {
+      const gx = -0.28 + i * 0.28;
+      const dial = new THREE.Mesh(cylGeo(0.09, 0.09, 0.06, 12), this.mats.metal);
+      dial.rotation.x = Math.PI / 2;
+      dial.position.set(gx, 0.06, 0.06);
+      g.add(dial);
+      const needle = new THREE.Mesh(boxGeo(0.015, 0.07, 0.02), this.mats.accent);
+      needle.position.set(gx, 0.08, 0.1);
+      needle.rotation.z = (i - 1) * 0.7; // varied readings
+      g.add(needle);
+    }
+    const placard = new THREE.Mesh(boxGeo(0.5, 0.14, 0.02), this.mats.beaconAmber);
+    placard.position.set(0, -0.2, 0.05);
+    g.add(placard);
+    this.scene.add(g);
+    this.host._track(g);
+    return g;
+  }
+
+  /**
+   * Control-rod drive bank — the actuator columns that sit beside a reactor
+   * core and shove the rods in and out.
+   */
+  controlRodDrives(x, z, o = {}) {
+    const base = this.box(this.mats.metalDark, 1.15, 0.35, 1.15, x, 0.175, z, { physics: true });
+    for (let i = 0; i < 4; i++) {
+      const dx = -0.36 + (i % 2) * 0.72;
+      const dz = -0.36 + Math.floor(i / 2) * 0.72;
+      // Local y 0.85 → world 0.35..1.7: flush on the base, tops at 1.7.
+      const drive = new THREE.Mesh(cylGeo(0.11, 0.11, 1.35, 10), this.mats.metal);
+      drive.position.set(dx, 0.85, dz);
+      drive.castShadow = true;
+      base.add(drive);
+      const cap = new THREE.Mesh(cylGeo(0.14, 0.14, 0.14, 10), this.mats.metalDark);
+      cap.position.set(dx, 1.595, dz); // world ~1.77, atop the drive
+      base.add(cap);
+    }
+    // Crossbeam resting on the caps + status light on the beam.
+    this._child(base, this.mats.beam, 1.15, 0.1, 0.16, 0, 1.715, 0);
+    this._child(base, this.mats.accent, 0.09, 0.09, 0.09, 0, 1.81, 0);
+    return base;
+  }
+
+  /**
+   * Spent-fuel storage rack — two rows of glowing rod bundles in a frame
+   * behind a safety grille. The base is the collider; the separate back
+   * panel (full height) is the LOS occluder, so hiding behind the rack
+   * genuinely breaks the monster's line of sight.
+   */
+  fuelRack(x, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const base = this.box(this.mats.metalDark, 1.7, 0.55, 0.62, x, 0.275, z, { physics: true, rotY });
+    // Fuel rods rising from the base (glowing — specimen material).
+    const rodGeo = cylGeo(0.05, 0.05, 1.3, 8);
+    for (let row = 0; row < 2; row++) {
+      for (let i = 0; i < 5; i++) {
+        const rod = new THREE.Mesh(rodGeo, this.mats.specimen);
+        rod.position.set(-0.62 + i * 0.31, 0.925, 0.1 - row * 0.22);
+        base.add(rod);
+      }
+    }
+    // Safety grille bars in front of the rods.
+    for (let i = 0; i < 5; i++) {
+      this._child(base, this.mats.metal, 0.05, 1.25, 0.04, -0.7 + i * 0.35, 0.925, 0.26);
+    }
+    // Side posts + top frame + header placard.
+    this._child(base, this.mats.metal, 0.07, 1.35, 0.6, -0.815, 0.9, 0);
+    this._child(base, this.mats.metal, 0.07, 1.35, 0.6, 0.815, 0.9, 0);
+    this._child(base, this.mats.metalDark, 1.74, 0.1, 0.66, 0, 1.62, 0);
+    this._child(base, this.mats.beaconAmber, 1.1, 0.16, 0.03, 0, 1.38, 0.34);
+    // Back panel — full-height occluder behind the rods.
+    const bx = x - Math.sin(rotY) * 0.26;
+    const bz = z - Math.cos(rotY) * 0.26;
+    this.box(this.mats.panel, 1.7, 1.45, 0.05, bx, 1.18, bz,
+      { rotY, occluder: true, cast: false });
+    return base;
+  }
+
+  /**
+   * Overhead crane rail — twin beams, cross girders and a parked trolley
+   * with hook and chain. No collision (it hangs above head height).
+   */
+  craneRail(axis, length, x, y, z, o = {}) {
+    const spread = o.spread || 1.4;
+    for (const s of [-1, 1]) {
+      if (axis === 'x') {
+        this.box(this.mats.beam, length, 0.18, 0.14, x, y, z + s * spread / 2, { cast: false });
+      } else {
+        this.box(this.mats.beam, 0.14, 0.18, length, x + s * spread / 2, y, z, { cast: false });
+      }
+    }
+    const n = Math.max(2, Math.round(length / 4));
+    for (let i = 0; i <= n; i++) {
+      const t = -length / 2 + (length / n) * i;
+      if (axis === 'x') this.box(this.mats.beam, 0.16, 0.12, spread + 0.2, x + t, y + 0.14, z, { cast: false });
+      else this.box(this.mats.beam, spread + 0.2, 0.12, 0.16, x, y + 0.14, z + t, { cast: false });
+    }
+    // Trolley + hoist chain + hook (parked at `o.trolley` offset along the run).
+    const off = o.trolley !== undefined ? o.trolley : length * 0.18;
+    const tx = axis === 'x' ? x + off : x;
+    const tz = axis === 'x' ? z : z + off;
+    this.box(this.mats.metalDark, axis === 'x' ? 0.9 : 0.6, 0.22, axis === 'x' ? 0.6 : 0.9,
+      tx, y - 0.2, tz, { cast: false });
+    this.cyl(this.mats.metalDark, 0.02, 0.02, 0.8, tx, y - 0.72, tz, { cast: false, seg: 6 });
+    this.box(this.mats.metal, 0.1, 0.16, 0.1, tx, y - 1.16, tz, { cast: false });
+    return null;
+  }
+
+  /** Free-standing radiation monitor — pole, detector head, display. */
+  radiationMonitor(x, z, o = {}) {
+    const pole = this.box(this.mats.metal, 0.1, 1.5, 0.1, x, 0.75, z, { physics: true });
+    this._child(pole, this.mats.metalDark, 0.34, 0.26, 0.2, 0, 0.82, 0);  // detector head
+    this._child(pole, this.mats.screen, 0.2, 0.14, 0.02, 0, 0.82, 0.11);  // display
+    this._child(pole, this.mats.beaconAmber, 0.08, 0.08, 0.06, 0.14, 0.82, 0.1);
+    this._child(pole, this.mats.metalDark, 0.3, 0.05, 0.3, 0, -0.72, 0);  // base plate
+    return pole;
+  }
+
+
   /** Wall-mounted fuse box (no collision — decor only). */
   fuseBox(x, y, z, face, o = {}) {
     const rotY = this.faceAngle(face);

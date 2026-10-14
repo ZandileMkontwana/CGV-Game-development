@@ -396,6 +396,21 @@
         color: #6f8ba1;
       }
 
+      /* Interact prompt — "[ E ] OPEN DOOR" shown near usable doors */
+      #interact-prompt {
+        position: absolute;
+        top: 58%; left: 50%;
+        transform: translateX(-50%);
+        font-size: 13px;
+        letter-spacing: 3px;
+        color: #9fe8ff;
+        text-shadow: 0 0 10px rgba(0, 170, 255, 0.5);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+      }
+      #interact-prompt.visible { opacity: 1; }
+
       /* Stealth vignette — red border that pulses when monster is near */
       #stealth-vignette {
         position: absolute;
@@ -578,6 +593,9 @@
         <div id="tutorial-sub"></div>
       </div>
 
+      <!-- Interact prompt (doors) -->
+      <div id="interact-prompt">[ E ] OPEN DOOR</div>
+
       <!-- Stealth HUD -->
       <div id="stealth-vignette"></div>
       <div id="stealth-warning">! DETECTED !</div>
@@ -615,7 +633,7 @@
       </div>
       <button id="btn-start">Start Game</button>
       <button id="btn-credits">Credits</button>
-      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB PULSE TOOL &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA &middot; M MUTE</div>
+      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB / F PULSE TOOL &middot; E OPEN DOORS &middot; T TORCH &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA &middot; M MUTE</div>
     </div>
 
     <!-- Pause menu -->

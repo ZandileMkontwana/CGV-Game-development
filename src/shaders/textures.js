@@ -13,6 +13,16 @@
  */
 import * as THREE from 'three';
 
+// ── Anisotropic filtering ───────────────────────────────────────────────────
+// Grazing angles (looking down a corridor) are exactly where corridors read
+// worst — without anisotropy the floor/wall detail smears into mush a few
+// metres ahead. The renderer knows the real hardware limit; Game.js feeds it
+// in once at boot. Every texture built through `toTexture` picks it up.
+let _maxAnisotropy = 1;
+export function setMaxAnisotropy(value) {
+  _maxAnisotropy = Math.max(1, value | 0);
+}
+
 // Small seeded PRNG so repeated calls with the same seed look identical.
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -124,6 +134,7 @@ function toTexture(canvas, { repeat = [1, 1], srgb = false } = {}) {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeat[0], repeat[1]);
+  tex.anisotropy = _maxAnisotropy;
   if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
@@ -196,4 +207,33 @@ export function buildGradientSkybox({ top = '#0a0e14', bottom = '#1c2733', glow 
   cubeTex.needsUpdate = true;
   _skyCache.set(key, cubeTex);
   return cubeTex;
+}
+
+/**
+ * Soft radial glow sprite — a white dot fading smoothly to transparent.
+ *
+ * Used as a map on additive-blended sprites (pulse-tool trail, spark glow)
+ * so they read as round plasma blips instead of hard-edged geometry. Tinted
+ * per-material via the sprite's `color`. Generated once, shared for the
+ * session — never dispose it from level teardown.
+ */
+let _softSprite = null;
+export function buildSoftSprite() {
+  if (_softSprite) return _softSprite;
+
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+  g.addColorStop(0.7, 'rgba(255,255,255,0.14)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+
+  _softSprite = new THREE.CanvasTexture(canvas);
+  _softSprite.colorSpace = THREE.SRGBColorSpace;
+  return _softSprite;
 }
