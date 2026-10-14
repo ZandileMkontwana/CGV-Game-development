@@ -93,6 +93,8 @@ export default class PostFX {
     this._dangerTarget = 0;
     this._time = 0;
     this._degradeLevel = 0;
+    this._shadowTime = 0;
+    this._warmupFrames = 15;
 
     this.composer = new EffectComposer(renderer);
     // Cap the post pipeline below the canvas DPR — bloom + grade at full
@@ -120,8 +122,8 @@ export default class PostFX {
     this.composer.addPass(this.grade);
 
     this._onResize = () => {
-      this.composer.setPixelRatio(this._maxPixelRatio * this._dynScale);
       this.composer.setSize(window.innerWidth, window.innerHeight);
+      this.resetFrameTiming();
     };
     window.addEventListener('resize', this._onResize);
   }
@@ -129,6 +131,21 @@ export default class PostFX {
   /** 0..1 — monster proximity horror. Smoothed internally. */
   setDanger(v) {
     this._dangerTarget = THREE.MathUtils.clamp(v, 0, 1);
+  }
+
+  setLevel(level) {
+    const uniforms = this.grade.uniforms;
+    uniforms.uGrain.value = level === 1 ? 0.012 : level === 2 ? 0.025 : 0.03;
+    uniforms.uAberration.value = level === 1 ? 0.0004 : 0.0008;
+    uniforms.uVignette.value = level === 1 ? 0.34 : 0.55;
+  }
+
+  /** Do not treat level construction, shader warm-up or resume as GPU load. */
+  resetFrameTiming() {
+    this._frameAccum = this._frameCount = 0;
+    this._warmupFrames = 15;
+    this._shadowTime = 0;
+    this._renderer.shadowMap.needsUpdate = true;
   }
 
   /** Called every frame; `dt` also drives the composer's internal timers. */
@@ -142,8 +159,11 @@ export default class PostFX {
     // Every ~0.4s, compare average frame time to a 60fps budget and scale the
     // post pipeline's pixel ratio up/down. Keeps the game playable on weak
     // GPUs instead of locking them at a slideshow.
-    this._frameAccum += dt;
-    this._frameCount++;
+    if (this._warmupFrames > 0) this._warmupFrames--;
+    else if (dt > 0 && dt < 0.15) {
+      this._frameAccum += dt;
+      this._frameCount++;
+    }
     if (this._frameAccum >= 0.4) {
       const avg = this._frameAccum / this._frameCount;
       this._frameAccum = 0;
@@ -154,12 +174,11 @@ export default class PostFX {
       if (scale !== this._dynScale) {
         this._dynScale = scale;
         this.composer.setPixelRatio(this._maxPixelRatio * scale);
-        this.composer.setSize(window.innerWidth, window.innerHeight);
       }
 
       // --- One-way quality fallback -------------------------------------------
       // If even 0.65x resolution can't hold ~30fps, shed whole features
-      // instead of blurring further: first bloom, then shadow updates. Never
+      // instead of blurring further: first bloom, then frequent shadow updates. Never
       // recovers — avoids flip-flopping between quality tiers mid-game.
       if (this._dynScale <= 0.66 && avg > 0.032) {
         if (this._degradeLevel === 0) {
@@ -167,11 +186,21 @@ export default class PostFX {
           this.composer.removePass(this.bloom);
         } else if (this._degradeLevel === 1) {
           this._degradeLevel = 2;
-          // Stop re-rendering shadow maps instead of disabling them: flipping
+          // Throttle shadow maps instead of disabling them: flipping
           // shadowMap.enabled changes shader program defines, forcing a full
           // scene-wide recompile that stalls for seconds on weak GPUs.
           this._renderer.shadowMap.autoUpdate = false;
         }
+      }
+    }
+
+    // Keep moving actors/doors and new levels' shadows correct at the lowest
+    // tier. A frozen shadow map can otherwise outlive the scene it belongs to.
+    if (this._degradeLevel === 2) {
+      this._shadowTime += dt;
+      if (this._shadowTime >= 0.1) {
+        this._renderer.shadowMap.needsUpdate = true;
+        this._shadowTime = 0;
       }
     }
 

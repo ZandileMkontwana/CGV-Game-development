@@ -426,10 +426,10 @@ export function decalMaterial(kind, color = '#e8b23a') {
 const THEME_CONFIG = {
   lab: {
     seed: 131,
-    wall: { base: '#97a3b4', seamX: 64, seamY: 128, grime: 5, rust: 0 },
-    wallDark: { base: '#5c6779', seamX: 64, seamY: 128, grime: 8, rust: 0 },
-    ceil: { base: '#828e9d', seamX: 64, seamY: 64, grime: 3, rust: 0 },
-    floor: { base: '#3d4653', grout: 'rgba(0,0,0,0.5)', wear: 8 },
+    wall: { base: '#aebcbd', seamX: 128, seamY: 256, grime: 2, rust: 0 },
+    wallDark: { base: '#3e535b', seamX: 128, seamY: 256, grime: 3, rust: 0 },
+    ceil: { base: '#263b44', seamX: 128, seamY: 128, grime: 1, rust: 0 },
+    floor: { base: '#34494e', grout: 'rgba(0,0,0,0.2)', wear: 2 },
     concrete: { base: '#565d68', cracks: 4, stains: 6 },
     grate: { base: '#1c222b', bar: '#8e9aa8' },
     screen: { base: '#04121a', fg: '#3fd9ff' },
@@ -441,25 +441,25 @@ const THEME_CONFIG = {
   },
   damaged: {
     seed: 233,
-    wall: { base: '#6a5a48', seamX: 64, seamY: 128, grime: 12, rust: 7 },
-    wallDark: { base: '#463a2e', seamX: 64, seamY: 128, grime: 14, rust: 9, scorch: 3 },
-    ceil: { base: '#3f362c', seamX: 64, seamY: 64, grime: 10, rust: 5 },
-    floor: { base: '#3a332b', grout: 'rgba(0,0,0,0.55)', wear: 16 },
+    wall: { base: '#626d6d', seamX: 128, seamY: 256, grime: 8, rust: 6 },
+    wallDark: { base: '#283b42', seamX: 128, seamY: 256, grime: 10, rust: 7, scorch: 3 },
+    ceil: { base: '#202d33', seamX: 128, seamY: 128, grime: 8, rust: 4 },
+    floor: { base: '#263b41', grout: 'rgba(0,0,0,0.3)', wear: 10 },
     concrete: { base: '#4a4239', cracks: 9, stains: 12 },
     grate: { base: '#181410', bar: '#7a6a58' },
-    screen: { base: '#140a04', fg: '#ffb04a' },
+    screen: { base: '#07151d', fg: '#71c9dc' },
     trim: 0x332b22, beam: 0x453b30, metal: 0x7a6d5c, metalDark: 0x39322a,
     panel: 0x4e4437, pipe: 0x80705c, crate: 0x79644a, locker: 0x5a5f68,
     debris: 0x4a4239, rubber: 0x1a1712, hazardColor: '#d99a2b',
-    accent: 0xffa62b, lamp: 0xffd9a0, lampLight: 0xffb460,
+    accent: 0x71c9dc, lamp: 0xffd9a0, lampLight: 0xffb460,
     exit: 0x5cff8a, warn: 0xffb340, emer: 0xff4030,
   },
   emergency: {
     seed: 337,
-    wall: { base: '#5c3a38', seamX: 64, seamY: 128, grime: 10, rust: 6, scorch: 6 },
-    wallDark: { base: '#3a2422', seamX: 64, seamY: 128, grime: 12, rust: 8, scorch: 9 },
-    ceil: { base: '#33231f', seamX: 64, seamY: 64, grime: 12, rust: 5, scorch: 4 },
-    floor: { base: '#33221f', grout: 'rgba(0,0,0,0.6)', wear: 18 },
+    wall: { base: '#515c61', seamX: 128, seamY: 256, grime: 9, rust: 5, scorch: 6 },
+    wallDark: { base: '#28353b', seamX: 128, seamY: 256, grime: 11, rust: 7, scorch: 9 },
+    ceil: { base: '#202a30', seamX: 128, seamY: 128, grime: 10, rust: 5, scorch: 4 },
+    floor: { base: '#29353a', grout: 'rgba(0,0,0,0.35)', wear: 14 },
     concrete: { base: '#3d2c28', cracks: 11, stains: 10 },
     grate: { base: '#150f0e', bar: '#6e524a' },
     screen: { base: '#1a0505', fg: '#ff5a3c' },
@@ -485,14 +485,15 @@ export function getThemeMaterials(themeName) {
   const wallTex = panelTexture({ ...t.wall, seed: t.seed, repeat: [4, 2] });
   const wallDarkTex = panelTexture({ ...t.wallDark, seed: t.seed + 1, repeat: [4, 2] });
   const ceilTex = panelTexture({ ...t.ceil, seed: t.seed + 7, repeat: [5, 5] });
-  const floorTex = tileTexture({ ...t.floor, seed: t.seed + 2, repeat: [7, 7] });
+  const floorRepeat = themeName === 'lab' ? [3, 3] : [7, 7];
+  const floorTex = tileTexture({ ...t.floor, seed: t.seed + 2, repeat: floorRepeat });
   const grateTex = gratingTexture({ ...t.grate, seed: t.seed + 3, repeat: [3, 3] });
   const concreteTex = concreteTexture({ ...t.concrete, seed: t.seed + 4, repeat: [4, 4] });
   const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5 });
   const screenTex2 = screenTexture({ ...t.screen, seed: t.seed + 6 });
 
-  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
-  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: [7, 7], bumpStrength: 1.8, roughnessBase: 0.7, roughnessVariance: 0.4 });
+  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.45 : 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
+  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 0.6 : 1.8, roughnessBase: themeName === 'lab' ? 0.85 : 0.7, roughnessVariance: themeName === 'lab' ? 0.12 : 0.4 });
   const propPBR = buildPBRMaps({ seed: t.seed + 30, repeat: [2, 2], bumpStrength: 1.2, roughnessBase: 0.65, roughnessVariance: 0.3 });
 
   const std = (opts) => new THREE.MeshStandardMaterial(opts);
