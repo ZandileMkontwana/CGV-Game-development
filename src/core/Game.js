@@ -824,13 +824,23 @@ export default class Game {
       if (levelNum !== 3) this.ui.showTutorial(null);
     }
 
-    // 11. Level 2 runs the breach briefing: the PA confirms what happened in
-    //     Lab A-2, then the instructions point at the security locker. Beats
-    //     only advance during 'playing' so the black transition hides none.
+    // 11. Level 2 opens on the recorded sector briefing: the depressurization
+    //     alert, then the reactor-isolation announcement; the isolation line
+    //     replays once mid-level. The instructions then point at the security
+    //     locker. Beats only advance during 'playing' so the black transition
+    //     hides none of them.
     this._l2Opening = levelNum === 2 ? {
       t: 0, step: 0,
       beats: [
-        { at: 1.2, run: () => this._announce('breach') },
+        { at: 0.3, run: () => {
+          const starts = this.audio.playClipSequence(['depressurize', 'sectorIsolated']);
+          this.ui.showAnnouncement(PA_ANNOUNCEMENTS.depressurize.text);
+          // Swap the caption over when the isolation announcement begins.
+          if (starts[1] != null) {
+            setTimeout(() => this.ui.showAnnouncement(PA_ANNOUNCEMENTS.sectorIsolated.text),
+              starts[1] * 1000);
+          }
+        } },
         { at: 7.5, run: () => this.ui.showTutorial({
           text: 'THE LAB A-2 CULTURE WENT WRONG — SOMETHING IS LOOSE IN SECTOR B',
           sub: 'It hunts by sight and sound. Keep your distance, stay behind solid cover.',
@@ -840,6 +850,11 @@ export default class Game {
           sub: 'Walk up to the open locker and press E to take the pulse sidearm.',
         }) },
         { at: 21.0, run: () => this.ui.showTutorial(null) },
+        { at: 50.0, run: () => {
+          // Mid-level: the sector announces re-isolation over the hunt.
+          this.audio.playClipSequence(['sectorIsolated']);
+          this.ui.showAnnouncement(PA_ANNOUNCEMENTS.sectorIsolated.text);
+        } },
       ],
     } : null;
   }
@@ -864,9 +879,10 @@ export default class Game {
   }
 
   /**
-   * Level 2 opening — the breach briefing. Staged text beats run while the
-   * player keeps control: the PA confirms the containment breach, then the
-   * instructions point at the security locker. Cleared once all beats fire.
+   * Level 2 opening — the sector briefing. The recorded depressurization alert
+   * and reactor-isolation announcement play first (and the isolation line
+   * replays mid-level), then the instructions point at the security locker.
+   * Staged beats run while the player keeps control; cleared once all fire.
    */
   _updateL2Opening(dt) {
     const seq = this._l2Opening;

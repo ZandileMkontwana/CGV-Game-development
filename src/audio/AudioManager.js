@@ -63,6 +63,8 @@ export default class AudioManager {
     this._suspenseWanted = false; // requested before the sample finished decoding
     this._suspenseFailed = false; // sample unavailable → use the synth fallback
     this._l1Ambience = null; // { buffer } recorded Level-1 machinery ambience loop
+    this._paClips = {};      // name → { buffer } recorded P.A. announcement clips
+    this._paWanted = null;   // requested clip sequence, replayed once decoded
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -130,6 +132,7 @@ export default class AudioManager {
     this._loadDoorSample();
     this._loadSuspenseSample();
     this._loadLevel1Ambience();
+    this._loadAnnouncementClips();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -1141,6 +1144,59 @@ export default class AudioManager {
     const offset = Math.max(0, ((a - 2) * win) / rate);
     const end = Math.min(buffer.duration, ((b + 3) * win) / rate);
     return { offset, duration: Math.max(0.05, end - offset) };
+  }
+
+  /** Fetch + decode the recorded P.A. announcement clips, keyed by name. */
+  async _loadAnnouncementClips() {
+    if (!this.ctx) return;
+    const clips = {
+      depressurize: '/assets/audio/announcements/depressurize.mp3',
+      sectorIsolated: '/assets/audio/announcements/sector_isolated.mp3',
+    };
+    for (const [name, url] of Object.entries(clips)) {
+      if (this._paClips[name]) continue;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        this._paClips[name] = { buffer: await this.ctx.decodeAudioData(await res.arrayBuffer()) };
+      } catch (e) { /* skip this clip */ }
+    }
+    // A sequence requested while the clips were still decoding plays now.
+    if (this._paWanted) {
+      const wanted = this._paWanted;
+      this._paWanted = null;
+      this.playClipSequence(wanted);
+    }
+  }
+
+  /**
+   * Play recorded P.A. clips back-to-back through the SFX bus. Returns each
+   * clip's start offset in seconds from now so callers can sync captions.
+   */
+  playClipSequence(names, gap = 0.4, vol = 0.9) {
+    if (!this._unlocked || this.muted) return [];
+    if (!names.some((n) => this._paClips[n])) { this._paWanted = names; return []; }
+    const ctx = this.ctx;
+    const starts = [];
+    let at = ctx.currentTime + 0.1;
+    for (const name of names) {
+      const clip = this._paClips[name];
+      if (!clip) continue;
+      const src = ctx.createBufferSource();
+      src.buffer = clip.buffer;
+      const g = this._gain(MIN_GAIN);
+      const dur = clip.buffer.duration;
+      g.gain.setValueAtTime(MIN_GAIN, at);
+      g.gain.exponentialRampToValueAtTime(vol, at + 0.05);
+      g.gain.setValueAtTime(vol, at + Math.max(0.1, dur - 0.15));
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, at + dur);
+      src.connect(g).connect(this.master);
+      src.start(at);
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      starts.push(at - ctx.currentTime);
+      at += dur + gap;
+    }
+    return starts;
   }
 
   /** Fetch + decode the recorded Level-1 machinery ambience loop. */

@@ -13,6 +13,8 @@ export const PA_ANNOUNCEMENTS = {
   power: { text: 'Auxiliary power restored. Resuming culture protocol.' },
   bypass: { text: 'Emergency bypass released. Follow the green route to the control room and release the exits.' },
   breach: { text: 'WARNING: Containment breach detected. Lockdown initiated.' },
+  depressurize: { text: 'AUTOMATIC DEPRESSURIZATION SYSTEM ENGAGED. SECTOR B VENTING TO VACUUM.' },
+  sectorIsolated: { text: 'REACTOR SECTOR IS ISOLATED. EVACUATE VIA CORE ACCESS.' },
   failsafe: { text: 'Failsafe protocol active. Structural demolition in T-minus 15 minutes.' },
   demolition: { text: 'DEMOLITION SEQUENCE ENGAGED. EVACUATE IMMEDIATELY.' },
 };
