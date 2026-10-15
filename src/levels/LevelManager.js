@@ -895,6 +895,28 @@ export default class LevelManager {
   }
 
   /**
+   * A panicked staff member fleeing continuously through a chaos area. Unlike
+   * evacuateWalkers() the loop never ends, so Level 3 always reads as a crowd
+   * running for their lives. Reuses the worker's `fleeing` animation (forward
+   * lean, pumping arms, glances back over the shoulder).
+   */
+  _addPanicRunner(path, o = {}) {
+    const w = this._addWalker(o.variant || 'tech', path, {
+      speed: o.speed || 3.4 + Math.random() * 1.3,
+    });
+    w.state = 'flee';
+    w.fleeRoute = path;
+    w.fleeSpeed = w.speed;
+    w.loopFlee = true;          // cycle the route forever instead of leaving
+    w.pause = Math.random() * 1.6;
+    w.idx = path.length > 1 ? 1 : 0;
+    // Crowd NPCs are ambience — drop their shadow casting to keep the already
+    // heavy Level-3 frame budget in check.
+    w.npc.group.traverse((c) => { if (c.isMesh) c.castShadow = false; });
+    return w;
+  }
+
+  /**
    * Place a fallen worker — static storytelling scenery (the breach's human
    * cost). The joint pose is set once by part name (update() is never
    * called) and the figure is laid on its back, then spun to place it.
@@ -963,10 +985,14 @@ export default class LevelManager {
           if (dist < 0.25) {
             w.idx++;
             if (w.state === 'flee') {
-              // Reached the entrance — staff have left the level.
               if (w.idx >= route.length) {
-                w.state = 'gone';
-                g.visible = false;
+                if (w.loopFlee) {
+                  w.idx = 0;                 // keep the crowd panicking forever
+                } else {
+                  // Reached the entrance — staff have left the level.
+                  w.state = 'gone';
+                  g.visible = false;
+                }
               }
             } else if (w.idx >= route.length) {
               w.idx = 0;                        // loop the patrol
@@ -2052,6 +2078,19 @@ export default class LevelManager {
     // Thick smoke columns billowing up where there are no flames.
     this._createFire('l3-smoke-arena', 3.2, 0.5, -30.0, { flames: 0, smoke: 22, scale: 2.0, sRate: 0.11, light: false });
     this._createFire('l3-smoke-escape', -1.6, 0.5, -48.0, { flames: 0, smoke: 16, scale: 1.6, sRate: 0.14, light: false });
+
+    // ── Panicked crowd — staff fleeing through the burning arena ─────────
+    const panicRoutes = [
+      [{ x: 1.5, z: -12.5 }, { x: 1.0, z: -40.5 }],
+      [{ x: -3.5, z: -13.5 }, { x: -3.0, z: -39.5 }],
+      [{ x: 4.0, z: -15.0 }, { x: 3.2, z: -38.0 }],
+      [{ x: -5.5, z: -16.5 }, { x: 5.5, z: -35.5 }, { x: 5.0, z: -18.0 }],
+      [{ x: 0.0, z: -13.0 }, { x: -8.0, z: -20.0 }, { x: -8.5, z: -30.0 }],
+      [{ x: 2.5, z: -35.0 }, { x: -1.5, z: -13.5 }],
+    ];
+    panicRoutes.forEach((route, i) => {
+      this._addPanicRunner(route, { variant: i % 2 ? 'coat' : 'security', speed: 3.6 + (i % 3) * 0.4 });
+    });
 
     // ── Fog ──────────────────────────────────────────────────────────────
     this.fogColor = 0x10131a;
