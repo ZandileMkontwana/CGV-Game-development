@@ -92,19 +92,24 @@ function bumpTexture() {
   return t;
 }
 
-/** Mottled, veined creature hide + matching bump map. */
+/**
+ * Mottled hide of a scientist the culture got into: necrotic tissue, chemical
+ * burns, weeping reagent blisters and veins. Carries a matching bump map.
+ */
 function skinTextures() {
   if (_skinTexCache) return _skinTexCache;
   const c = document.createElement('canvas');
   c.width = c.height = 256;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#221a1b';
+  // Necrotic base — dead grey-brown tissue, not machine plating.
+  ctx.fillStyle = '#241b19';
   ctx.fillRect(0, 0, 256, 256);
-  // Large mottling — bruises, darker hide patches, raw spots.
-  for (let i = 0; i < 240; i++) {
+
+  // Bruised, rotting patches.
+  for (let i = 0; i < 220; i++) {
     const r = 6 + Math.random() * 26;
     ctx.globalAlpha = 0.1 + Math.random() * 0.16;
-    ctx.fillStyle = Math.random() < 0.45 ? '#120c0d' : Math.random() < 0.75 ? '#332426' : '#4a2d2a';
+    ctx.fillStyle = Math.random() < 0.4 ? '#120c0d' : Math.random() < 0.7 ? '#33262a' : '#4a2d2a';
     ctx.beginPath();
     ctx.ellipse(
       Math.random() * 256, Math.random() * 256,
@@ -112,11 +117,51 @@ function skinTextures() {
     );
     ctx.fill();
   }
-  // Veins — thin branching lines.
-  ctx.globalAlpha = 0.3;
-  ctx.strokeStyle = '#5c2a23';
+
+  // Chemical burns — caustic green/amber stains with a charred crusted rim.
+  for (let i = 0; i < 16; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const r = 10 + Math.random() * 34;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, Math.random() < 0.55 ? 'rgba(74,102,38,0.55)' : 'rgba(122,96,32,0.5)');
+    g.addColorStop(0.75, 'rgba(38,26,12,0.4)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 6.283);
+    ctx.fill();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = 'rgba(18,12,8,0.8)';
+    ctx.lineWidth = 1 + Math.random() * 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.78, Math.random() * 6.28, Math.random() * 6.28 + 1.6);
+    ctx.stroke();
+  }
+
+  // Weeping blisters — amber pustules with a wet specular catch.
+  for (let i = 0; i < 120; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const r = 1.6 + Math.random() * 3.4;
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = Math.random() < 0.6 ? '#c9a44c' : '#8fae4a';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 6.283);
+    ctx.fill();
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = 'rgba(255,255,235,0.55)';
+    ctx.beginPath();
+    ctx.arc(x - r * 0.3, y - r * 0.35, r * 0.32, 0, 6.283);
+    ctx.fill();
+  }
+
+  // Veins — red and sickly green, branching.
   ctx.lineWidth = 1;
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 26; i++) {
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = Math.random() < 0.5 ? '#5c2a23' : '#3f5a2a';
     let x = Math.random() * 256;
     let y = Math.random() * 256;
     ctx.beginPath();
@@ -128,6 +173,7 @@ function skinTextures() {
     }
     ctx.stroke();
   }
+
   // Fine speckle for pores.
   ctx.globalAlpha = 0.55;
   for (let i = 0; i < 1500; i++) {
@@ -462,6 +508,166 @@ export function createScientist() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Worker — walking station staff (Level 1 pre-breach ambience)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Palette + headgear + hand prop per staff role. */
+const WORKER_VARIANTS = {
+  tech:       { suit: 0xb95c22, suitDark: 0x8a4419, vest: 0x4a505a, hair: 0x2f2620, head: 'cap', prop: 'toolbox' },
+  coat:       { suit: 0xe6e9ee, suitDark: 0xc4cad4, vest: 0x39424c, hair: 0x4a3a2c, head: 'bare', prop: 'clipboard' },
+  supervisor: { suit: 0x3a4a55, suitDark: 0x2c3a44, vest: 0xd8b62a, hair: 0x554838, head: 'hardhat', prop: 'clipboard' },
+  // Station security — navy uniform, black tactical vest, radio handset.
+  security:   { suit: 0x2e3947, suitDark: 0x222b35, vest: 0x171c22, hair: 0x111417, head: 'cap', prop: 'radio' },
+};
+
+/**
+ * A walking NPC — reactor-station staff on patrol routes (LevelManager
+ * moves the group; this only animates). Same builder shape as the others:
+ * { group, update(dt, state) }, with state = { moving, speed, fleeing }.
+ *
+ * The stride scales with `speed`, idle is a relaxed sway with a lazy head
+ * scan, and `fleeing` switches to a panicked run — forward lean, pumping
+ * arms and a glance back over the shoulder (the mutation alarm sends them
+ * all running for the entrance).
+ */
+export function createWorker(variant = 'tech') {
+  const cfg = WORKER_VARIANTS[variant] || WORKER_VARIANTS.tech;
+  const group = new THREE.Group();
+
+  const bump = bumpTexture();
+  const suit = std(cfg.suit, { roughness: 0.8, metalness: 0.1, bumpMap: bump, bumpScale: 0.01 });
+  const suitDark = std(cfg.suitDark, { roughness: 0.85, metalness: 0.1, bumpMap: bump, bumpScale: 0.01 });
+  const vest = std(cfg.vest, { roughness: 0.7, metalness: 0.15, bumpMap: bump, bumpScale: 0.008 });
+  const skin = std(0xd8a97c, { roughness: 0.9, metalness: 0 });
+  const hairMat = std(cfg.hair, { roughness: 0.95, metalness: 0 });
+  const shoe = std(0x22262c, { roughness: 0.9 });
+  const badge = std(0x223344, { roughness: 0.4, metalness: 0.3, emissive: 0x38c8ff, emissiveIntensity: 0.5 });
+
+  // Pelvis + torso with hi-vis vest and ID badge. Joints carry part names
+  // so LevelManager can pose casualties by name (they never call update()).
+  part(group, new THREE.BoxGeometry(0.32, 0.16, 0.22), suitDark, 0, 0.84, 0);
+  const torso = joint(group, 0, 0.92, 0);
+  torso.name = 'torso';
+  part(torso, new THREE.BoxGeometry(0.4, 0.48, 0.24), suit, 0, 0.24, 0);
+  part(torso, new THREE.BoxGeometry(0.42, 0.34, 0.27), vest, 0, 0.26, 0);
+  part(torso, new THREE.BoxGeometry(0.09, 0.11, 0.02), badge, -0.13, 0.3, 0.135);
+
+  // Head with variant headgear — work cap, bare, or hi-vis hard hat.
+  const head = joint(torso, 0, 0.56, 0);
+  head.name = 'head';
+  part(head, new THREE.BoxGeometry(0.19, 0.2, 0.19), skin, 0, 0.08, 0.01);
+  part(head, new THREE.BoxGeometry(0.205, 0.07, 0.205), hairMat, 0, 0.175, -0.015);
+  if (cfg.head === 'cap') {
+    part(head, new THREE.BoxGeometry(0.22, 0.06, 0.22), suitDark, 0, 0.22, 0);
+    part(head, new THREE.BoxGeometry(0.19, 0.025, 0.09), suitDark, 0, 0.2, 0.13);
+  } else if (cfg.head === 'hardhat') {
+    part(head, new THREE.BoxGeometry(0.25, 0.13, 0.25), vest, 0, 0.235, 0);
+    part(head, new THREE.BoxGeometry(0.24, 0.03, 0.12), vest, 0, 0.185, 0.14);
+  }
+
+  // Arms — the left hand holds the clipboard (if any), the right swings free.
+  const buildArm = (side) => {
+    const s = side === 'l' ? -1 : 1;
+    const arm = joint(torso, s * 0.28, 0.44, 0);
+    part(arm, new THREE.BoxGeometry(0.11, 0.28, 0.11), suit, 0, -0.15, 0);
+    const elbow = joint(arm, 0, -0.29, 0);
+    part(elbow, new THREE.BoxGeometry(0.1, 0.26, 0.1), suitDark, 0, -0.13, 0);
+    part(elbow, new THREE.BoxGeometry(0.08, 0.09, 0.08), skin, 0, -0.28, 0);
+    arm.name = side === 'l' ? 'armL' : 'armR';
+    elbow.name = side === 'l' ? 'elbL' : 'elbR';
+    return { arm, elbow };
+  };
+  const { arm: armL, elbow: elbL } = buildArm('l');
+  const { arm: armR, elbow: elbR } = buildArm('r');
+
+  // Role prop in the left hand — toolbox or clipboard.
+  if (cfg.prop === 'toolbox') {
+    const boxMat = std(0x8a2f22, { roughness: 0.6, metalness: 0.3 });
+    part(elbL, new THREE.BoxGeometry(0.26, 0.13, 0.16), boxMat, 0, -0.34, 0.05);
+    part(elbL, new THREE.BoxGeometry(0.1, 0.03, 0.03), boxMat, 0, -0.27, 0.05); // handle
+  } else if (cfg.prop === 'clipboard') {
+    const clipMat = std(0xd9dde3, { roughness: 0.7 });
+    part(elbL, new THREE.BoxGeometry(0.17, 0.23, 0.02), clipMat, 0, -0.31, 0.07);
+    part(elbL, new THREE.BoxGeometry(0.1, 0.04, 0.03), suitDark, 0, -0.21, 0.07); // clamp
+  } else if (cfg.prop === 'radio') {
+    // Security radio — handset held at the chest, stub antenna up.
+    const radioMat = std(0x14181d, { roughness: 0.5, metalness: 0.45 });
+    part(elbL, new THREE.BoxGeometry(0.09, 0.16, 0.05), radioMat, 0, -0.3, 0.08);
+    part(elbL, new THREE.BoxGeometry(0.015, 0.11, 0.015), radioMat, 0.03, -0.19, 0.08);
+  }
+
+  // Legs.
+  const buildLeg = (side) => {
+    const s = side === 'l' ? -1 : 1;
+    const leg = joint(group, s * 0.11, 0.8, 0);
+    part(leg, new THREE.BoxGeometry(0.14, 0.36, 0.15), suit, 0, -0.18, 0);
+    const knee = joint(leg, 0, -0.36, 0);
+    part(knee, new THREE.BoxGeometry(0.12, 0.34, 0.13), suitDark, 0, -0.17, 0);
+    part(knee, new THREE.BoxGeometry(0.13, 0.08, 0.24), shoe, 0, -0.37, 0.05);
+    leg.name = side === 'l' ? 'legL' : 'legR';
+    knee.name = side === 'l' ? 'kneeL' : 'kneeR';
+    return { leg, knee };
+  };
+  const { leg: legL, knee: kneeL } = buildLeg('l');
+  const { leg: legR, knee: kneeR } = buildLeg('r');
+
+  // ── Animation state (closure — no per-frame allocation) ───────────────────
+  const TORSO_BASE_Y = 0.92;
+  const holdsClipboard = cfg.prop === 'clipboard';
+  let t = 0;
+  let phase = 0;   // stride phase
+  let blend = 0;   // smoothed 0..1 move blend
+  let panic = 0;   // smoothed 0..1 flee blend
+
+  const update = (dt, s) => {
+    t += dt;
+    const spd = (s && s.speed) || 1.0;
+    const moving = !!(s && s.moving);
+    const fleeing = !!(s && s.fleeing);
+    blend += ((moving ? 1 : 0) - blend) * Math.min(1, dt * 8);
+    panic += ((fleeing ? 1 : 0) - panic) * Math.min(1, dt * 4);
+    if (blend > 0.02) phase += dt * (3.0 + spd * 2.6 + panic * 3.2);
+
+    const swing = Math.sin(phase) * (0.42 + panic * 0.18) * blend;
+
+    // Legs — plain stride; a touch more knee lift while fleeing.
+    legL.rotation.x = swing;
+    legR.rotation.x = -swing;
+    kneeL.rotation.x = Math.max(0, -swing) * (1.05 + panic * 0.3);
+    kneeR.rotation.x = Math.max(0, swing) * (1.05 + panic * 0.3);
+
+    // Arms — counter-swing; a held prop steadies the left arm, fleeing
+    // raises the right in a pumping guard.
+    const armKeep = holdsClipboard ? 0.3 : 1;
+    armL.rotation.x = -swing * 0.7 * armKeep - panic * 0.3;
+    armR.rotation.x = swing * 0.7 + panic * 0.55;
+    armL.rotation.z = 0.06;
+    armR.rotation.z = -0.06;
+    elbL.rotation.x = -0.3 - blend * 0.2;
+    elbR.rotation.x = -0.3 - blend * 0.25 - panic * 0.5;
+
+    // Torso — upright at idle (breathing sway), forward lean while fleeing.
+    const idle = 1 - blend;
+    torso.rotation.x = blend * 0.06 + panic * 0.22 + Math.sin(t * 2.0) * 0.012 * idle;
+    torso.position.y = TORSO_BASE_Y + Math.abs(Math.cos(phase)) * 0.03 * blend;
+
+    // Head — lazy scan while strolling; glances back over the shoulder
+    // every couple of seconds mid-flee (checking what's behind them).
+    let headYaw = Math.sin(t * 0.6) * 0.35 * idle + Math.sin(t * 0.35) * 0.22 * blend;
+    if (panic > 0.3) {
+      const glance = Math.sin(t * 1.1) > 0.35 ? 1 : 0;
+      headYaw += glance * 1.9 * panic;
+      head.rotation.x = 0.08;
+    } else {
+      head.rotation.x = 0.03;
+    }
+    head.rotation.y += (headYaw - head.rotation.y) * Math.min(1, dt * 6);
+  };
+
+  return { group, update };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Monster — hunched creature, mounted weak points
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -482,6 +688,21 @@ export function createMonster() {
   const maw = std(0x2a0a08, { emissive: 0x7a1408, emissiveIntensity: 0.55, roughness: 0.4 });
   const eyeMat = std(0x1a0505, { roughness: 0.3, emissive: 0xff3a1a, emissiveIntensity: 1.6 });
   const spineGlowMat = std(0x1a0505, { roughness: 0.5, emissive: 0xff2a1a, emissiveIntensity: 0.9 });
+  // The person it used to be: the culture fused their lab gear into the hide.
+  const coatTex = coatTextures(true);
+  const rag = std(0xdadde3, {
+    map: coatTex.map, bumpMap: coatTex.bump, bumpScale: 0.02,
+    roughness: 0.94, metalness: 0.02,
+  });
+  // Weeping reagent blisters and the glow of the culture burning inside it.
+  const blister = std(0xd8b256, {
+    roughness: 0.25, metalness: 0.04, transparent: true, opacity: 0.94,
+    emissive: 0x5a4210, emissiveIntensity: 0.4,
+  });
+  const chemical = std(0x9be05a, {
+    roughness: 0.28, metalness: 0.04,
+    emissive: 0x46c22e, emissiveIntensity: 1.1,
+  });
 
   // Pelvis + hunched spine — organic masses instead of boxes.
   const pelvis = joint(group, 0, 0.32, 0);
@@ -533,6 +754,61 @@ export function createMonster() {
     part(spine, glowGeo, spineGlowMat, 0, 0.12 + i * 0.17, -0.24 - i * 0.02);
   }
 
+  // ── Chemical mutation dressing ────────────────────────────────────────────
+  // The culture has grown through the body: weeping blisters, a ruptured
+  // reagent pocket and asymmetric fleshy swellings.
+  const blisterGeo = new THREE.SphereGeometry(0.05, 8, 6);
+  const blisters = [];
+  const blisterSpots = [
+    [0.3, 0.42, 0.1], [-0.32, 0.14, 0.06], [0.3, 0.1, -0.12],
+    [-0.18, 0.48, -0.16], [0.12, 0.62, -0.2], [-0.3, -0.02, 0.14],
+  ];
+  for (let i = 0; i < blisterSpots.length; i++) {
+    const [x, y, z] = blisterSpots[i];
+    const b = new THREE.Mesh(blisterGeo, blister);
+    b.position.set(x, y, z);
+    b.scale.setScalar(0.7 + (i % 3) * 0.35);
+    b.castShadow = true;
+    spine.add(b);
+    blisters.push(b);
+  }
+
+  // Ruptured reagent pocket low on the abdomen — the wound that keeps working.
+  const fissure = part(pelvis, new THREE.BoxGeometry(0.3, 0.1, 0.06), chemical, 0, 0.02, 0.29);
+  fissure.rotation.z = 0.28;
+  const dripGeo = new THREE.ConeGeometry(0.022, 0.11, 6);
+  for (let i = -1; i <= 1; i++) {
+    const drip = new THREE.Mesh(dripGeo, chemical);
+    drip.position.set(i * 0.09, -0.1, 0.28 - Math.abs(i) * 0.02);
+    drip.rotation.x = Math.PI; // pointed down — it is leaking
+    pelvis.add(drip);
+  }
+
+  // Growths are not symmetrical — the mutation pushed the body out of shape.
+  const tumorGeo = new THREE.SphereGeometry(0.11, 10, 8);
+  const tumorA = new THREE.Mesh(tumorGeo, chitin);
+  tumorA.position.set(-0.2, 0.42, -0.14);
+  tumorA.scale.set(1.25, 0.85, 1.1);
+  tumorA.castShadow = true;
+  spine.add(tumorA);
+  const tumorB = new THREE.Mesh(tumorGeo, chitinDark);
+  tumorB.position.set(0.24, 0.14, -0.18);
+  tumorB.scale.set(1.1, 1.0, 1.3);
+  tumorB.castShadow = true;
+  spine.add(tumorB);
+
+  // Culture tendrils hanging off the left flank — they keep moving on their own.
+  const tendrils = [];
+  const tendrilGeo = new THREE.CylinderGeometry(0.02, 0.006, 0.34, 6);
+  for (let i = 0; i < 3; i++) {
+    const tendril = new THREE.Mesh(tendrilGeo, sinew);
+    tendril.position.set(-0.3 + i * 0.05, -i * 0.03, -0.06 - i * 0.04);
+    tendril.rotation.z = 0.3 + i * 0.12;
+    tendril.castShadow = true;
+    pelvis.add(tendril);
+    tendrils.push(tendril);
+  }
+
   // Head — gaunt elongated skull, hinged jaw, deep-set ember eyes.
   const neck = joint(spine, 0, 0.56, 0.2);
   const neckMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 0.24, 8), sinew);
@@ -578,6 +854,29 @@ export function createMonster() {
     up.rotation.x = Math.PI - 0.12;
     neck.add(up);
   }
+
+  // ── Fused lab gear ────────────────────────────────────────────────────────
+  // The coat, the badge and the goggles it was exposed in — evidence this was
+  // a person working with cultures, not a machine.
+  const collar = new THREE.Mesh(new THREE.TorusGeometry(0.155, 0.045, 6, 14), rag);
+  collar.position.set(0, -0.05, -0.02);
+  collar.rotation.x = 1.25;
+  collar.castShadow = true;
+  neck.add(collar);
+  const ragStripGeo = new THREE.BoxGeometry(0.06, 0.22, 0.012);
+  for (let i = -1; i <= 1; i++) {
+    const strip = new THREE.Mesh(ragStripGeo, rag);
+    strip.position.set(i * 0.1, -0.15 - Math.abs(i) * 0.03, -0.1 - Math.abs(i) * 0.03);
+    strip.rotation.set(0.2, 0, i * 0.35);
+    neck.add(strip);
+  }
+  // Scorched ID badge still clipped to the upper chest, clear of the growths.
+  part(spine, new THREE.BoxGeometry(0.1, 0.07, 0.02), bone, -0.26, 0.52, 0.24);
+  part(spine, new THREE.BoxGeometry(0.02, 0.16, 0.012), chitinDark, -0.24, 0.44, 0.24);
+  // Cracked safety goggles pushed up onto the brow, one lens still glowing.
+  const band = part(neck, new THREE.BoxGeometry(0.34, 0.05, 0.09), rag, 0, 0.14, 0.16);
+  band.rotation.x = -0.3;
+  part(neck, new THREE.BoxGeometry(0.1, 0.05, 0.05), chemical, -0.12, 0.06, 0.16);
 
   // Long knuckle-dragging arms — tapered limbs, exposed forearm muscle,
   // bone claws.
@@ -654,9 +953,20 @@ export function createMonster() {
   const { hip: hipL, knee: kneeL } = buildLeg('l');
   const { hip: hipR, knee: kneeR } = buildLeg('r');
 
-  // Weak points mount in sockets on the animated chest and shoulders.
-  // PulseTool still raycasts these spheres; sockets follow their animated joints.
-  const wpGeo = new THREE.SphereGeometry(0.28, 10, 10);
+  // Exposed culture sacs — the vulnerable growths. PulseTool raycasts these
+  // meshes and ShaderManager swaps in the glow material, so the geometry stays
+  // roughly sphere-sized for forgiving aiming.
+  const wpGeo = new THREE.IcosahedronGeometry(0.27, 1);
+  {
+    // Rough the surface up so the sacs read as growths, not machine parts.
+    const pos = wpGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const n = 0.82 + Math.random() * 0.36;
+      pos.setXYZ(i, pos.getX(i) * n, pos.getY(i) * n, pos.getZ(i) * n);
+    }
+    pos.needsUpdate = true;
+    wpGeo.computeVertexNormals();
+  }
   const socketGeo = new THREE.SphereGeometry(0.25, 8, 8);
   const wpOffsets = [
     { parent: spine, x: 0, y: 0.3, z: 0.3 },    // chest, forward of the ribcage
@@ -683,6 +993,18 @@ export function createMonster() {
     wpMesh.userData.destroyed = false;
     off.parent.add(wpMesh);
     weakPoints.push(wpMesh);
+    // A ring of reagent blisters so the sac grows out of living tissue.
+    for (let k = 0; k < 3; k++) {
+      const a = k * 2.1 + i;
+      const b = new THREE.Mesh(blisterGeo, blister);
+      b.position.set(
+        off.x + Math.cos(a) * 0.19,
+        off.y + Math.sin(a) * 0.15,
+        off.z * 0.86 - 0.12 + Math.sin(a * 1.7) * 0.1
+      );
+      b.scale.setScalar(0.8 + k * 0.25);
+      off.parent.add(b);
+    }
   }
 
   // ── Animation state ───────────────────────────────────────────────────────
@@ -767,6 +1089,18 @@ export function createMonster() {
     eyeMat.emissiveIntensity = (state === 'chase' ? 2.1 + 0.6 * Math.sin(t * 9)
       : 1.1 + 0.5 * Math.sin(t * 5)) + (jerk ? 0.8 : 0);
     spineGlowMat.emissiveIntensity = 0.7 + 0.3 * Math.sin(t * 3.2 + 1.3);
+
+    // The culture inside it keeps working: blisters swell, the reagent pocket
+    // pulses, and the tendrils sway even when the body is standing still.
+    blister.emissiveIntensity = 0.3 + 0.2 * Math.sin(t * 2.1);
+    for (let i = 0; i < blisters.length; i++) {
+      blisters[i].scale.setScalar((0.7 + (i % 3) * 0.35) * (1 + 0.05 * Math.sin(t * 2.4 + i)));
+    }
+    chemical.emissiveIntensity = 0.9 + 0.4 * Math.sin(t * 3.1 + 0.7);
+    const sway = dead ? 0.25 : 1;
+    for (let i = 0; i < tendrils.length; i++) {
+      tendrils[i].rotation.x = Math.sin(t * 1.7 + i * 1.3) * 0.3 * sway;
+    }
   };
 
   return { group, update, bodyMat: chitin, hitMeshes: [chestMesh, headMesh], weakPoints };

@@ -53,6 +53,11 @@ export default class PulseTool {
     // --- Current level ------------------------------------------------------
     this._level = 1;
 
+    // --- Arming gate (Level 2 opens unarmed) ---------------------------------
+    // Game.js flips this off when Level 2 loads; firing is ignored until the
+    // player takes the pulse sidearm from the staging-bay security locker.
+    this.enabled = true;
+
     // --- Event listeners ----------------------------------------------------
     this._listeners = { hit: [], miss: [], fire: [] };
 
@@ -172,7 +177,10 @@ export default class PulseTool {
     }
 
     // --- Detect fire input (left-click or F key) ----------------------------
-    const wantsFire = this.input.mouse.clicked || this.input.justPressed('KeyF');
+    // The arming gate (Level 2) silently swallows input while unarmed — the
+    // briefing tells the player where to pick the sidearm up.
+    const wantsFire = this.enabled !== false
+      && (this.input.mouse.clicked || this.input.justPressed('KeyF'));
 
     if (wantsFire && this._cooldownTimer <= 0 && this.energy >= this.shotCost) {
       this._fire(shootables);

@@ -64,7 +64,10 @@ export default class CameraController {
 
   update(dt, position, state = {}) {
     if (this.input.justPressed('KeyV')) this.toggleView();
-    if (this.input.justPressed('KeyL')) this.flashlightOn = !this.flashlightOn;
+    // T / L = torch. (F fires the pulse tool — both used to listen for F, so
+    // every shot silently flipped the torch state. L is an alias kept from
+    // the main-branch controls sheet.)
+    if (this.input.justPressed('KeyT') || this.input.justPressed('KeyL')) this.flashlightOn = !this.flashlightOn;
     this.flashlight.intensity = this.flashlightOn ? (this.isFirstPerson ? 34 : 24) : 0;
     const aim = !!state.aiming;
     const lookScale = aim ? 0.5 : 1;

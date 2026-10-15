@@ -272,37 +272,231 @@ export function gratingTexture({ base = '#20262e', bar = '#8e9aa8', seed = 4, re
   });
 }
 
-/** Console screen — dark glass with fake data rows / waveform. */
-export function screenTexture({ base = '#04121a', fg = '#3fd9ff', seed = 5 }) {
-  return cached(`screen|${base}|${fg}|${seed}`, () => {
-    const size = 128;
-    const c = makeCanvas(size);
+/**
+ * Console screen layouts — each screen paints real facility text driven by its
+ * seed, so every wall reads differently but the level rebuilds identically.
+ * A theme picks its own layout pool (a clean lab shows telemetry + the culture
+ * protocol; a damaged sector shows breach logs + alert boards).
+ */
+const SCREEN_LAYOUTS = ['telemetry', 'culture', 'alarm', 'log'];
+
+/**
+ * Console screen — a readable facility UI: real labels, live-looking numbers,
+ * chemical formulae and status chips. `kinds` selects the layout pool; the
+ * seed both picks the layout and drives every value.
+ */
+export function screenTexture({
+  base = '#04121a', fg = '#3fd9ff', seed = 5, kinds = SCREEN_LAYOUTS,
+}) {
+  return cached(`screen|${base}|${fg}|${seed}|${kinds.join(',')}`, () => {
+    const W = 512, H = 256;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
     const ctx = c.getContext('2d');
     const rand = mulberry32(seed);
+    const layout = kinds[seed % kinds.length] || 'telemetry';
+
+    // Screen glass: base wash + faint scanlines.
     ctx.fillStyle = base;
-    ctx.fillRect(0, 0, size, size);
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(255,255,255,0.028)';
+    for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
+
+    const OK = '#5cff8a', WARN = '#ffb340', BAD = '#ff4030';
+    const dim = 'rgba(255,255,255,0.6)';
+    const num = (min, max, dec = 1) => (min + rand() * (max - min)).toFixed(dec);
+    const stamp = () => `18:${String(40 + Math.floor(rand() * 19)).padStart(2, '0')}:${String(Math.floor(rand() * 60)).padStart(2, '0')}`;
+    const label = (str, x, y, color = dim, size = 12, weight = '') => {
+      ctx.font = `${weight}${size}px monospace`;
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(str, x, y);
+    };
+    const right = (str, x, y, color = dim, size = 12, weight = '') => {
+      ctx.font = `${weight}${size}px monospace`;
+      ctx.fillStyle = color;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(str, x, y);
+    };
+    const chip = (x, y, text, color) => {
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.9;
+      ctx.fillRect(x, y, 62, 14);
+      ctx.globalAlpha = 1;
+      ctx.font = 'bold 10px monospace';
+      ctx.fillStyle = base;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(text, x + 31, y + 11);
+    };
+    // Chemical formula renderer — a digit run following a letter or ')' is
+    // drawn smaller and lowered (a subscript), so formulae need no special
+    // glyphs and survive any monospace font's coverage.
+    const formula = (str, x, y, color = 'rgba(235,245,255,0.8)', size = 13) => {
+      let cx = x;
+      let prev = '';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      for (let i = 0; i < str.length;) {
+        const ch = str[i];
+        if (/\d/.test(ch) && /[A-Za-z)]/.test(prev)) {
+          let j = i;
+          while (j < str.length && /\d/.test(str[j])) j++;
+          const run = str.slice(i, j);
+          const px = Math.round(size * 0.68);
+          ctx.font = `${px}px monospace`;
+          ctx.fillStyle = color;
+          ctx.fillText(run, cx, y + 3);
+          cx += ctx.measureText(run).width;
+          i = j;
+        } else {
+          ctx.font = `${size}px monospace`;
+          ctx.fillStyle = color;
+          ctx.fillText(ch, cx, y);
+          cx += ctx.measureText(ch).width;
+          prev = ch;
+          i++;
+        }
+      }
+    };
+
+    // Header band + footer status rail, shared by every layout.
+    ctx.globalAlpha = 0.16;
     ctx.fillStyle = fg;
-    // Header bar.
-    ctx.globalAlpha = 0.8;
-    ctx.fillRect(6, 6, size - 12, 8);
+    ctx.fillRect(0, 0, W, 26);
+    ctx.fillRect(0, H - 20, W, 20);
     ctx.globalAlpha = 1;
-    // Fake text rows of varying width.
-    for (let y = 22; y < size - 22; y += 9) {
-      const w = 20 + rand() * (size - 40);
-      ctx.globalAlpha = 0.35 + rand() * 0.45;
-      ctx.fillRect(8, y, w, 3);
-    }
-    // Waveform strip.
-    ctx.globalAlpha = 0.9;
-    ctx.beginPath();
-    for (let x = 8; x < size - 8; x += 2) {
-      const y = size - 12 + Math.sin(x * 0.25 + seed) * 4 * rand();
-      if (x === 8) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.lineWidth = 1.5;
     ctx.strokeStyle = fg;
-    ctx.stroke();
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, 26.5); ctx.lineTo(W, 26.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, H - 20.5); ctx.lineTo(W, H - 20.5); ctx.stroke();
     ctx.globalAlpha = 1;
+    const titles = {
+      telemetry: 'REACTOR TELEMETRY — SECTOR B',
+      culture: 'CULTURE BAY A-2 — GROWTH PROTOCOL',
+      alarm: '!! CONTAINMENT ALERT !!',
+      log: 'MAINTENANCE LOG — STATION NET',
+    };
+    ctx.font = 'bold 14px monospace';
+    ctx.fillStyle = layout === 'alarm' ? BAD : fg;
+    ctx.textAlign = 'left';
+    ctx.fillText(titles[layout], 10, 18);
+    right(`${stamp()}  NODE 12`, W - 10, 18, fg, 12);
+    label('STATION NET · LINK 98% · TAP 04', 10, H - 7, 'rgba(255,255,255,0.45)', 11);
+
+    if (layout === 'telemetry') {
+      const rows = [
+        ['CORE TEMP', `${num(782, 846, 0)} °C`, OK],
+        ['COOLANT ΔP', `${num(2.1, 2.9, 2)} MPa`, OK],
+        ['NEUTRON FLUX', `${num(2.8, 3.6, 1)}e13 n/cm²s`, OK],
+        ['ROD DEPTH', `${num(52, 74, 0)} %`, WARN],
+        ['AUX BUS', rand() > 0.35 ? 'OFFLINE' : 'STANDBY', BAD],
+        ['SHIELD INTEGRITY', `${num(88, 99.4, 1)} %`, OK],
+      ];
+      let y = 46;
+      for (const [name, value, color] of rows) {
+        label(name, 12, y, 'rgba(255,255,255,0.6)', 13);
+        label(value, 240, y, color, 13, 'bold ');
+        chip(W - 76, y - 11, color === OK ? 'NOMINAL' : color === WARN ? 'CAUTION' : 'FAULT', color);
+        y += 27;
+      }
+      // Bus-load bargraph along the bottom.
+      label('BUS LOAD', 12, 228, 'rgba(255,255,255,0.5)', 11);
+      for (let i = 0; i < 12; i++) {
+        const hgt = 5 + rand() * 22;
+        ctx.fillStyle = i > 8 ? WARN : fg;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(96 + i * 24, 232 - hgt, 15, hgt);
+      }
+      ctx.globalAlpha = 1;
+    } else if (layout === 'culture') {
+      let y = 48;
+      label('GROWTH MEDIUM  A-2 / 09 — MODIFIED HANKS', 12, y, WARN, 12, 'bold ');
+      y += 22;
+      formula('C6H12O6 + 6O2 → 6CO2 + 6H2O', 14, y); y += 22;
+      formula('NaCl + H2SO4 → NaHSO4 + HCl', 14, y); y += 22;
+      formula('CaCO3 + 2HCl → CaCl2 + H2O + CO2', 14, y); y += 22;
+      formula('2NaHCO3 → Na2CO3 + H2O + CO2', 14, y);
+      // Assay readouts on the right.
+      const assay = [
+        ['pH', num(6.8, 7.6, 2), fg],
+        ['TEMP', `${num(36.5, 37.6, 1)} °C`, fg],
+        ['O₂', `${num(20.4, 21.4, 1)} %`, fg],
+        ['CO₂', `${num(4.6, 5.4, 1)} %`, fg],
+        ['VIABILITY', `${num(96.5, 99.4, 1)} %`, OK],
+      ];
+      let ay = 48;
+      for (const [name, value, color] of assay) {
+        right(name, 372, ay, 'rgba(255,255,255,0.6)', 13);
+        right(value, 500, ay, color, 13, 'bold ');
+        ay += 24;
+      }
+      // Optical-density growth trace.
+      ctx.strokeStyle = fg;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (let k = 0; k <= 130; k += 5) {
+        const gy = 208 - Math.min(1, k / 130) ** 2 * 34 - rand() * 3;
+        if (k === 0) ctx.moveTo(W - 148, gy); else ctx.lineTo(W - 148 + k, gy);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      label('OPTICAL DENSITY OD600', W - 148, 226, 'rgba(255,255,255,0.5)', 11);
+    } else if (layout === 'alarm') {
+      ctx.globalAlpha = 0.2;
+      ctx.fillStyle = BAD;
+      ctx.fillRect(0, 32, W, 30);
+      ctx.globalAlpha = 1;
+      ctx.font = 'bold 15px monospace';
+      ctx.fillStyle = BAD;
+      ctx.textAlign = 'left';
+      ctx.fillText('CONTAINMENT BREACH — SEAL 09 / LAB A-2', 14, 53);
+      const rows = [
+        ['TANK PRESSURE', `${num(112, 128, 0)} % NOMINAL`, BAD],
+        ['SEAL INTEGRITY', `${num(24, 46, 0)} %`, BAD],
+        ['BIO-SIGNATURE', 'MULTIPLE · MOVING', BAD],
+        ['CULTURE STOCK', 'VIABLE — UNRESTRAINED', WARN],
+        ['BULKHEADS 04 / 07', 'SEALED BY OPERATOR', OK],
+      ];
+      let y = 86;
+      for (const [name, value, color] of rows) {
+        label(name, 14, y, 'rgba(255,255,255,0.6)', 13);
+        right(value, 498, y, color, 13, 'bold ');
+        y += 29;
+      }
+      ctx.font = 'bold 14px monospace';
+      ctx.fillStyle = WARN;
+      ctx.textAlign = 'left';
+      ctx.fillText('>> EVACUATE SECTOR B — DO NOT OPEN SEAL 09', 14, 232);
+    } else {
+      const entries = [
+        ['AUX PWR BUS — BREAKER TRIP K-7', WARN],
+        ['RELAY K-7 OVERCURRENT · RESET FAILED', WARN],
+        ['CULTURE TANK 09 — PRESSURE RISE', BAD],
+        ['SEAL 09 SENSOR — NO SIGNAL', BAD],
+        ['DUCT SENSOR 12 — MOTION 2.4 m/s', BAD],
+        ['BULKHEAD 04 — SEALED BY OPERATOR', OK],
+        ['ROBOTICS BAY — OFFLINE FOR SERVICE', dim],
+        ['SHIFT HANDOVER — INCOMPLETE', dim],
+      ];
+      let y = 46;
+      for (const [msg, color] of entries) {
+        label(stamp(), 11, y, 'rgba(255,255,255,0.45)', 11);
+        ctx.fillStyle = color;
+        ctx.fillRect(74, y - 8, 7, 7);
+        label(msg, 90, y, color === dim ? dim : 'rgba(235,245,255,0.82)', 12);
+        y += 23;
+      }
+      ctx.fillStyle = fg;
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(90, y - 12, 8, 13);
+      ctx.globalAlpha = 1;
+    }
+
     return canvasTexture(c, [1, 1]);
   });
 }
@@ -433,6 +627,7 @@ const THEME_CONFIG = {
     concrete: { base: '#565d68', cracks: 4, stains: 6 },
     grate: { base: '#1c222b', bar: '#8e9aa8' },
     screen: { base: '#04121a', fg: '#3fd9ff' },
+    screenKinds: ['telemetry', 'culture'],
     trim: 0x343d49, beam: 0x59636f, metal: 0x9aa6b4, metalDark: 0x4d5661,
     panel: 0x4a5563, pipe: 0x93a0ad, crate: 0x7d8a97, locker: 0x5f6c7c,
     debris: 0x565d68, rubber: 0x20252c, hazardColor: '#e8b23a',
@@ -441,13 +636,14 @@ const THEME_CONFIG = {
   },
   damaged: {
     seed: 233,
-    wall: { base: '#626d6d', seamX: 128, seamY: 256, grime: 8, rust: 6 },
-    wallDark: { base: '#283b42', seamX: 128, seamY: 256, grime: 10, rust: 7, scorch: 3 },
-    ceil: { base: '#202d33', seamX: 128, seamY: 128, grime: 8, rust: 4 },
-    floor: { base: '#263b41', grout: 'rgba(0,0,0,0.3)', wear: 10 },
-    concrete: { base: '#4a4239', cracks: 9, stains: 12 },
+    wall: { base: '#626d6d', seamX: 128, seamY: 256, grime: 9, rust: 8 },
+    wallDark: { base: '#283b42', seamX: 128, seamY: 256, grime: 12, rust: 8, scorch: 5 },
+    ceil: { base: '#202d33', seamX: 128, seamY: 128, grime: 9, rust: 6, scorch: 2 },
+    floor: { base: '#263b41', grout: 'rgba(0,0,0,0.3)', wear: 14 },
+    concrete: { base: '#4a4239', cracks: 12, stains: 15 },
     grate: { base: '#181410', bar: '#7a6a58' },
     screen: { base: '#07151d', fg: '#71c9dc' },
+    screenKinds: ['log', 'alarm'],
     trim: 0x332b22, beam: 0x453b30, metal: 0x7a6d5c, metalDark: 0x39322a,
     panel: 0x4e4437, pipe: 0x80705c, crate: 0x79644a, locker: 0x5a5f68,
     debris: 0x4a4239, rubber: 0x1a1712, hazardColor: '#d99a2b',
@@ -463,6 +659,7 @@ const THEME_CONFIG = {
     concrete: { base: '#3d2c28', cracks: 11, stains: 10 },
     grate: { base: '#150f0e', bar: '#6e524a' },
     screen: { base: '#1a0505', fg: '#ff5a3c' },
+    screenKinds: ['alarm', 'telemetry'],
     trim: 0x2b1d1b, beam: 0x3c2825, metal: 0x7d6a64, metalDark: 0x322523,
     panel: 0x4a3330, pipe: 0x84695f, crate: 0x6e5644, locker: 0x554b4a,
     debris: 0x3d2c28, rubber: 0x171110, hazardColor: '#d97a2b',
@@ -489,8 +686,8 @@ export function getThemeMaterials(themeName) {
   const floorTex = tileTexture({ ...t.floor, seed: t.seed + 2, repeat: floorRepeat });
   const grateTex = gratingTexture({ ...t.grate, seed: t.seed + 3, repeat: [3, 3] });
   const concreteTex = concreteTexture({ ...t.concrete, seed: t.seed + 4, repeat: [4, 4] });
-  const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5 });
-  const screenTex2 = screenTexture({ ...t.screen, seed: t.seed + 6 });
+  const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5, kinds: t.screenKinds });
+  const screenTex2 = screenTexture({ ...t.screen, seed: t.seed + 6, kinds: t.screenKinds });
 
   const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.45 : 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
   const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 0.6 : 1.8, roughnessBase: themeName === 'lab' ? 0.85 : 0.7, roughnessVariance: themeName === 'lab' ? 0.12 : 0.4 });

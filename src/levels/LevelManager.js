@@ -33,6 +33,7 @@ import StaticBatch from './StaticBatch.js';
 import LabChamber from './LabChamber.js';
 import HealthPack from './HealthPack.js';
 import { getThemeMaterials } from './LevelMaterials.js';
+import { createWorker } from '../core/CharacterFactory.js';
 
 // ── Shared scorch decal texture (created once, kept for the session) ────────
 let _scorchTex = null;
@@ -96,6 +97,12 @@ export default class LevelManager {
     this.navigationVersion = 0;
     this.healthPacks = [];
     this.escapeRoute = [];
+
+    /** L2 staging-bay sidearm pickup {x, z, radius, mesh, light, taken}. */
+    this.weaponPickup = null;
+
+    /** Static fallen-worker figures (L2 storytelling) — traverse-disposed. */
+    this._casualties = [];
     this.serverAmbush = null;
 
     /** Heat-haze zone meshes — ShaderManager swaps in the haze material. */
@@ -115,6 +122,14 @@ export default class LevelManager {
 
     /** Meshes the dissolve shader fades during the L3 collapse. */
     this._dissolveWalls = [];
+
+    /**
+     * Walking staff NPCs (Level 1 pre-breach ambience): CharacterFactory
+     * workers on patrol loops. Game.js calls evacuateWalkers() when the
+     * mutation alarm sounds; teardown disposes their per-instance
+     * geometries/materials (worker models are built fresh per level).
+     */
+    this._walkers = [];
 
     /** L3 sealed failsafe door Mesh — Game.js hides it when the boss dies. */
     this._exitDoor = null;
@@ -175,6 +190,11 @@ export default class LevelManager {
       ...this.heatHazeZones,
       ...this.shootables,
     ]);
+    // The sidearm pickup must stay a real, hideable mesh — once merged into
+    // a static batch it would keep rendering after the player takes it.
+    if (this.weaponPickup?.mesh) {
+      this.weaponPickup.mesh.traverse(object => excluded.add(object));
+    }
     const roots = this._disposables.map(entry => entry.mesh)
       .filter(mesh => mesh?.userData.staticScenery);
     this._staticBatch = new StaticBatch(this.scene, roots, excluded);
@@ -205,6 +225,19 @@ export default class LevelManager {
     for (const pack of this.healthPacks) pack.dispose();
     this.healthPacks = [];
     this.escapeRoute = [];
+    this.weaponPickup = null;
+    // Casualties own their geometries/materials like walkers — traverse-dispose.
+    for (const figure of this._casualties) {
+      this.scene.remove(figure);
+      figure.traverse((child) => {
+        if (!child.isMesh) return;
+        if (child.geometry) child.geometry.dispose();
+        const mat = child.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+    }
+    this._casualties = [];
     this.serverAmbush = null;
     this.labChamber?.dispose();
     this.labChamber = null;
@@ -241,6 +274,21 @@ export default class LevelManager {
     this.npcAnchors = {};
     this._flickerLights = [];
     this.collapseMode = false;
+
+    // Worker NPCs own their geometries/materials (built fresh per level) —
+    // traverse-dispose them. Shared cached textures (bump map) survive
+    // material.dispose() by design.
+    for (const w of this._walkers) {
+      this.scene.remove(w.npc.group);
+      w.npc.group.traverse((child) => {
+        if (!child.isMesh) return;
+        if (child.geometry) child.geometry.dispose();
+        const mat = child.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+    }
+    this._walkers = [];
   }
 
   // ── Bookkeeping helpers ───────────────────────────────────────────────────
@@ -359,10 +407,14 @@ export default class LevelManager {
   }
 
   /**
-   * Sliding door that opens when its linked target is shot. Slides up (Y+)
-   * and its collision body is removed once fully open.
+   * Sliding door that opens when triggered (E at the panel, or by shooting
+   * its linked target). Slides up (Y+) and its collision body is removed
+   * once fully open.
+   *
+   * opts.locked — true for scripted doors (the L3 failsafe seal): no button
+   * panel is placed and E interaction ignores them; Game.js opens these.
    */
-  _createDoor(id, w, h, x, y, z, rotY, mat) {
+  _createDoor(id, w, h, x, y, z, rotY, mat, opts = {}) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.15), mat);
     mesh.position.set(x, y, z);
     mesh.rotation.y = rotY;
@@ -382,7 +434,15 @@ export default class LevelManager {
       openY: y + h + 0.3,
       progress: 0,
       opening: false,
+      locked: !!opts.locked,
     });
+    // Glowing button plate beside the frame — the E-interaction affordance
+    // (proud of the wall face the player approaches from). All doors are
+    // rotY 0 on a south-facing wall, so a fixed offset works.
+    if (!opts.locked) {
+      this._kit.box(this._mats.accent, 0.18, 0.26, 0.07,
+        x - w / 2 - 0.45, 1.15, z + 0.19, { cast: false });
+    }
     return mesh;
   }
 
@@ -634,6 +694,9 @@ export default class LevelManager {
       d.rotation.y += dt * 0.04;
     }
 
+    // Walking staff NPCs (patrol loops; flee once the alarm sounds).
+    this._updateWalkers(dt);
+
     // Flickering lights — dying fluorescents. Each fixture idles for a few
     // seconds, then stutters for a short burst. During the Level-3 collapse
     // (collapseMode) bursts come thick and fast.
@@ -653,6 +716,135 @@ export default class LevelManager {
         f.burst = 0.12 + Math.random() * 0.35;
         f.next = (6 + Math.random() * 12) * haste;
       }
+    }
+  }
+
+  // ── Walking staff NPCs ─────────────────────────────────────────────────────
+
+  /**
+   * Spawn a worker NPC on a patrol loop. Paths must stay on walkable floor
+   * (walkers have no physics — they are ambience, not obstacles). After the
+   * loop's last point they cycle back to the first, so a two-point path
+   * reads as pacing and a 4-point ring as a proper patrol.
+   *
+   * @param {'tech'|'coat'|'supervisor'|'security'} variant
+   * @param {{x:number,z:number}[]} path  patrol loop, ≥2 points
+   * @param {{speed?:number}} [o]
+   */
+  _addWalker(variant, path, o = {}) {
+    const npc = createWorker(variant);
+    npc.group.position.set(path[0].x, 0, path[0].z);
+    this.scene.add(npc.group);
+    const walker = {
+      npc,
+      path,
+      idx: 1,                       // next waypoint index
+      speed: o.speed || 0.85 + Math.random() * 0.35,
+      pause: Math.random() * 1.5,   // idle before the first leg
+      state: 'patrol',              // 'patrol' | 'flee' | 'gone'
+      fleeRoute: null,
+      fleeSpeed: 3.1,
+      // Reused per frame — the zero-allocation rule.
+      animState: { moving: false, speed: 1, fleeing: false },
+    };
+    this._walkers.push(walker);
+    return walker;
+  }
+
+  /**
+   * Place a fallen worker — static storytelling scenery (the breach's human
+   * cost). The joint pose is set once by part name (update() is never
+   * called) and the figure is laid on its back, then spun to place it.
+   * Ownership matches walkers: per-instance geometry/materials,
+   * traverse-disposed in teardown.
+   */
+  _addCasualty(variant, x, z, rotY = 0, o = {}) {
+    const npc = createWorker(variant);
+    const g = npc.group;
+    const pose = o.pose || {
+      torso: [0.04, 0, 0], head: [0.18, 0.55, 0],
+      armL: [-0.5, 0, 1.05], elbL: [-0.65, 0, 0],
+      armR: [0.35, 0, -0.85], elbR: [-0.55, 0, 0],
+      legL: [0.22, 0, 0.26], kneeL: [-0.45, 0, 0],
+      legR: [-0.06, 0, -0.32], kneeR: [0.3, 0, 0],
+    };
+    g.traverse((child) => {
+      const p = pose[child.name];
+      if (p) child.rotation.set(p[0], p[1], p[2]);
+    });
+    g.position.set(x, o.y ?? 0.16, z);
+    g.rotation.set(0, rotY, Math.PI / 2);
+    this.scene.add(g);
+    this._track(g);
+    this._casualties.push(g);
+    return g;
+  }
+
+  /**
+   * Send every walker running for the level entrance (Game.js calls this
+   * when the Level-1 mutation alarm sounds). Staff south of the lab arch
+   * route through the corridor mouth first; the rest run straight up the
+   * x=0 centre line, which is clear all the way to the entrance.
+   */
+  evacuateWalkers() {
+    for (const w of this._walkers) {
+      if (w.state === 'gone') continue;
+      w.state = 'flee';
+      w.pause = 0;
+      w.idx = 0;
+      w.fleeRoute = w.npc.group.position.z < -20
+        ? [{ x: 0, z: -19.8 }, { x: 0, z: -0.6 }]
+        : [{ x: 0, z: -0.6 }];
+    }
+  }
+
+  /** Advance walkers along their route (patrol pause, flee run). */
+  _updateWalkers(dt) {
+    for (const w of this._walkers) {
+      if (w.state === 'gone') continue;
+      const st = w.animState;
+      st.moving = false;
+      st.fleeing = w.state === 'flee';
+
+      if (w.pause > 0) {
+        w.pause -= dt;
+      } else {
+        const route = w.state === 'flee' ? w.fleeRoute : w.path;
+        const target = route[w.idx];
+        if (target) {
+          const g = w.npc.group;
+          const dx = target.x - g.position.x;
+          const dz = target.z - g.position.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          const spd = w.state === 'flee' ? w.fleeSpeed : w.speed;
+          if (dist < 0.25) {
+            w.idx++;
+            if (w.state === 'flee') {
+              // Reached the entrance — staff have left the level.
+              if (w.idx >= route.length) {
+                w.state = 'gone';
+                g.visible = false;
+              }
+            } else if (w.idx >= route.length) {
+              w.idx = 0;                        // loop the patrol
+              w.pause = 1 + Math.random() * 2.4; // look around a moment
+            }
+          } else {
+            const step = Math.min(spd * dt, dist);
+            g.position.x += (dx / dist) * step;
+            g.position.z += (dz / dist) * step;
+            st.moving = true;
+            st.speed = spd;
+            // Face the direction of travel (shortest-arc turn).
+            const targetYaw = Math.atan2(dx, dz);
+            let d = targetYaw - g.rotation.y;
+            while (d > Math.PI) d -= Math.PI * 2;
+            while (d < -Math.PI) d += Math.PI * 2;
+            g.rotation.y += d * Math.min(1, dt * 8);
+          }
+        }
+      }
+      w.npc.update(dt, st);
     }
   }
 
@@ -714,6 +906,8 @@ export default class LevelManager {
     kit.fuseBox(-4.94, 1.7, -8.5, 'e');
     kit.extinguisher(-4.94, 1.2, -3.0);
     kit.floorDecal(3.2, -5.0, 'stripes', { size: 1.2 });
+    // Station status board greeting the arriving shift engineer.
+    kit.wallScreen(4.93, 1.9, -4.6, 'w', { w: 2.2, h: 1.2 });
 
     // ── Corridor C1 (x -2..2, z -10..-20) ────────────────────────────────
     kit.floorSlab(4.3, 10.0, 0, -15.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
@@ -730,6 +924,7 @@ export default class LevelManager {
     kit.sign(0, 2.3, -19.97, 's', 'A-2 / CULTURE RESEARCH', { sub: 'AUXILIARY POWER OFFLINE', fg: '#ffc57c', w: 2.4 });
     kit.fuseBox(-1.94, 1.6, -12.5, 'e');
     kit.ventGrille(-1.95, 2.2, -17.5, 'e', { w: 0.8, h: 0.5 });
+    kit.gaugeCluster(-1.96, 1.6, -14.2, 'e');
 
     // ── Laboratory (x -9..9, z -20..-32) ─────────────────────────────────
     kit.floorSlab(18.6, 12.0, 0, -26.15, {
@@ -788,6 +983,7 @@ export default class LevelManager {
     kit.ventGrille(6.5, 2.6, -31.94, 's', { w: 0.9, h: 0.6 });
     // Alarm beacon near containment (the scripted beat's visual anchor).
     kit.lamp(-7.6, -27.5, { y: 2.6, color: 'red', light: false });
+    kit.sign(-8.95, 2.35, -28.4, 'e', 'BIO-CONTAINMENT', { sub: 'AUTHORISED STAFF ONLY', fg: '#ffd27f', w: 2.0 });
     // Dust hanging in the lab's overhead light.
     this._dustMotes(70, 0, -26, 6.5, 0.3, 2.7);
 
@@ -802,6 +998,7 @@ export default class LevelManager {
     kit.cableTray('z', 7.5, 1.95, 2.55, -36.15);
     kit.fuseBox(1.94, 1.6, -34.0, 'w');
     kit.floorDecal(0, -33.2, 'stripes', { size: 1.0 });
+    kit.valveWheel(1.95, 1.6, -37.8, 'w');
 
     // ── Reactor hall (x -10..10, z -40..-54) ─────────────────────────────
     kit.floorSlab(20.6, 14.0, 0, -47.15, { trim: true });
@@ -850,6 +1047,45 @@ export default class LevelManager {
     // Dust around the reactor core.
     this._dustMotes(60, 0, -47, 6.5, 0.4, 2.7);
 
+    // ── Reactor-plant equipment (the working station) ────────────────────
+    // Overhead crane rail spanning the hall above the core.
+    kit.craneRail('x', 16, 0, 2.72, -47.0, { trolley: -4.5 });
+    // Coolant pumps flanking the hall (feed / return loops).
+    kit.coolantPump(-8.2, -45.4, 'e');
+    kit.coolantPump(8.0, -50.8, 'w');
+    // Steam generator on the east wall.
+    kit.steamGenerator(7.3, -47.6, 'z');
+    // Coolant tank on the west wall.
+    kit.coolantTank(-8.8, -48.6);
+    // Control-rod drive bank beside the core, inside the shield ring.
+    kit.controlRodDrives(2.2, -47.0);
+    // Spent-fuel transfer rack in the south-west corner.
+    kit.fuelRack(-6.9, -52.6, 'n');
+    // Instrumentation: wall gauge banks + radiation monitors.
+    kit.gaugeCluster(-9.96, 1.7, -44.5, 'e');
+    kit.gaugeCluster(9.96, 1.7, -49.5, 'w');
+    kit.radiationMonitor(-3.9, -41.4);
+    kit.radiationMonitor(3.9, -53.0);
+
+    // ── Reactor hall dressing — shield ring, turbine line, coolant loop ──
+    // Concrete biological-shield ring standing inside the railing pen.
+    kit.reactorContainmentRing(0, -47.0, { r: 3.0, count: 13 });
+    // Turbine line in the north-west bay (plinth is the collider).
+    kit.turbineHousing(-7.4, -42.2, 'z');
+    // Coolant cross-feeds dropping between the overhead runs + isolation.
+    kit.pipeRun('z', 2.8, -6.4, 2.45, -43.7, { count: 2, r: 0.09 });
+    kit.pipeRun('z', 2.8, 6.4, 2.45, -50.5, { count: 2, r: 0.09 });
+    kit.valveWheel(-9.85, 1.6, -43.6, 'e');
+    kit.valveWheel(9.85, 1.6, -51.6, 'w');
+    // Hazard striping + warning signage at the hall thresholds and walls.
+    kit.floorDecal(-1.9, -40.9, 'stripes', { size: 1.0 });
+    kit.floorDecal(1.9, -40.9, 'stripes', { size: 1.0 });
+    kit.sign(-9.98, 2.3, -47.0, 'e', 'CAUTION / RADIATION AREA', { sub: 'DOSIMETERS REQUIRED', fg: '#ffd27f', w: 2.4 });
+    kit.sign(9.98, 2.3, -47.0, 'w', 'HIGH VOLTAGE / COOLANT LOOP', { sub: 'ISOLATE BEFORE WORK', fg: '#ffd27f', w: 2.6 });
+    // Ambient steam: turbine gland + coolant pump discharge.
+    this._createSteamVent('l1-steam-1', -7.4, 2.05, -41.7, { count: 10, rate: 0.16, rise: 0.4, alpha: 0.3, lifeSpan: 1.1, drift: 0.08 });
+    this._createSteamVent('l1-steam-2', 8.0, 1.7, -50.6, { count: 8, rate: 0.22, rise: 0.35, alpha: 0.26, lifeSpan: 1.0, drift: 0.08 });
+
     // ── Control room (x -5..5, z -54..-64) ───────────────────────────────
     kit.floorSlab(10.6, 10.0, 0, -59.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
     kit.ceilingSlab(10.6, 10.0, 0, H, -59.15, {
@@ -874,7 +1110,46 @@ export default class LevelManager {
     kit.extinguisher(4.94, 1.2, -56.0);
     kit.debrisPile(-2.6, -63.2, { s: 0.7, seed: 21 });
     kit.floorDecal(0, -60.4, 'stripes', { size: 1.4, color: '#5cff8a' });
+    // Annunciator fascias flanking the status wall + side instrumentation.
+    kit.annunciatorBoard(-2.6, 2.15, -63.95, 's');
+    kit.annunciatorBoard(2.6, 2.15, -63.95, 's');
+    kit.gaugeCluster(-4.94, 1.9, -61.6, 'e');
+    kit.gaugeCluster(4.94, 1.9, -56.8, 'w');
 
+    // ── Walking staff — the station is alive before the breach ───────────
+    // Patrol loops stay on walkable floor, clear of props and doorways;
+    // evacuateWalkers() (Game.js, mutation alarm) sends them all running.
+    // Reception: escort pacing the waiting area.
+    this._addWalker('coat', [
+      { x: 2.4, z: -7.2 }, { x: -1.6, z: -7.2 },
+      { x: -1.6, z: -2.6 }, { x: 2.4, z: -2.6 },
+    ]);
+    // Reception: security guard walking the entrance lane by the desk.
+    this._addWalker('security', [
+      { x: -1.9, z: -2.0 }, { x: -1.9, z: -6.4 },
+      { x: 0.9, z: -6.4 }, { x: 0.9, z: -2.0 },
+    ]);
+    // Corridor C1: tech shuttling between reception and the lab.
+    this._addWalker('tech', [{ x: 0.7, z: -11.5 }, { x: 0.7, z: -18.5 }]);
+    // Laboratory: researcher on rounds past the benches.
+    this._addWalker('coat', [
+      { x: 3.2, z: -22.5 }, { x: 3.2, z: -29.5 },
+      { x: -0.5, z: -29.5 }, { x: -0.5, z: -22.5 },
+    ]);
+    // Reactor hall: supervisor inspecting the coolant loop (ring route).
+    this._addWalker('supervisor', [
+      { x: -5.2, z: -42.8 }, { x: 5.2, z: -42.8 },
+      { x: 5.2, z: -52.2 }, { x: -5.2, z: -52.2 },
+    ], { speed: 0.95 });
+    // Reactor hall: tech walking the west pipe run.
+    this._addWalker('tech', [{ x: -5.8, z: -43.2 }, { x: -5.8, z: -51.8 }]);
+    // Control room: operator pacing between the consoles.
+    this._addWalker('tech', [
+      { x: 2.2, z: -56.5 }, { x: 2.2, z: -59.5 },
+      { x: -2.2, z: -59.5 }, { x: -2.2, z: -56.5 },
+    ]);
+
+    // Green evacuation-route guides, revealed once the creature flees.
     const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x80edb5, toneMapped: false });
     this.labRoute = [];
     for (const [x, z, length, horizontal] of [[0.5, -28.3, 5.8], [0.5, -36.2, 7],
@@ -900,8 +1175,10 @@ export default class LevelManager {
   // ── Level 2 — The Hunt (damaged facility, amber palette) ────────────────
   //
   // Flow (player walks toward -z):
-  //   Staging (0..-8) → door 'l2-entry' (shoot conduit) → corridor C1 with
-  //   fan (-8..-18) → Crew quarters (-18..-30; lockers/bunks = hiding cover)
+  //   Staging (0..-8; security sidearm locker = the L2 gun pickup) → door
+  //   'l2-entry' (shoot conduit) → corridor C1 with fan (-8..-18; a fallen
+  //   scientist marks the breach's first victim) → Crew quarters (-18..-30;
+  //   lockers/bunks = hiding cover, a security casualty by the scorch) →
   //   → Maintenance C2 (-30..-40; steam vents + heat haze + sparks) →
   //   Server room (-40..-52; rack maze) → C3 (-52..-58) → Exit vestibule
   //   (-58..-64) → WIN. Stealth-first: tall props feed the occluder list.
@@ -952,6 +1229,16 @@ export default class LevelManager {
     kit.debrisPile(2.3, -1.9, { s: 0.9, seed: 31 });
     kit.fallenPanel(-2.2, 0.3, -6.2, { rx: 0.32, ry: 0.5 });
     kit.floorDecal(-1.0, -5.0, 'dashes', { size: 1.6 });
+    // Security weapons locker — the pulse sidearm pickup. Game.js gates
+    // firing on levels.weaponPickup until the player takes it (E prompt).
+    const locker = kit.weaponsLocker(-3.82, 1.35, -5.8, 'e');
+    this.weaponPickup = {
+      x: -3.4, z: -5.8, radius: 1.6,
+      mesh: locker.gun, light: locker.light, taken: false,
+    };
+    kit.sign(-3.98, 2.12, -5.8, 'e', 'SECURITY / SIDEARM LOCKER', { sub: 'SIGNED OUT UNDER LOCKDOWN ORDER 6-11', fg: '#8bebbd', w: 1.9, h: 0.45 });
+    this._flickerLight(-3.4, 2.55, -7.4, 0xff3520, 0.9, 7); // red lockdown wash
+    this._dustMotes(40, 0, -4, 4, 0.35, 2.6);
 
     // ── Corridor C1 (x -2..2, z -8..-18) — fan hazard ────────────────────
     kit.floorSlab(4.3, 10.0, 0, -13.15, { lines: [{ axis: 'z', len: 8, color: 'warn' }] });
@@ -970,6 +1257,10 @@ export default class LevelManager {
     kit.debrisPile(-1.6, -16.4, { s: 0.8, seed: 32 });
     kit.canister(-1.8, -9.4);
     kit.fallenPanel(1.5, 0.28, -15.5, { rx: 0.4, ry: -0.6 });
+    // The breach's human cost — an evacuating scientist who didn't make it.
+    this._scorchDecal(-1.05, 0, -15.5, 2.0);
+    this._addCasualty('coat', -1.05, -15.5, Math.PI * 0.62);
+    this._dustMotes(50, 0, -13, 4.5, 0.3, 2.6);
     // Big ceiling fan — rotating hazard (visual, atmosphere).
     this._addRotatingHazard(kit.fanBlade(0, 2.45, -13.0, { r: 0.95 }), 5.0);
     kit.sign(0, 2.45, -17.9, 's', 'KEEP LOW / USE COVER', { sub: 'C: CROUCH   /   SHOTS ATTRACT THE CREATURE', fg: '#a5e5dc', w: 2.5, h: 0.6 });
@@ -1019,6 +1310,8 @@ export default class LevelManager {
     kit.floorDecal(-3.0, -22.0, 'dashes', { size: 1.6 });
     this._scorchDecal(0.5, 0, -24.0, 1.6);
     this._scorchDecal(-4.0, 0, -19.2, 1.1);
+    // A security officer made their stand by the lockers — and lost.
+    this._addCasualty('security', 1.35, -23.6, -Math.PI * 0.35, { y: 0.17 });
     // Steam vent + its shootable valve on the west wall.
     this._createSteamVent('l2-vent-1', -6.5, 0.35, -26.2);
     kit.valveWheel(-7.9, 1.2, -26.2, 'e');
@@ -1027,6 +1320,7 @@ export default class LevelManager {
     // Dying bulbs over the quarters — one right on the monster's route.
     this._flickerLight(0, 2.55, -25.5, 0xffaa66, 1.1, 7);
     this._flickerLight(-6.4, 2.55, -20.5, 0xffaa66, 0.8, 6);
+    this._flickerLight(3.5, 2.5, -19.6, 0xff3520, 0.7, 6);  // red wash at the mouth
     // Dusty beam through the ceiling gap the fallen panel dropped from.
     // Dust catches the practical lighting without a solid-looking cone.
     this._dustMotes(80, 0, -24, 7, 0.3, 2.8);
@@ -1070,6 +1364,9 @@ export default class LevelManager {
     });
     this._hazeZone(2.8, 2.2, 2.4, 0.9, 1.1, -33.4);
     this._hazeZone(2.8, 2.2, 2.4, -0.9, 1.1, -36.4);
+    // Vented steam carries the haze into the quarters and server room.
+    this._hazeZone(2.2, 2.0, 2.2, -5.0, 1.0, -26.2);
+    this._hazeZone(2.6, 2.2, 2.6, -4.4, 1.1, -44.0);
 
     // ── Server room (x -8..8, z -40..-52) — rack maze ────────────────────
     kit.floorSlab(16.6, 12.0, 0, -46.15, { trim: true });
@@ -1148,6 +1445,16 @@ export default class LevelManager {
     kit.crateStack(3.2, -63.0, { w: 1.2, h: 1.2, d: 0.8, rotY: -0.3 });
     kit.extinguisher(-3.94, 1.2, -59.0);
 
+    // ── Reactor-plant equipment (abandoned mid-shift by the evacuees) ────
+    // The machinery stayed when the staff left — it just runs unattended.
+    kit.radiationMonitor(-3.4, -6.8);               // staging bay, by the sector door
+    kit.gaugeCluster(1.96, 1.6, -11.6, 'w');        // C1 east wall
+    kit.coolantPump(4.9, -24.8, 'w');               // quarters — coolant feed pump
+    kit.gaugeCluster(2.5, 1.7, -29.96, 's');        // quarters south wall
+    kit.radiationMonitor(-3.0, -41.6);              // server room threshold
+    kit.gaugeCluster(7.96, 1.7, -45.5, 'w');        // server room east wall
+
+    // Med-kits tucked along the evacuation route (restore 35 health).
     for (const [x, z] of [[-4.3, -23.8], [1.2, -38.8], [-2.6, -45.5], [1.2, -55.5]]) {
       this.healthPacks.push(new HealthPack(this.scene, x, z));
     }
@@ -1268,6 +1575,13 @@ export default class LevelManager {
     this._dustMotes(90, 0, -26, 12, 0.4, 3.6);
     kit.barrel(6.9, -19.6);
     kit.canister(-6.6, -35.4);
+    // Sparse emergency equipment: the arena was part-stripped when the
+    // failsafe armed, but the instrumentation never got switched off.
+    kit.coolantTank(-12.9, -11.4, { h: 2.6 });      // NW corner reserve
+    kit.radiationMonitor(2.6, -12.5);               // threshold monitor
+    kit.radiationMonitor(-2.6, -40.0);              // by the failsafe seal
+    kit.gaugeCluster(-13.96, 2.0, -20.0, 'e');      // west wall
+    kit.gaugeCluster(13.96, 2.0, -32.0, 'w');       // east wall
 
     // ── Sealed failsafe door 'l3-exit' (opened by Game.js on boss death) ──
     kit.doorway(4.0, 3.4, 0, 1.7, -42.15, 's');
