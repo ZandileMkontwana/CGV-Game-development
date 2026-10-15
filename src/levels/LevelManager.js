@@ -1662,51 +1662,6 @@ export default class LevelManager {
     // Optional side rooms (lore, health pickups, relay puzzle).
     this._buildLevel1SideRooms();
 
-    // ── Bypass airlock door 'l1-exit' — the level's final passage ────────
-    // The run ends here: the player presses E at the door to release it, then
-    // walks through into the surface-lift lobby where the win zone sits.
-    this._createDoor('l1-exit', 3.0, 2.8, 0, 1.4, -64.15, 0, m.hazard);
-    kit.sign(0, 2.75, -63.97, 's', 'BYPASS AIRLOCK ▸', { sub: 'PRESS  E  TO RELEASE / SURFACE LIFT BEYOND', fg: '#ffd08a', w: 3.2, h: 0.6 });
-    kit.floorLine(0, -63.4, 1.5, { color: 'exit' });
-
-    // ── Surface-lift lobby (x -5..5, z -64..-71) — WIN ───────────────────
-    kit.floorSlab(10.6, 6.7, 0, -67.5, { lines: [{ axis: 'z', len: 5.4, color: 'exit' }] });
-    kit.ceilingSlab(10.6, 6.7, 0, H, -67.5, {
-      lamps: [
-        { x: -2.6, z: -1.5, light: true, intensity: 0.85 },
-        { x: 2.6, z: 1.5, light: true, intensity: 0.85 },
-      ],
-    });
-    kit.wallRun(0.3, H, 6.8, -5.15, H / 2, -67.6);
-    kit.wallRun(0.3, H, 6.8, 5.15, H / 2, -67.6);
-    kit.wallRun(10.6, H, 0.3, 0, H / 2, -70.95);             // south end
-    // The lift itself: heavy hazard-striped doors in the end wall.
-    kit.box(m.metalDark, 5.2, 3.4, 0.22, 0, 1.7, -70.78, { cast: false });
-    kit.box(m.hazard, 2.5, 3.0, 0.06, -1.28, 1.5, -70.65, { cast: false });
-    kit.box(m.hazard, 2.5, 3.0, 0.06, 1.28, 1.5, -70.65, { cast: false });
-    kit.box(m.accent, 0.1, 2.6, 0.09, 0, 1.5, -70.62, { cast: false });
-    kit.sign(0, 3.35, -70.6, 's', 'SURFACE LIFT / 01', { sub: 'TRANSFER TO SUB-LEVEL 2 LOCKOUT', fg: '#8bebbd', w: 3.2, h: 0.7 });
-    this._exitBeacon(0, -68.4, { radius: 1.7 });
-    // Housekeeping around the lift: pallets, pipework, fire point, boards.
-    kit.crateStack(3.6, -69.6, { w: 1.4, h: 1.4, d: 0.9, rotY: -0.25 });
-    kit.crate(-4.0, -66.2, { s: 0.8, rotY: 0.3 });
-    kit.barrel(-4.4, -68.6);
-    kit.barrel(-3.8, -69.0);
-    kit.canister(4.2, -65.6);
-    kit.fallenPanel(2.4, 0.3, -66.4, { rx: 0.35, ry: 0.7 });
-    kit.debrisPile(-2.2, -70.0, { s: 0.9, seed: 22 });
-    kit.pipeRun('z', 6.2, -4.9, 2.55, -67.6, { count: 3, r: 0.07 });
-    kit.cableTray('z', 6.2, 4.9, 2.5, -67.6);
-    kit.gaugeCluster(-4.94, 1.9, -68.8, 'e');
-    kit.fuseBox(4.94, 1.7, -66.8, 'w');
-    kit.extinguisher(4.94, 1.2, -69.0);
-    kit.annunciatorBoard(-4.94, 2.15, -66.2, 'e');
-    kit.floorDecal(0, -65.6, 'stripes', { size: 1.3, color: '#5cff8a' });
-    kit.floorLine(0, -69.6, 2.4, { color: 'exit' });
-    this._createSteamVent('l1-steam-3', 4.2, 2.05, -69.8, { count: 8, rate: 0.2, rise: 0.35, alpha: 0.24, lifeSpan: 1.0, drift: 0.08 });
-    this._flickerLight(-2.8, 2.55, -66.4, 0xaad4ff, 0.9, 7);
-    this._dustMotes(45, 0, -67.5, 4.5, 0.3, 2.7);
-
     // ── Walking staff — the station is alive before the breach ───────────
     // Patrol loops stay on walkable floor, clear of props and doorways;
     // evacuateWalkers() (Game.js, mutation alarm) sends them all running.
