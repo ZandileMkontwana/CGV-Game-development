@@ -180,7 +180,7 @@ export default class Game {
       },
       {
         text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
-        sub: 'HOLD RMB OR TAP Z TO AIM · ENERGY RECHARGES ON ITS OWN',
+        sub: 'HOLD RMB OR TAP Z TO SCOPE IN · ENERGY RECHARGES ON ITS OWN',
       },
       {
         text: 'LAB A-2 — PULSE THE AMBER RELAY BESIDE THE CHAMBER',
@@ -522,12 +522,16 @@ export default class Game {
       if (this.input.justPressed('KeyZ')) this._adsToggled = !this._adsToggled;
       const aiming = this.input.mouse.rightDown === true || this._adsToggled;
       const crouching = this.input.keys['KeyC'] === true;
+      // Scoped view: aiming an armed weapon in first person pulls the eye to the
+      // optic — heavy zoom + reticle overlay, and the viewmodel is swapped out.
+      const scoped = aiming && this.camera.isFirstPerson && this._weaponReady;
       this.player.setStance(crouching, aiming);
       this.player.update(dt);
       this.physics.step(dt);
       this.player.refreshMovementState();
       this.camera.update(dt, this.player.position, {
         aiming,
+        scoped,
         crouching,
         moving: this.player._charState.moving,
         sprinting: this.player._charState.sprinting,
@@ -551,13 +555,15 @@ export default class Game {
 
       // First-person rifle: sway/bob/ADS driven by the same stance state,
       // hidden in third person so it doesn't float beside the body. Also
-      // hidden while unarmed (Level 2 before the security-locker pickup).
-      this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady);
+      // hidden while unarmed (Level 2 before the security-locker pickup) and
+      // while scoped (the optic overlay replaces the viewmodel).
+      this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady && !scoped);
       this.weapon.update(dt, {
         moving: this.player._charState.moving,
         sprinting: this.player._charState.sprinting,
         aiming,
       });
+      this.ui.setScoped(scoped);
 
       // Procedural soundscape: footsteps, heartbeat, growls, distant creaks,
       // the creature's own heavy footfalls, and muffled breath while hiding.

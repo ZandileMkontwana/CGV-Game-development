@@ -70,7 +70,9 @@ export default class CameraController {
     if (this.input.justPressed('KeyT') || this.input.justPressed('KeyL')) this.flashlightOn = !this.flashlightOn;
     this.flashlight.intensity = this.flashlightOn ? (this.isFirstPerson ? 34 : 24) : 0;
     const aim = !!state.aiming;
-    const lookScale = aim ? 0.5 : 1;
+    // Scoped = eye to the optic: heaviest zoom, tightest look control.
+    const scoped = !!state.scoped;
+    const lookScale = scoped ? 0.3 : aim ? 0.5 : 1;
     const keys = this.input.keys;
     if (this.input.mouse.locked) {
       this.yawObject.rotation.y -= this.input.mouse.dx * this.sensitivity * lookScale;
@@ -132,7 +134,7 @@ export default class CameraController {
       this.camera.position.y += (Math.random() - 0.5) * this.shakeIntensity * 0.25;
     }
     this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 2.5);
-    const fov = aim ? 56 : state.sprinting && this.motionEnabled ? 80 : 74;
+    const fov = scoped ? 26 : aim ? 56 : state.sprinting && this.motionEnabled ? 80 : 74;
     this.camera.fov += (fov - this.camera.fov) * blend;
     this.camera.updateProjectionMatrix();
     this.yawObject.updateMatrixWorld(true);
