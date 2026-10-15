@@ -5,6 +5,9 @@ node_modules/
 dist/
 submission/
 
+# Archives
+*.zip
+
 # Editor / IDE
 .vscode/
 .idea/

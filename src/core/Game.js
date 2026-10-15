@@ -222,10 +222,9 @@ export default class Game {
     this._fpsTime = 0;
 
     // --- Audio ---------------------------------------------------------------
-    // Procedural horror score/effects plus bundled PA voice clips.
+    // Procedural horror score/effects — no spoken dialogue (see AudioManager).
     this.audio = new AudioManager();
     this.ui.connect(this.audio, this.camera, this.gameState);
-    this.audio.loadAnnouncements(PA_ANNOUNCEMENTS, this.loadingManager);
     this._monsterSeen = false; // one first-sighting sting per level
     this._camPosVec = new THREE.Vector3(); // reused in the sight check
     this._fwdVec = new THREE.Vector3();
@@ -659,7 +658,6 @@ export default class Game {
   _loadLevel(levelNum) {
     this.ui.reset();
     this.ui.setLevel(levelNum);
-    this.audio.stopAnnouncement();
     this.shaders.clearLevelVisuals();
     this.postfx.resetFrameTiming();
     this.postfx.setLevel(levelNum);
@@ -814,8 +812,11 @@ export default class Game {
 
   _announce(name) {
     const announcement = PA_ANNOUNCEMENTS[name];
+    if (!announcement) return;
     this.ui.showAnnouncement(announcement.text);
-    this.audio.playAnnouncement(name);
+    // No spoken dialogue — the facility "speaks" through synthesized
+    // reactor-station alert tones and sirens (see AudioManager.playAlert).
+    this.audio.playAlert(name);
   }
 
   /**
