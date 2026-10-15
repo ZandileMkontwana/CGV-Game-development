@@ -130,6 +130,38 @@ function scorchTexture() {
   _scorchTex = new THREE.CanvasTexture(c);
   return _scorchTex;
 }
+let _sootTex = null;
+function sootTexture() {
+  if (_sootTex) return _sootTex;
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const x = c.getContext('2d');
+  // Soot plume: dense blotches near the base thinning upward, so it reads as
+  // a fire that blackened the surface above it rather than a flat circle.
+  for (let i = 0; i < 60; i++) {
+    const bx = 64 + (Math.random() - 0.5) * 74;
+    const by = S - Math.random() * S;
+    const br = 6 + Math.random() * 26;
+    const g = x.createRadialGradient(bx, by, 0, bx, by, br);
+    const a = 0.10 + 0.30 * Math.random() * (1 - (by / S) * 0.7);
+    g.addColorStop(0, `rgba(10,7,5,${a.toFixed(3)})`);
+    g.addColorStop(1, 'rgba(10,7,5,0)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, S, S);
+  }
+  // Vertical smears add streaking detail.
+  for (let i = 0; i < 22; i++) {
+    const bx = 64 + (Math.random() - 0.5) * 84;
+    const g = x.createLinearGradient(0, S, 0, 0);
+    g.addColorStop(0, 'rgba(8,5,3,0.28)');
+    g.addColorStop(1, 'rgba(8,5,3,0)');
+    x.fillStyle = g;
+    x.fillRect(bx - 1.5, 0, 3, S);
+  }
+  _sootTex = new THREE.CanvasTexture(c);
+  return _sootTex;
+}
 
 export default class LevelManager {
   /**
@@ -690,6 +722,25 @@ export default class LevelManager {
     mesh.position.set(x, y + 0.012, z);
     mesh.rotation.x = -Math.PI / 2;
     mesh.rotation.z = rotY;
+    mesh.userData.ownsGeometry = true;
+    mesh.userData.ownsMaterial = true;
+    this.scene.add(mesh);
+    this._track(mesh);
+    return mesh;
+  }
+
+  /**
+   * Soot stain on a ceiling above a fire (own geometry/material, disposed on
+   * teardown). rotZ spins the plume within the ceiling plane.
+   */
+  _ceilingSoot(x, y, z, size, rotZ = 0) {
+    const mat = new THREE.MeshBasicMaterial({
+      map: sootTexture(), transparent: true, opacity: 0.9,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(Math.PI / 2, 0, rotZ); // face downward
     mesh.userData.ownsGeometry = true;
     mesh.userData.ownsMaterial = true;
     this.scene.add(mesh);
@@ -2261,6 +2312,24 @@ export default class LevelManager {
     // Thick smoke columns billowing up where there are no flames.
     this._createFire('l3-smoke-arena', 3.2, 0.5, -30.0, { flames: 0, smoke: 22, scale: 2.0, sRate: 0.11, light: false });
     this._createFire('l3-smoke-escape', -1.6, 0.5, -48.0, { flames: 0, smoke: 16, scale: 1.6, sRate: 0.14, light: false });
+
+    // ── Fire damage — scorch on the floor and soot blackening the ceiling
+    //    above each blaze, so the burning rooms read as burned. ───────────
+    const fireDamage = [
+      { x: 0.5, z: -26.0, s: 3.4, cy: 3.9 },
+      { x: -6.0, z: -33.0, s: 2.6, cy: 3.9 },
+      { x: -11.5, z: -30.6, s: 2.4, cy: 3.9 },
+      { x: 0.9, z: -3.0, s: 1.8, cy: 2.9 },
+      { x: 5.0, z: -19.0, s: 2.2, cy: 3.9 },
+      { x: -19.5, z: -23.0, s: 2.2, cy: 3.9 },
+      { x: 0.5, z: -44.0, s: 2.2, cy: 2.9 },
+      { x: 3.2, z: -30.0, s: 3.0, cy: 3.9 },
+      { x: -1.6, z: -48.0, s: 2.4, cy: 2.9 },
+    ];
+    for (const d of fireDamage) {
+      this._scorchDecal(d.x, 0, d.z, d.s, Math.random() * Math.PI);
+      this._ceilingSoot(d.x, d.cy, d.z, d.s * 0.9, Math.random() * Math.PI);
+    }
 
     // ── Panicked crowd — staff fleeing through the burning arena ─────────
     const panicRoutes = [

@@ -774,7 +774,7 @@ export default class AudioManager {
       const bp = this._filter('bandpass', hasFlame ? 1500 : 900, 0.8);
       const g = this._gain(0);
       const pan = ctx.createPanner();
-      pan.panningModel = 'inverse';
+      pan.panningModel = 'HRTF';   // binaural spatialisation (only 'HRTF'/'equalpower' are valid)
       pan.distanceModel = 'inverse';
       pan.refDistance = 2.5;
       pan.maxDistance = 30;
