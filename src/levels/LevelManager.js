@@ -52,6 +52,37 @@ function steamTexture() {
   _steamTex = new THREE.CanvasTexture(canvas);
   return _steamTex;
 }
+let _fireTex = null;
+function fireTexture() {
+  if (_fireTex) return _fireTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 1, 32, 32, 31);
+  g.addColorStop(0, 'rgba(255,236,190,0.95)');
+  g.addColorStop(0.3, 'rgba(255,190,110,0.7)');
+  g.addColorStop(0.65, 'rgba(255,140,60,0.28)');
+  g.addColorStop(1, 'rgba(200,70,20,0)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, 64, 64);
+  _fireTex = new THREE.CanvasTexture(c);
+  return _fireTex;
+}
+let _smokeTex = null;
+function smokeTexture() {
+  if (_smokeTex) return _smokeTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 2, 32, 32, 31);
+  g.addColorStop(0, 'rgba(255,255,255,0.72)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.34)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, 64, 64);
+  _smokeTex = new THREE.CanvasTexture(c);
+  return _smokeTex;
+}
 function scorchTexture() {
   if (_scorchTex) return _scorchTex;
   const c = document.createElement('canvas');
@@ -120,6 +151,9 @@ export default class LevelManager {
 
     /** Steam/spark vent emitters with pre-allocated sprite pools. */
     this._steamVents = [];
+
+    /** Fire + smoke emitters {id, x, y, z, flames, smoke, light...} (rebuilt each load). */
+    this._fires = [];
 
     /** Rotating hazard meshes {mesh, speed} (rebuilt each load). */
     this._rotatingHazards = [];
@@ -275,6 +309,7 @@ export default class LevelManager {
     this.heatHazeZones = [];
     this._doors = [];
     this._steamVents = [];
+    this._fires = [];
     this._rotatingHazards = [];
     this._dustFields = [];
     this._dissolveWalls = [];
@@ -497,6 +532,57 @@ export default class LevelManager {
     });
   }
 
+  /**
+   * Fire + smoke emitter. Additive flames sit at the base while a separate
+   * pool of dark smoke sprites billows up and away; an optional flicker
+   * PointLight throws the burning glow onto nearby geometry.
+   */
+  _createFire(id, x, y, z, o = {}) {
+    const nf = o.flames === undefined ? 10 : o.flames;
+    const ns = o.smoke === undefined ? 12 : o.smoke;
+    const flames = [];
+    for (let i = 0; i < nf; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: fireTexture(), color: 0xffffff, transparent: true, opacity: 0,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const s = new THREE.Sprite(mat);
+      s.scale.set(0.4, 0.4, 1);
+      s.position.set(x, y, z);
+      s.visible = false;
+      s.userData.ownsMaterial = true; // Sprite shares its geometry — do not dispose it
+      this.scene.add(s);
+      this._track(s);
+      flames.push(s);
+    }
+    const smoke = [];
+    for (let i = 0; i < ns; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: smokeTexture(), color: 0x2b2b2c, transparent: true, opacity: 0,
+        depthWrite: false, blending: THREE.NormalBlending,
+      });
+      const s = new THREE.Sprite(mat);
+      s.scale.set(0.7, 0.7, 1);
+      s.position.set(x, y, z);
+      s.visible = false;
+      s.userData.ownsMaterial = true;
+      this.scene.add(s);
+      this._track(s);
+      smoke.push(s);
+    }
+    if (o.light !== false) {
+      this._flickerLight(x, y + 0.7, z, o.color ?? 0xff7020, o.intensity ?? 1.1, o.range ?? 10);
+    }
+    this._fires.push({
+      id, x, y, z, flames, smoke,
+      fIdx: 0, sIdx: 0, ft: 0, st: 0,
+      fRate: o.fRate || 0.07, sRate: o.sRate || 0.17,
+      rise: o.rise || 2.1, scale: o.scale || 1,
+      fLife: new Float32Array(nf), fVy: new Float32Array(nf), fMax: new Float32Array(nf),
+      sLife: new Float32Array(ns), sVy: new Float32Array(ns), sMax: new Float32Array(ns),
+    });
+  }
+
   /** Disable a steam vent by id (stops particle spawning). */
   disableVent(id) {
     const vent = this._steamVents.find(v => v.id === id);
@@ -690,6 +776,54 @@ export default class LevelManager {
         s.material.opacity = t * v.alpha;
         const sc = v.rise < 0 ? 0.06 + (1 - t) * 0.06 : 0.25 + (1 - t) * 0.55;
         s.scale.set(sc, sc, 1);
+      }
+    }
+
+    // Fire + smoke: flames rise and cool to red; smoke billows and fades.
+    for (const f of this._fires) {
+      const sc = f.scale;
+      f.ft += dt;
+      while (f.flames.length && f.ft >= f.fRate) {
+        f.ft -= f.fRate;
+        const i = f.fIdx = (f.fIdx + 1) % f.flames.length;
+        const s = f.flames[i];
+        f.fLife[i] = f.fMax[i] = 0.5 + Math.random() * 0.35;
+        f.fVy[i] = f.rise * (0.8 + Math.random() * 0.5);
+        s.position.set(f.x + (Math.random() - 0.5) * 0.5 * sc, f.y + Math.random() * 0.15, f.z + (Math.random() - 0.5) * 0.5 * sc);
+        s.visible = true;
+      }
+      f.st += dt;
+      while (f.smoke.length && f.st >= f.sRate) {
+        f.st -= f.sRate;
+        const i = f.sIdx = (f.sIdx + 1) % f.smoke.length;
+        const s = f.smoke[i];
+        f.sLife[i] = f.sMax[i] = 1.4 + Math.random() * 1.1;
+        f.sVy[i] = f.rise * (0.4 + Math.random() * 0.3);
+        s.position.set(f.x + (Math.random() - 0.5) * 0.7 * sc, f.y + 0.5 * sc, f.z + (Math.random() - 0.5) * 0.7 * sc);
+        s.visible = true;
+      }
+      for (let i = 0; i < f.flames.length; i++) {
+        if (f.fLife[i] <= 0) continue;
+        f.fLife[i] -= dt;
+        const s = f.flames[i];
+        if (f.fLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
+        s.position.y += f.fVy[i] * dt;
+        const t = f.fLife[i] / f.fMax[i];
+        s.material.opacity = t * 0.55;
+        s.material.color.setRGB(0.85 + 0.15 * t, 0.18 + 0.62 * t, 0.03 + 0.25 * t * t);
+        const p = (0.24 + (1 - t) * 0.4) * sc;
+        s.scale.set(p, p, 1);
+      }
+      for (let i = 0; i < f.smoke.length; i++) {
+        if (f.sLife[i] <= 0) continue;
+        f.sLife[i] -= dt;
+        const s = f.smoke[i];
+        if (f.sLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
+        s.position.y += f.sVy[i] * dt;
+        const t = f.sLife[i] / f.sMax[i];
+        s.material.opacity = t * (1 - t) * 2.4;
+        const p = (0.7 + (1 - t) * 1.5) * sc;
+        s.scale.set(p, p, 1);
       }
     }
 
@@ -1906,6 +2040,18 @@ export default class LevelManager {
     // Exit-room ceiling about to come down.
     dissolveChunk(4.0, 0.4, 2.4, 0, 3.8, -54.6);
     dissolveChunk(4.0, 0.4, 2.4, 0, 3.8, -57.0);
+
+    // ── Burning wreckage — the arena and its side rooms are on fire ──────
+    this._createFire('l3-fire-arena', 0.5, 0.2, -26.0, { scale: 1.5, flames: 14, smoke: 24, intensity: 1.5, range: 14 });
+    this._createFire('l3-fire-arena2', -6.0, 0.2, -33.0, { scale: 1.1, intensity: 1.2 });
+    this._createFire('l3-fire-gen', -11.5, 0.2, -30.6, { scale: 1.3, intensity: 1.2, light: false });
+    this._createFire('l3-fire-entry', 0.9, 0.2, -3.0, { scale: 0.9, light: false });
+    this._createFire('l3-fire-arena3', 5.0, 0.2, -19.0, { scale: 1.0, light: false });
+    this._createFire('l3-fire-gallery', -19.5, 0.2, -23.0, { scale: 1.0, light: false });
+    this._createFire('l3-fire-escape', 0.5, 0.2, -44.0, { scale: 1.0, light: false });
+    // Thick smoke columns billowing up where there are no flames.
+    this._createFire('l3-smoke-arena', 3.2, 0.5, -30.0, { flames: 0, smoke: 22, scale: 2.0, sRate: 0.11, light: false });
+    this._createFire('l3-smoke-escape', -1.6, 0.5, -48.0, { flames: 0, smoke: 16, scale: 1.6, sRate: 0.14, light: false });
 
     // ── Fog ──────────────────────────────────────────────────────────────
     this.fogColor = 0x10131a;
