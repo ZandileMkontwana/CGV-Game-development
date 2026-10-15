@@ -1234,33 +1234,64 @@ export default class AudioManager {
   }
 
   _step(sprint) {
+    // Humanise every footfall: the impact volume and pitch are jittered so no
+    // two steps are identical. Under the main impact sit three optional layers
+    // — a bright grit tick (the sole breaking contact), a soft scuff drag, and
+    // a short resonant tail (the deck ringing underfoot on metal floors).
+    const vol = (sprint ? 0.15 : 0.1) * (0.82 + Math.random() * 0.36);
+    const metal = this._level === 1;
+    // A small per-step stereo bias keeps steps from sounding dead-centre.
+    const panner = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+    let dest = this.master;
+    if (panner) {
+      panner.pan.value = (Math.random() - 0.5) * 0.35;
+      panner.connect(this.master);
+      dest = panner;
+    }
     // Recorded take takes priority; falls back to the synthesized step until
     // the sample has finished decoding (or if it is missing).
-    if (this._playFootstep(sprint ? 0.85 : 0.68)) return;
-    const metal = this._level === 1;
-    this._burst({
-      dur: 0.1,
-      vol: sprint ? 0.15 : 0.1,
-      type: 'lowpass',
-      freq: (metal ? 700 : 240) + Math.random() * 120,
-      attack: 0.004,
-    });
-    if (metal || Math.random() < 0.4) {
-      this._burst({ dur: 0.03, vol: 0.04, type: 'bandpass', freq: 2400 + Math.random() * 900, q: 2 });
+    const played = this._playFootstep(sprint ? 0.85 : 0.68, dest);
+    // Body thud grounds the step — skipped when a full take already supplies it.
+    if (!played) {
+      this._burst({
+        dur: 0.1, vol, type: 'lowpass',
+        freq: (metal ? 700 : 240) + Math.random() * 160,
+        attack: 0.004, destination: dest,
+      });
+    }
+    // Grit tick: always present on metal, occasional on softer floors.
+    if (metal || Math.random() < 0.5) {
+      this._burst({
+        dur: 0.03, vol: vol * (played ? 0.3 : 0.35), type: 'bandpass',
+        freq: 2200 + Math.random() * 1400, q: 2, destination: dest,
+      });
+    }
+    // Scuff: a friction drag trailing the step (~40% of steps).
+    if (Math.random() < 0.4) {
+      this._burst({
+        dur: 0.06, vol: vol * 0.22, type: 'bandpass',
+        freq: 1400 + Math.random() * 800, q: 0.7, attack: 0.012, destination: dest,
+      });
+    }
+    // Resonant tail: the deck ringing underfoot.
+    if (metal) {
+      this._chirp(190 + Math.random() * 70, 95, 0.18, vol * 0.12, 'sine', undefined, dest);
     }
   }
 
   /**
    * Play one pre-cut footstep take from the loaded sample. A random take is
    * chosen and pitch-jittered so repeated steps never sound identical.
+   * @param {number} vol   gain of the take
+   * @param {AudioNode} [dest] optional destination (lets the caller pan it)
    * @returns {boolean} true if a recorded take played.
    */
-  _playFootstep(vol) {
+  _playFootstep(vol, dest) {
     const fs = this._footstep;
     if (!fs || !fs.segments.length) return false;
     const ctx = this.ctx;
     const seg = fs.segments[(Math.random() * fs.segments.length) | 0];
-    const rate = 0.94 + Math.random() * 0.12;
+    const rate = 0.9 + Math.random() * 0.18; // wide per-step pitch jitter
     const src = ctx.createBufferSource();
     src.buffer = fs.buffer;
     src.playbackRate.value = rate;
@@ -1272,7 +1303,7 @@ export default class AudioManager {
     g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
     g.gain.setValueAtTime(vol, t + Math.max(0.02, dur - 0.04));
     g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
-    src.connect(g).connect(this.master);
+    src.connect(g).connect(dest || this.master);
     src.start(t, seg.offset, seg.duration);
     src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
     return true;
