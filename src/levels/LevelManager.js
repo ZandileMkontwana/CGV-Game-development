@@ -28,7 +28,6 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import LevelKit from './LevelKit.js';
 import StaticBatch from './StaticBatch.js';
 import LabChamber from './LabChamber.js';
@@ -293,15 +292,6 @@ export default class LevelManager {
     /** GLTF loader for Blender .glb models (reused across levels). */
     this._gltfLoader = new GLTFLoader();
 
-    /**
-     * Realistic human crowd model (three.js sample soldier.glb). Loaded once,
-     * then SkeletonUtils-cloned per NPC so every figure has its own skeleton
-     * and Walk/Run animation. Null until ready — walkers fall back to the
-     * procedural workers meanwhile (or permanently, if the fetch fails).
-     */
-    this._humanTemplate = null;
-    this._loadHumanTemplate();
-
     /** Path → GLTF promise; shared resources live for this manager's lifetime. */
     this._modelCache = new Map();
 
@@ -432,9 +422,9 @@ export default class LevelManager {
 
     // Procedural worker NPCs own their geometries/materials (built fresh per
     // level) — traverse-dispose them. Shared cached textures (bump map)
-    // survive material.dispose() by design. Human crowd clones (soldier.glb)
-    // instead carry kitShared: keep their shared geometry/material caches and
-    // dispose only the per-instance tinted material clone.
+    // survive material.dispose() by design. The crowd is entirely these
+    // procedural scientist/engineer figures; no skinned soldier clones are
+    // placed here (soldier.glb is reserved for the player operator only).
     for (const w of this._walkers) {
       this.scene.remove(w.npc.group);
       w.npc.dispose?.();
@@ -1121,14 +1111,13 @@ export default class LevelManager {
    *
    * @param {'tech'|'coat'|'supervisor'|'security'} variant
    * @param {{x:number,z:number}[]} path  patrol loop, ≥2 points
-   * @param {{speed?:number, human?:boolean, npc?:object}} [o]  human:false or an
-   *        explicit npc overrides the default realistic human figure
+   * @param {{speed?:number, npc?:object}} [o]  explicit npc overrides the default
    */
   _addWalker(variant, path, o = {}) {
-    // Realistic human (soldier.glb clone) by default, procedural worker as the
-    // fallback while the template is still loading or if it failed entirely.
-    const npc = o.npc
-      || (o.human === false ? createWorker(variant) : (this._createHumanNpc() || createWorker(variant)));
+    // Station staff are scientists/engineers (lab coat, jumpsuit, civvies) —
+    // the procedural worker builder. No soldier assets appear in the crowd;
+    // the skinned soldier.glb is reserved for the player operator only.
+    const npc = o.npc || createWorker(variant);
     npc.group.position.set(path[0].x, 0, path[0].z);
     this.scene.add(npc.group);
     const walker = {
@@ -1154,9 +1143,8 @@ export default class LevelManager {
    * lean, pumping arms, glances back over the shoulder).
    */
   _addPanicRunner(path, o = {}) {
-    const w = this._addWalker(o.variant || 'tech', path, {
+    const w = this._addWalker(o.variant || 'coat', path, {
       speed: o.speed || 3.4 + Math.random() * 1.3,
-      human: o.human,
     });
     w.state = 'flee';
     w.fleeRoute = path;
@@ -1168,85 +1156,6 @@ export default class LevelManager {
     // heavy Level-3 frame budget in check.
     w.npc.group.traverse((c) => { if (c.isMesh) c.castShadow = false; });
     return w;
-  }
-
-  /** Fetch the realistic human model once; failure falls back to workers. */
-  _loadHumanTemplate() {
-    this._gltfLoader.loadAsync('models/soldier.glb')
-      .then((gltf) => {
-        this._humanTemplate = { scene: gltf.scene, animations: gltf.animations || [] };
-      })
-      .catch(() => {
-        console.warn('[LevelManager] soldier.glb unavailable — crowd uses procedural workers');
-      });
-  }
-
-  /**
-   * Build one realistic human NPC by SkeletonUtils-cloning the loaded
-   * soldier.glb template, so each figure gets its own skeleton and Walk/Run
-   * animation blend. Returns the same { group, update } shape as
-   * createWorker() (plus dispose()), or null while the template is still
-   * loading / if it failed — callers then fall back to the procedural worker.
-   */
-  _createHumanNpc() {
-    const tpl = this._humanTemplate;
-    if (!tpl) return null;
-
-    const model = SkeletonUtils.clone(tpl.scene);
-    // soldier.glb is authored facing -Z; the walker yaw convention faces +Z.
-    model.rotation.y = Math.PI;
-    model.scale.setScalar(0.94 + Math.random() * 0.12);
-    const tint = new THREE.Color().setHSL(
-      Math.random(), 0.16 + Math.random() * 0.18, 0.44 + Math.random() * 0.15);
-    model.traverse((child) => {
-      if (!child.isMesh) return;
-      child.castShadow = false;      // crowd ambience — spare the frame budget
-      child.receiveShadow = true;
-      child.frustumCulled = false;   // skinned bounds — never pop out of view
-      // Geometry + textures stay in the shared soldier.glb cache; only the
-      // material is cloned per instance so each figure can be tinted.
-      child.userData.kitShared = true;
-      const src = child.material;
-      if (!src) return;
-      const cloneOne = (m) => { const c = m.clone(); if (c.color) c.color.multiply(tint); return c; };
-      child.material = Array.isArray(src) ? src.map(cloneOne) : cloneOne(src);
-      child.userData.ownsMaterial = true;
-    });
-
-    const mixer = new THREE.AnimationMixer(model);
-    const actions = [];
-    for (const name of ['Walk', 'Run']) {
-      const clip = THREE.AnimationClip.findByName(tpl.animations, name);
-      if (!clip) continue;
-      const action = mixer.clipAction(clip);
-      action.play();
-      action.setEffectiveWeight(0);
-      if (name === 'Run') action.time = Math.random() * clip.duration;
-      actions.push({ action, run: name === 'Run' });
-    }
-
-    const group = new THREE.Group();
-    group.add(model);
-
-    return {
-      group,
-      update(dt, st) {
-        if (!actions.length) return;
-        const moving = !!(st && st.moving);
-        const running = moving && (st.fleeing || (st.speed || 0) > 2.2);
-        const only = actions.length === 1;
-        for (const a of actions) {
-          // Run drives the panic crowd, Walk the idle patrol — blend so a
-          // state change never snaps the pose.
-          const want = only ? 1 : (running ? (a.run ? 1 : 0) : (a.run ? 0 : 1));
-          const w = a.action.getEffectiveWeight();
-          a.action.setEffectiveWeight(w + (want - w) * Math.min(1, dt * 7));
-        }
-        // Hold the pose during a walker's brief pause rather than moonwalking.
-        mixer.update(moving ? dt : 0);
-      },
-      dispose() { mixer.stopAllAction(); mixer.uncacheRoot(model); },
-    };
   }
 
   /**
@@ -1682,8 +1591,8 @@ export default class LevelManager {
       { x: 2.4, z: -7.2 }, { x: -1.6, z: -7.2 },
       { x: -1.6, z: -2.6 }, { x: 2.4, z: -2.6 },
     ]);
-    // Reception: security guard walking the entrance lane by the desk.
-    this._addWalker('security', [
+    // Reception: scientist escorting visitors across the entrance lane.
+    this._addWalker('coat', [
       { x: -1.9, z: -2.0 }, { x: -1.9, z: -6.4 },
       { x: 0.9, z: -6.4 }, { x: 0.9, z: -2.0 },
     ]);
@@ -2453,7 +2362,7 @@ export default class LevelManager {
       [{ x: 2.5, z: -35.0 }, { x: -1.5, z: -13.5 }],
     ];
     panicRoutes.forEach((route, i) => {
-      this._addPanicRunner(route, { variant: i % 2 ? 'coat' : 'security', speed: 3.6 + (i % 3) * 0.4 });
+      this._addPanicRunner(route, { variant: i % 2 ? 'coat' : 'tech', speed: 3.6 + (i % 3) * 0.4 });
     });
 
     // ── Fog ──────────────────────────────────────────────────────────────
