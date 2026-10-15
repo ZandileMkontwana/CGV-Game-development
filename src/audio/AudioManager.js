@@ -58,6 +58,8 @@ export default class AudioManager {
     this._dist = null;      // cached waveshaper curve
     this._footstep = null;  // { buffer, segments[] } recorded step sample
     this._doorSample = null; // { buffer, range } recorded door-open sample
+    this._suspense = null;   // { buffer } level-start suspense track
+    this._suspenseSrc = null;
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -123,6 +125,7 @@ export default class AudioManager {
     this._unlocked = true;
     this._loadFootstepSample();
     this._loadDoorSample();
+    this._loadSuspenseSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) this._startMenuBed();
@@ -450,6 +453,7 @@ export default class AudioManager {
 
   stopAmbient() {
     this._stopBed(1.2);
+    this.stopSuspense(1.2);
     this.setBreathing(false, 0);
     this.setRecharge(false);
   }
@@ -1111,6 +1115,60 @@ export default class AudioManager {
     const offset = Math.max(0, ((a - 2) * win) / rate);
     const end = Math.min(buffer.duration, ((b + 3) * win) / rate);
     return { offset, duration: Math.max(0.05, end - offset) };
+  }
+
+  /** Fetch + decode the level-start / stage-switch suspense track. */
+  async _loadSuspenseSample() {
+    if (!this.ctx || this._suspense) return;
+    try {
+      const res = await fetch('/assets/audio/music/suspense_intro.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._suspense = { buffer: audio };
+    } catch (e) { /* keep the synthesized fallback */ }
+  }
+
+  /**
+   * Play the suspense cue at the start of a run and on each stage switch.
+   * Restarts if one is already sounding and ducks the ambience beneath it.
+   */
+  playSuspense() {
+    if (!this._unlocked || this.muted) return;
+    this.stopSuspense(0.05);
+    const sample = this._suspense;
+    if (!sample) { this._playSuspenseFallback(); return; }
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = sample.buffer;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    const dur = sample.buffer.duration;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.85, t + 0.25);
+    g.gain.setValueAtTime(0.85, t + Math.max(0.5, dur - 1.5));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.music);
+    src.start(t);
+    this._suspenseSrc = src;
+    this.duck(0.6, dur * 1000);
+    src.onended = () => {
+      try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ }
+      if (this._suspenseSrc === src) this._suspenseSrc = null;
+    };
+  }
+
+  /** Fade out the suspense cue (level end, menu, or a new stage switch). */
+  stopSuspense(fade = 0.6) {
+    const src = this._suspenseSrc;
+    if (!src) return;
+    this._suspenseSrc = null;
+    try { src.stop(this.ctx.currentTime + Math.max(0, fade)); } catch (e) { /* already stopped */ }
+  }
+
+  /** Synth stand-in used only if the suspense sample is missing. */
+  _playSuspenseFallback() {
+    this._chirp(110, 82.4, 3.0, 0.22, 'sawtooth');
+    this._chirp(55, 41.2, 3.4, 0.18, 'sine');
   }
 
   /** Double-thump heartbeat. */
