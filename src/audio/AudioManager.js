@@ -223,11 +223,9 @@ export default class AudioManager {
     const now = this.ctx.currentTime;
     if (now >= this._scoreTime) {
       if (this._level === 1) {
-        // Calm lab: a slow, consonant major-ish motif — nothing threatening.
-        const note = CALM_NOTES[this._scoreStep % CALM_NOTES.length];
-        this._scoreNote(note, 2.8, 0.18);
-        this._scoreNote(note * 1.5, 2.6, 0.055);
-        this._scoreTime = now + 2.4;
+        // Level 1 carries only the recorded machinery ambience — no score
+        // motif layered over it.
+        this._scoreTime = now + 3;
       } else if (this._level === 2) {
         // Suspense: a minor-second cluster with an icy high shimmer.
         const note = HUNT_NOTES[this._scoreStep % HUNT_NOTES.length];
