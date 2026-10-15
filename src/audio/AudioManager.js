@@ -947,7 +947,7 @@ export default class AudioManager {
   _step(sprint) {
     // Recorded take takes priority; falls back to the synthesized step until
     // the sample has finished decoding (or if it is missing).
-    if (this._playFootstep(sprint ? 0.5 : 0.36)) return;
+    if (this._playFootstep(sprint ? 0.85 : 0.68)) return;
     const metal = this._level === 1;
     this._burst({
       dur: 0.1,
