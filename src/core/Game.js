@@ -19,6 +19,7 @@ import LabOpening from './LabOpening.js';
 import HuntAwareness from './HuntAwareness.js';
 import BossEncounter from './BossEncounter.js';
 import ServerAmbush from './ServerAmbush.js';
+import { ESCAPE_CHECKPOINTS } from './MissionProgress.js';
 import WeaponViewmodel from './WeaponViewmodel.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
@@ -98,6 +99,9 @@ export default class Game {
     this.gameState = new GameState();
     this.levels = new LevelManager(this.scene, this.physics);
     this.shaders = new ShaderManager(this.scene);
+    this.levels.onModelPlaced = model => {
+      if (this.levels.labPower) this.shaders.labPowerLighting.apply(model);
+    };
 
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
@@ -131,8 +135,7 @@ export default class Game {
     // Level 1 scripted creature reveal state (rebuilt on each level load).
     this._l1Reveal = null;
 
-    // Level 2 opens unarmed — firing unlocks at the staging-bay security
-    // locker (see _takeSidearm); the breach briefing beats live in _l2Opening.
+    // The trained pulse tool remains available throughout the campaign.
     this._weaponReady = true;
     this._l2Opening = null;
 
@@ -175,12 +178,6 @@ export default class Game {
         dismiss: 'event', dismissEvent: 'relayJump',
       },
       {
-        text: 'SHOOT ALL 3 GLOWING PANELS',
-        sub: 'LOOK UP AND DOWN — THEY ARE AT DIFFERENT HEIGHTS',
-        trigger: 'zone', triggerXMore: 9, triggerZRange: [-14, -24],
-        dismiss: 'event', dismissEvent: 'relayShoot',
-      },
-      {
         text: 'THE GATE IS OPEN — MOVE THROUGH',
         sub: 'FOLLOW THE MARKERS TO RECEPTION',
         trigger: 'event', triggerEvent: 'allTrainingDone', dismiss: 'zone',
@@ -192,8 +189,8 @@ export default class Game {
         trigger: 'zone', triggerZ: -37, dismiss: 'zone', dismissZ: -44,
       },
       {
-        text: 'APPROACH THE CONSOLE — SOMETHING IS WRONG',
-        sub: 'IT IS TOO LATE — THE CONTAINMENT HAS FAILED',
+        text: 'RESTORE AUXILIARY POWER IN LAB A-2',
+        sub: 'PULSE THE AMBER RELAY BESIDE THE SCIENTIST',
         trigger: 'zone', triggerZ: -54, dismiss: 'reveal',
         dismissRevealPhase: 'mutate',
       },
@@ -239,12 +236,13 @@ export default class Game {
         title: 'WITNESS',
         narrative: [
           'You are the engineer on shift at the containment lab.',
-          'A scientist\u2019s experiment has gone wrong \u2014 the creature in the containment tube is changing.',
-          'Make your way through the training wing, then reach the laboratory to witness the transformation.',
+          'Auxiliary power is offline. The scientist is waiting for repairs in Lab A-2.',
+          'Complete the training wing, then pulse the amber relay in the laboratory to restore power.',
         ],
         objectives: [
           'Complete the training rooms to unlock the gate',
           'Navigate through Reception to the Laboratory',
+          'Pulse the amber relay to restore auxiliary power',
           'Witness the scientist\u2019s mutation',
           'Survive the creature\u2019s emergence',
           'Find the exit through Maintenance',
@@ -255,26 +253,29 @@ export default class Game {
         narrative: [
           'The facility is in ruins. The creature is loose in the damaged corridors.',
           'It knows these halls better than you \u2014 but you have the pulse tool.',
-          'Stay quiet, stay hidden, and find a way out.',
+          'Two scientists are trapped in medical. Their evacuation and the experiment records are your way through lockdown.',
         ],
         objectives: [
-          'Navigate the damaged facility',
-          'Avoid or evade the creature',
-          'Restore power to unlock the path forward',
-          'Reach the reactor control room',
+          'Pulse the blue entry relay, then the medical rescue relay west of crew quarters',
+          'Stay near both scientists and escort them north through medical to green refuge',
+          'Pulse both amber pressure valves to release the server-room bypass',
+          'Restore east archive power; pulse the evidence terminal and stay inside its glowing floor outline',
+          'Evade the creatures and reach the green core-access beacon',
         ],
       },
       3: {
         title: 'THE COLLAPSE',
         narrative: [
           'The automated failsafe protocol has activated.',
-          'The facility will be destroyed \u2014 you have minutes to escape.',
-          'The creature guards the exit. Put it down and run.',
+          'Emergency generators in the west pump gallery and east observation booth must be restored.',
+          'The creature is already hunting. Restore power to expose its nodes, then defeat it and escape within 90 seconds.',
         ],
         objectives: [
-          'Defeat the creature before the failsafe detonation',
-          'Shoot the glowing weak points to damage it',
-          'Escape through the failsafe seal door',
+          'Pulse both generator panels; avoid the moving pump arm and timed electrical floor',
+          'Dodge the amber charge line and sweep ring; pulse cyan nodes during recovery',
+          'Destroy all three nodes, one per recovery opening, to release the surface seal',
+          'Follow green lights, detour east around rubble and avoid flashing ceiling-failure zones',
+          'Reach the surface beacon before the 90-second escape countdown ends',
         ],
       },
     };
@@ -383,6 +384,7 @@ export default class Game {
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       if (target.userData.storyAction === 'restore-lab-power') this._repairLabPower(target);
+      if (target.userData.missionAction) this.levels.expansion?.activate(target.userData.missionAction, this.player.position);
       // The creature is killable from the hunt (L2) onward. Level 1's creature
       // is a scripted cameo — shots there must not cut the reveal short.
       const monsterHit = this.gameState.currentLevel >= 2 && this.monster.isActive;
@@ -390,7 +392,7 @@ export default class Game {
         // A shot into an exposed culture sac ruptures it outright.
         for (const wp of this.monster.weakPoints) {
           if (wp === target && !wp.userData.destroyed) {
-            this.monster.damageWeakPoint(wp);
+            if (!this.monster.damageWeakPoint(wp)) break;
             this.shaders.flashWeakPoint(wp); // reactive glow flash on hit
             // Remove the destroyed weak point from the raycast list so
             // later shots pass through instead of hitting an invisible mesh.
@@ -502,12 +504,13 @@ export default class Game {
     });
     this.monster.on('bossCue', stage => {
       if (this.gameState.currentLevel !== 3) return;
-      if (stage === 'windup') this.audio.play('bossWindup');
+      if (stage === 'windup' || stage === 'sweepWindup') this.audio.play('bossWindup');
       if (stage === 'pursuit' && !this._bossIntroAnnounced) {
         this._bossIntroAnnounced = true;
         this.audio.play('roar');
-        this.ui.showAnnouncement('Entity signature holds the surface seal. Destroy its three exposed nodes to release evacuation.');
-        this.ui.showTutorial(null);
+        this.ui.showAnnouncement(this.monster.boss.armed
+          ? 'Entity approaching. Dodge amber attack warnings; pulse cyan nodes during recovery.'
+          : 'Entity approaching! Keep moving and use cover. Restore both generators to disable its node shields.');
       }
     });
 
@@ -650,6 +653,10 @@ export default class Game {
       });
       this.shaders.update(dt);
       this.ui.update(dt);
+      if (this.input.justPressed('KeyM')) this.ui.map.toggle();
+      this.ui.map.update(dt, this.player.position, this.camera.yawObject.rotation.y);
+      this._updateExpansion(dt);
+      if (!this.gameState.isPlaying) { this.input.endFrame(); return; }
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
       if (this.gameState.currentLevel === 2) this._updateServerAmbush(dt);
       this._updateHealthPacks(dt);
@@ -665,7 +672,7 @@ export default class Game {
 
       // First-person rifle: sway/bob/ADS driven by the same stance state,
       // hidden in third person so it doesn't float beside the body. Also
-      // hidden while unarmed (Level 2 before the security-locker pickup).
+      // hidden when the weapon is stowed.
       this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady);
       this.weapon.update(dt, {
         moving: this.player._charState.moving,
@@ -752,7 +759,12 @@ export default class Game {
       // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
       // Raycast list includes the monster's body + weak points (see _loadLevel).
       this.pulseTool.update(dt, this._shootables);
-      if (this.gameState.currentLevel === 3 && !this._collapseActive) this.ui.setBossStatus(this.monster.weakPoints, this.monster.boss?.stage);
+      if (this.gameState.currentLevel === 3 && !this._collapseActive) {
+        const boss = this.monster.boss;
+        const needsPower = !boss.armed && ['waiting', 'pursuit', 'recover'].includes(boss.stage);
+        this.ui.setBossStatus(this.monster.weakPoints, needsPower ? 'power'
+          : boss.stage === 'recover' && !boss.vulnerable ? 'shielded' : boss.stage);
+      }
       this.audio.setRecharge(this.pulseTool.energy < this.pulseTool.maxEnergy && this.gameState.isPlaying);
       if (this.gameState.currentLevel === 2) this._updateHunt();
       // Feed the bolt's current position into its fading trail (Kutloano).
@@ -810,6 +822,7 @@ export default class Game {
     this.postfx.setLevel(levelNum);
     // 1. Build level geometry and physics (Person B's LevelManager).
     this.levels.load(levelNum);
+    this.ui.map.setLevel(this.levels);
 
     // 1b. Camera: clear view/aim offsets from the last level and pick up this
     //     level's occluders so the third-person camera sweeps around walls.
@@ -848,13 +861,8 @@ export default class Game {
     this.shaders.setDissolveAmount(0);
 
     // 5. Configure the Pulse Tool for this level's targets.
-    this.pulseTool.setLevel(levelNum);
-
-    // 5a. Level 2 opens unarmed: the sidearm waits in the staging-bay
-    //     security locker (see _takeSidearm) — firing stays gated till then.
-    this._weaponReady = levelNum !== 2;
-    this.pulseTool.enabled = this._weaponReady;
-    this.player.weaponStowed = !this._weaponReady;
+    this._resetPulseTool(levelNum);
+    this._expansionBeat = '';
 
     // Drop any latched ADS when a level (re)loads.
     this._adsToggled = false;
@@ -875,7 +883,7 @@ export default class Game {
     if (showScientist) {
       this._scientist.group.position.set(npcAnchor.x, 0, npcAnchor.z);
       this._scientist.group.rotation.y = faceToRotY(npcAnchor.face);
-      this._scientistState.mode = 'type';
+      this._scientistState.mode = 'idle';
     }
     this._scientist.group.visible = showScientist;
     this._mutateLight.intensity = 0; // standby until the mutation beat
@@ -904,8 +912,8 @@ export default class Game {
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
       1: 'ENGINEERING CALL: RESTORE AUXILIARY POWER IN LAB A-2 — PULSE THE AMBER RELAY',
-      2: 'SECTOR B / TAKE THE PULSE SIDEARM FROM THE STAGING-BAY SECURITY LOCKER',
-      3: 'SURFACE SEAL / DESTROY THREE CYAN NODES: CHEST AND BOTH SHOULDERS',
+      2: 'SECTOR B / PULSE THE BLUE DOOR RELAY — LMB / F TO FIRE',
+      3: 'EMERGENCY POWER / START THE WEST AND EAST GENERATORS (0/2)',
     };
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
@@ -935,23 +943,20 @@ export default class Game {
     this._showBriefing(levelNum);
 
     // 11. Level 2 runs the breach briefing: the PA confirms what happened in
-    //     Lab A-2, then the instructions point at the security locker. Beats
+    //     Lab A-2, then the instructions point at the blue door relay. Beats
     //     only advance during 'playing' so the black transition hides none.
     this._l2Opening = levelNum === 2 ? {
       t: 0, step: 0,
       beats: [
         { at: 1.2, run: () => this._announce('breach') },
-        { at: 7.5, run: () => this.ui.showTutorial({
-          text: 'THE LAB A-2 CULTURE WENT WRONG — SOMETHING IS LOOSE IN SECTOR B',
-          sub: 'It hunts by sight and sound. Keep your distance, stay behind solid cover.',
-        }) },
-        { at: 14.5, run: () => this.ui.showTutorial({
-          text: 'ARM YOURSELF — SECURITY LOCKER, STAGING BAY WEST WALL',
-          sub: 'Walk up to the open locker and press E to take the pulse sidearm.',
-        }) },
-        { at: 21.0, run: () => this.ui.showTutorial(null) },
+        { at: 7.5, run: () => this.ui.showAnnouncement('Medical distress signal detected west of crew quarters. Two survivors need an escort to refuge.') },
       ],
     } : null;
+    this._rangeTutorialVisible = false;
+    // Three's compile traverses hidden meshes too: prepare the scientist,
+    // creature and rupture effects now rather than on the relay shot/reveal.
+    this.shaders.configureLabPower(this.levels.labPower);
+    this.postfx.prepareScene();
   }
 
   /**
@@ -976,7 +981,7 @@ export default class Game {
   /**
    * Level 2 opening — the breach briefing. Staged text beats run while the
    * player keeps control: the PA confirms the containment breach, then the
-   * instructions point at the security locker. Cleared once all beats fire.
+   * instructions point at the blue door relay. Cleared once all beats fire.
    */
   _updateL2Opening(dt) {
     const seq = this._l2Opening;
@@ -990,20 +995,12 @@ export default class Game {
   }
 
   /**
-   * Level 2 — the player takes the pulse sidearm from the staging-bay
-   * security locker. Firing, the first-person rifle and the third-person
-   * held weapon all unlock here; the hunt beat machine retakes the HUD.
+   * Reset ammunition and equip the trained tool on every level and retry.
    */
-  _takeSidearm(pickup) {
-    pickup.taken = true;
-    if (pickup.mesh) pickup.mesh.visible = false;
-    if (pickup.light) pickup.light.intensity = 0; // dim, never hide (recompile)
+  _resetPulseTool(levelNum) {
+    this.pulseTool.setLevel(levelNum);
     this._weaponReady = true;
-    this.pulseTool.enabled = true;
     this.player.weaponStowed = false;
-    this.audio.play('clang');
-    this.ui.showPickup('PULSE SIDEARM ACQUIRED — LMB / F TO FIRE');
-    this._huntBeat = ''; // let the hunt beat machine retake the objective
   }
 
   /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
@@ -1013,24 +1010,14 @@ export default class Game {
 
   /**
    * Door interaction — press E near a closed, unlocked door to open it
-   * (no shooting required). Locked doors (the L3 failsafe seal) are skipped:
-   * they open through the scripted boss-death flow only.
+   * (no shooting required). Locked doors can show a hint, but only their
+   * linked relay, puzzle or scripted event can release them.
    */
   _updateDoorInteraction() {
-    // Level 2: the staging-bay weapons locker shares the E-prompt.
-    const pickup = this.levels.weaponPickup;
-    let pickupNear = false;
-    if (pickup && !pickup.taken) {
-      const pdx = this.player.position.x - pickup.x;
-      const pdz = this.player.position.z - pickup.z;
-      pickupNear = pdx * pdx + pdz * pdz < pickup.radius * pickup.radius;
-      if (pickupNear && this.input.justPressed('KeyE')) this._takeSidearm(pickup);
-    }
-
     const doors = this.levels._doors;
     let near = null;
     for (const door of doors) {
-      if (door.opening || door.locked) continue;
+      if (door.opening || (door.locked && !door.lockedHint)) continue;
       const dx = this.player.position.x - door.mesh.position.x;
       const dz = this.player.position.z - door.mesh.position.z;
       if (dx * dx + dz * dz < 6.25) { // 2.5 m reach
@@ -1040,14 +1027,14 @@ export default class Game {
     }
 
     if (this._interactPromptEl) {
-      this._interactPromptEl.classList.toggle('visible', !!near || pickupNear);
-      const prompt = near && near.id === 'l1-exit'
-        ? '[ E ] RELEASE BYPASS DOOR' : '[ E ] OPEN DOOR';
-      this._interactPromptEl.textContent = near || !pickupNear
-        ? prompt : '[ E ] TAKE PULSE SIDEARM';
+      this._interactPromptEl.classList.toggle('visible', !!near);
+      const rescueBlocked = near?.id === 'l2-pressure' && this.levels.expansion?.canOpenPressure === false;
+      const prompt = rescueBlocked ? 'ESCORT BOTH SCIENTISTS TO THE GREEN MEDICAL REFUGE' : near?.lockedHint || (near && near.id === 'l1-exit'
+        ? '[ E ] RELEASE BYPASS DOOR' : '[ E ] OPEN DOOR');
+      this._interactPromptEl.textContent = prompt;
     }
 
-    if (near && this.input.justPressed('KeyE')) {
+    if (near && !near.locked && this.input.justPressed('KeyE')) {
       this.levels.openDoor(near.id);
       this.audio.play('doorOpen');
       if (this._tut) this._tut.doorOpened = true;
@@ -1088,6 +1075,11 @@ export default class Game {
         this.monster.setOccluders(this.levels.occluders);
         this.monster.detectionRange = 0;    // can never detect the player
         this.monster.setActive(false);
+        this.monster.setNavigationObstacles(
+          this.levels._disposables.map(entry => entry.body).filter(body => body?.world),
+          this.levels.navigationBounds
+        );
+        this._l1NavVersion = this.levels.navigationVersion;
         this._l1Reveal = new LabOpening(phase => this._onLabPhase(phase));
         return;
       case 2:
@@ -1117,6 +1109,7 @@ export default class Game {
       case 3:
         this._bossIntroAnnounced = false;
         this.monster.boss = new BossEncounter(stage => this.monster._emit('bossCue', stage));
+        this.monster.boss.armed = false;
         // Boss fight — arena-wide detection, never gives up the chase.
         this.monster.spawn(0, 2, -25);
         if (waypoints.length > 0) {
@@ -1134,7 +1127,7 @@ export default class Game {
         this.monster.chaseSpeed = 4.6;
         this.monster.attackDamage = 22;
         this.monster.bodyShotsPerNode = 3; // the boss absorbs more punishment
-        this.ui.showTutorial({ text: 'CHEST + BOTH SHOULDERS / SHOOT THE CYAN NODES', sub: 'An amber line warns of a charge. Sidestep it, then aim during recovery.' });
+        this.ui.showTutorial({ text: 'RESTORE EMERGENCY POWER / TWO GENERATORS', sub: 'West: pump gallery. East: observation booth. Pulse both amber panels; avoid the machinery and live floor.' });
         break;
     }
     this.monster.setActive(true);
@@ -1158,12 +1151,15 @@ export default class Game {
     const reveal = this.levels.scriptedReveal;
     this.levels.labChamber?.setPhase(phase);
     if (phase === 'powering') {
+      this.levels.labPower?.restore();
+      this._scientistState.mode = 'type';
       this.ui.showTutorial(null);
       this._tut = null;
       this.audio.play('beep');
       this._announce('power');
-      this._setObjective('CONTAINMENT BREACH / GET AWAY FROM THE CHAMBER');
+      this._setObjective('AUXILIARY POWER RESTORED / CULTURE RESTARTING');
     } else if (phase === 'alarm') {
+      this.levels.labPower?.emergency();
       this.levels.labEmergency = true;
       this.shaders.setLabEmergency(true);
       this._scientistState.mode = 'cower';
@@ -1171,8 +1167,7 @@ export default class Game {
       this._mutateLight.intensity = 2;
       this.camera.shake(0.25);
       this.audio.play('alarm');
-      // The alarm empties the station: staff walkers bolt for the entrance.
-      this.levels.evacuateWalkers();
+      this.levels.alertWalkers();
       this._announce('breach');
       this._setObjective('CONTAINMENT FAILURE / STAY CLEAR OF THE CHAMBER');
     } else if (phase === 'mutate') {
@@ -1188,6 +1183,7 @@ export default class Game {
       for (const wp of this.monster.weakPoints) wp.visible = false;
       this.monster.setPatrolWaypoints([]);
       this.monster.setActive(true);
+      this.levels.evacuateWalkers(this.monster.position);
       this.monster.model.scale.setScalar(0.6 * this.monster._modelScale);
       this.monster.model.rotation.y = Math.atan2(this.player.position.x - reveal.spawn.x, this.player.position.z - reveal.spawn.z);
       this.audio.play('roar');
@@ -1219,14 +1215,19 @@ export default class Game {
     const reveal = this.levels.scriptedReveal;
     const opening = this._l1Reveal;
     if (!reveal || !opening) return;
+    this.levels.setWalkerThreat(this.monster.isActive && !this.monster.isDead ? this.monster.position : null);
+    if (this._l1NavVersion !== this.levels.navigationVersion) {
+      this.monster.setNavigationObstacles(
+        this.levels._disposables.map(entry => entry.body).filter(body => body?.world),
+        this.levels.navigationBounds
+      );
+      this._l1NavVersion = this.levels.navigationVersion;
+    }
     if (!opening.entered) {
       const dx = this.player.position.x - reveal.trigger.x;
       const dz = this.player.position.z - reveal.trigger.z;
       if (dx * dx + dz * dz < reveal.trigger.radius * reveal.trigger.radius && opening.enter()) {
-        // Mutation triggers automatically on entry — no relay needed.
-        opening.repaired = true;
-        opening._setPhase('powering');
-        this._setObjective('CONTAINMENT BREACH / GET AWAY FROM THE CHAMBER');
+        this._setObjective('LAB A-2 POWER FAILURE / PULSE THE AMBER RELAY TO RESTORE LIGHTS AND EQUIPMENT');
       }
     }
     opening.update(dt);
@@ -1266,6 +1267,26 @@ export default class Game {
    * @param {number} dt
    */
   _updateTutorial(dt) {
+    // The east room can be completed before the west room. Its lesson owns
+    // the prompt while inside, independently of the corridor/jump hint order.
+    const lesson = this.levels.shootingLesson;
+    if (lesson) {
+      lesson.update(dt, this.player.position);
+      if (lesson.inside) {
+        const message = lesson.message;
+        if (message) {
+          if (!this._tutorialEl.classList.contains('visible')
+            || this._tutorialTextEl.textContent !== message.text
+            || this._tutorialSubEl.textContent !== message.sub) this.ui.showTutorial(message);
+        } else if (this._tutorialEl.classList.contains('visible')) this.ui.showTutorial(null);
+        this._rangeTutorialVisible = !!message;
+        return;
+      }
+      if (this._rangeTutorialVisible) {
+        this.ui.showTutorial(null);
+        this._rangeTutorialVisible = false;
+      }
+    }
     const tut = this._tut;
     if (!tut || !this._tutorialEl) return;
     tut.timer += dt;
@@ -1282,8 +1303,6 @@ export default class Game {
       if (s.dismissEvent === 'relayJump' && tut.relayJump) { tut.step++; tut.timer = 0; continue; }
       // Skip shoot room hint if already completed.
       if (s.dismissEvent === 'relayShoot' && tut.relayShoot) { tut.step++; tut.timer = 0; continue; }
-      // Skip gate hint if all training is done.
-      if (s.triggerEvent === 'allTrainingDone' && tut.allTrainingDone) { tut.step++; tut.timer = 0; continue; }
       break;
     }
 
@@ -1318,9 +1337,14 @@ export default class Game {
 
     // If trigger not met yet, don't show this step (and don't advance).
     if (!triggerMet && !tut.shown.has(tut.step)) return;
+    if (!triggerMet && (step.triggerXLess !== undefined || step.triggerXMore !== undefined)) {
+      this._tutorialEl.classList.remove('visible');
+      return;
+    }
 
     // Show the step if it hasn't been shown yet.
-    if (!tut.shown.has(tut.step)) {
+    if (!tut.shown.has(tut.step) || !this._tutorialEl.classList.contains('visible')
+      || this._tutorialTextEl.textContent !== step.text) {
       this._showTutorialStep(tut.step);
     }
 
@@ -1349,12 +1373,8 @@ export default class Game {
     if (dismissed && tut.timer > 1.6) {
       tut.step++;
       tut.timer = 0;
-      if (tut.step < this._l1Tutorial.length) {
-        this._showTutorialStep(tut.step);
-      } else {
-        this._tutorialEl.classList.remove('visible');
-        this._tut = null;
-      }
+      this._tutorialEl.classList.remove('visible');
+      if (tut.step >= this._l1Tutorial.length) this._tut = null;
     }
   }
 
@@ -1470,8 +1490,10 @@ export default class Game {
     if (ambush.stage === 'warning' && before !== 'warning') {
       this.audio.play('roar');
       this.camera.shake(0.25);
-      this.ui.showAnnouncement('Second entity detected in the archive. Evacuate to core access.');
-      this.ui.showTutorial({ text: 'SECOND CREATURE / RELEASE C AND HOLD SHIFT TO RUN', sub: 'Follow the green signs through the server room to the escape beacon.' });
+      const records = this.levels.expansion?.progress.records;
+      this.ui.showAnnouncement('Second entity detected. Use the archive as cover and secure the records before evacuation.');
+      this.ui.showTutorial({ text: records ? 'SECOND CREATURE / RELEASE C AND HOLD SHIFT TO RUN' : 'SECOND CREATURE / GET TO THE EAST ARCHIVE',
+        sub: records ? 'Follow green signs to the core-access beacon.' : 'Use the racks as cover. Restore archive power and secure the experiment records.' });
     }
     if (ambush.stage === 'chasing' && before !== 'chasing') {
       this.serverMonster.awareness = this._serverAwareness;
@@ -1504,16 +1526,48 @@ export default class Game {
     }
   }
 
-  /** Local goals and breathing spaces keep the hunt readable. */
-  _updateHunt() {
-    // Unarmed: hold the arm-up objective until the sidearm is taken.
-    if (!this._weaponReady) {
-      this._setObjective('SECTOR B / TAKE THE PULSE SIDEARM FROM THE STAGING-BAY SECURITY LOCKER');
+  _updateExpansion(dt) {
+    const expansion = this.levels.expansion;
+    if (!expansion) return;
+    const damage = expansion.update(dt, this.player.position);
+    if (damage) {
+      this.playerHealth = Math.max(0, this.playerHealth - damage);
+      this.camera.shake(0.15); this.audio.play('attack');
+      if (this.playerHealth <= 0) { this.gameState.gameOver(); return; }
+    }
+    while (expansion.notices.length) this.ui.showAnnouncement(expansion.notices.shift());
+    if (this.gameState.currentLevel === 2) {
+      if (expansion.noise) for (const monster of [this.monster, this.serverMonster]) {
+        if (monster.isActive) monster.awareness?.hear(14.3, -44.1);
+      }
       return;
     }
+    const progress = expansion.progress, boss = this.monster.boss;
+    if (!boss.armed && progress.powered) this.monster.setNavigationObstacles(
+      this.levels._disposables.map(entry => entry.body).filter(body => body?.world), this.levels.navigationBounds);
+    boss.armed = progress.powered;
+    for (const wp of this.monster.weakPoints) {
+      wp.material.uniforms.uColor.value.setHex(boss.vulnerable ? 0x65e7f4 : 0xffa24e);
+      if (boss.vulnerable) wp.material.uniforms.uColor.value.multiplyScalar(0.45);
+    }
+    const point = ESCAPE_CHECKPOINTS[progress.checkpoint];
+    const key = progress.escapeStarted ? 'escape-' + progress.checkpoint : progress.powered ? 'fight' : 'generators-' + progress.generators.size;
+    if (key === this._expansionBeat) return;
+    this._expansionBeat = key;
+    const text = progress.escapeStarted ? 'ESCAPE / ' + (point?.label || 'ENTER THE GREEN SURFACE BEACON')
+      : progress.powered ? 'SHIELDS DISABLED / DODGE ATTACKS, PULSE CYAN NODES DURING RECOVERY'
+      : 'EMERGENCY POWER / START BOTH GENERATORS (' + progress.generators.size + '/2)';
+    this._setObjective(text);
+    this.ui.showTutorial({ text, sub: progress.escapeStarted ? 'Follow green floor lights. Avoid flashing amber areas; use the east service bypass at the rubble.'
+      : progress.powered ? 'One node per recovery. Sidestep the amber line; move outside the amber ring before its sweep.'
+      : 'The entity is hunting; keep moving and use cover. Pulse the west pump and east observation panels to disable its node shields.' });
+  }
+
+  /** Local goals and breathing spaces keep the hunt readable. */
+  _updateHunt() {
     const z = this.player.position.z;
     const released = this.levels.pressureReleased;
-    if (released && !this._huntPressureWasReleased) {
+    if (released && this.levels._doors.find(door => door.id === 'l2-pressure').opening && !this._huntPressureWasReleased) {
       this._huntPressureWasReleased = true;
       this.audio.play('doorOpen');
       this.ui.showAnnouncement('Pressure isolated. Server-room bypass released. Follow green evacuation signs.');
@@ -1524,6 +1578,38 @@ export default class Game {
       if ((vent.id === 'l2-vent-2' || vent.id === 'l2-vent-3') && !vent.active) isolated++;
     }
     const entryOpen = this.levels._doors.find(door => door.id === 'l2-entry').opening;
+    const expansion = this.levels.expansion;
+    if (entryOpen && expansion) {
+      const p = expansion.progress;
+      let key, text, sub;
+      if (!p.released) {
+        key = 'rescue-relay'; text = 'MEDICAL DISTRESS / PULSE THE RESCUE RELAY WEST OF CREW QUARTERS';
+        sub = 'Two scientists are trapped. Look for the amber medical relay beside the west doorway.';
+      } else if (!p.rescueComplete) {
+        key = 'escort-' + p.rescued.size; text = 'ESCORT SCIENTISTS TO THE GREEN REFUGE (' + p.rescued.size + '/2)';
+        sub = 'Stay within six metres. Lead them north through medical; they wait if you run too far ahead.';
+      } else if (!released) {
+        key = 'pressure-' + isolated; text = 'SURVIVORS SAFE / ISOLATE BOTH AMBER PRESSURE VALVES (' + isolated + '/2)';
+        sub = 'Maintenance corridor south of crew quarters. Pulse both amber valves to release the server-room interlock.';
+      } else if (released && !p.records) {
+        key = !p.archivePowered ? 'archive-power' : !p.downloading ? 'archive-terminal'
+          : 'download-' + p.downloadPercent + '-' + expansion.nearTerminal;
+        text = !p.archivePowered ? 'RECOVER EXPERIMENT RECORDS / RESTORE POWER IN THE EAST ARCHIVE'
+          : !p.downloading ? 'ARCHIVE ONLINE / PULSE THE EVIDENCE TERMINAL'
+          : (expansion.nearTerminal ? 'DOWNLOADING RECORDS / ' : 'TRANSFER PAUSED / RETURN TO ARCHIVE WORK AREA / ') + p.downloadPercent + '%';
+        sub = 'Stay inside the glowing floor outline around the archive tables until 100%. Machinery noise attracts creatures.';
+      } else if (p.records) {
+        key = 'records-secured'; text = 'RECORDS SECURED (100%) / REACH THE GREEN CORE ACCESS BEACON';
+        sub = 'Both scientists are safe and the transfer door is open. Evade the creatures and follow green exit signs.';
+      }
+      if (key) {
+        if (key !== this._huntBeat) {
+          this._huntBeat = key; this._baseObjective = text; this._setObjective(text);
+          this.ui.showTutorial({ text, sub });
+        }
+        return;
+      }
+    }
     const ambushStarted = this._serverAmbush && this._serverAmbush.stage !== 'waiting';
     const beat = ambushStarted ? z > -52 ? 'ambush' : 'transfer'
       : !entryOpen ? 'entry' : z > -18 ? 'approach' : z > -30 ? 'quarters'
@@ -1561,6 +1647,7 @@ export default class Game {
    * Opens the exit door and starts a 90s timer.
    */
   _startCollapseSequence() {
+    this.levels.expansion?.startEscape();
     this._collapseActive = true;
     this._collapseTime = this._collapseDuration;
     this._escapeDoorOpen = true;
@@ -1617,7 +1704,7 @@ export default class Game {
     // Drive Kutloano's dissolve shader from the real countdown:
     // 0 = intact at the start, 1 = fully dissolved when the timer hits 0.
     const progress = 1 - Math.max(0, this._collapseTime) / this._collapseDuration;
-    const escapeProgress = THREE.MathUtils.clamp((-this.player.position.z - 40) / 17, 0, 1) * 0.85;
+    const escapeProgress = (this.levels.expansion?.progress.checkpoint || 0) / ESCAPE_CHECKPOINTS.length * 0.85;
     this._collapseVisualProgress = Math.max(this._collapseVisualProgress, progress, escapeProgress);
     this.shaders.setDissolveAmount(this._collapseVisualProgress);
 
@@ -1672,6 +1759,7 @@ export default class Game {
    * For Level 3 the trigger only activates after the monster is defeated.
    */
   _checkWinTriggers() {
+    if (this.levels.expansion?.canWin === false) return;
     const triggers = this.levels.winTriggers;
     if (!triggers || triggers.length === 0) return;
 

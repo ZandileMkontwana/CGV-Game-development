@@ -140,6 +140,32 @@ export default class PostFX {
     uniforms.uVignette.value = level === 1 ? 0.34 : 0.55;
   }
 
+  /** Prepare hidden reveal effects with the same target as the scene pass. */
+  prepareScene() {
+    const renderer = this._renderer;
+    const previousTarget = renderer.getRenderTarget();
+    const restored = [];
+    try {
+      renderer.setRenderTarget(this.composer.readBuffer);
+      // A compile alone can leave driver work until the first actual draw.
+      // Submit hidden/offscreen effects once behind the level briefing too.
+      this._scene.traverse(object => {
+        if (object.isLight) return;
+        restored.push({ object, visible: object.visible, frustumCulled: object.frustumCulled });
+        object.visible = true;
+        object.frustumCulled = false;
+      });
+      renderer.compile(this._scene, this.composer.passes[0].camera);
+      renderer.render(this._scene, this.composer.passes[0].camera);
+    } finally {
+      for (const { object, visible, frustumCulled } of restored) {
+        object.visible = visible;
+        object.frustumCulled = frustumCulled;
+      }
+      renderer.setRenderTarget(previousTarget);
+    }
+  }
+
   /** Do not treat level construction, shader warm-up or resume as GPU load. */
   resetFrameTiming() {
     this._frameAccum = this._frameCount = 0;

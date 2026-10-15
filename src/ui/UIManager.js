@@ -1,5 +1,6 @@
 import { LEVEL_BRIEFINGS } from './content.js';
 import EndingSequence from './EndingSequence.js';
+import FacilityMap from './FacilityMap.js';
 
 const SETTINGS_KEY = 'containment-breach-settings';
 const clamp = (value, min, max, fallback = min) =>
@@ -21,6 +22,7 @@ export default class UIManager {
       'sensitivity-setting', 'sensitivity-value', 'mute-setting',
       'music-setting', 'music-value',
     ]) this.elements[id] = document.getElementById(id);
+    this.map = new FacilityMap(document.getElementById('map-panel'), document.getElementById('facility-map'));
     this.settings = this._readSettings();
     this._captionTime = 0;
     this._bindDialogs();
@@ -118,11 +120,15 @@ export default class UIManager {
     panel.hidden = !weakPoints;
     if (!weakPoints) return;
     const labels = {
-      waiting: 'ENTER ARENA / TARGET CYAN NODES',
+      power: 'NODES SHIELDED / START BOTH GENERATORS',
+      waiting: 'ENTITY NEARBY / STAY ALERT',
       pursuit: 'KEEP MOVING / USE REACTOR COVER',
       windup: 'CHARGE INCOMING / SIDESTEP',
       charge: 'MOVE OFF THE AMBER LINE',
       recover: 'RECOVERING / AIM AT A NODE',
+      shielded: 'NODE SEALED / PREPARE FOR NEXT ATTACK',
+      sweepWindup: 'SWEEP INCOMING / MOVE OUTSIDE AMBER RING',
+      sweep: 'KEEP CLEAR OF THE SWEEP',
     };
     this._text('boss-cue', weakPoints.every(point => point.userData.destroyed) ? 'ENTITY NEUTRALIZED' : labels[stage]);
     panel.dataset.stage = stage;
@@ -147,6 +153,7 @@ export default class UIManager {
   }
 
   reset() {
+    this.map.clear();
     this.setBossStatus(null);
     this._pickupTime = 0;
     if (this.elements['pickup-notice']) this.elements['pickup-notice'].hidden = true;

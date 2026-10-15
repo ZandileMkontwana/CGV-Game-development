@@ -24,7 +24,7 @@
  *                          patrol growls, distant stingers
  *   duck(amount)           momentarily pull the ambience down for stingers
  *   stopAmbient() / stopRumble()
- *   toggleMute()           M key; shows the [ MUTED ] HUD indicator
+ *   toggleMute()           U key; shows the [ MUTED ] HUD indicator
  *
  * No per-frame allocations: update() only mutates counters and reads input.
  */
@@ -77,7 +77,7 @@ export default class AudioManager {
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyM' && !e.repeat && !e.target.closest?.('input, textarea, select')) this.toggleMute();
+      if (e.code === 'KeyU' && !e.repeat && !e.target.closest?.('input, textarea, select')) this.toggleMute();
     });
   }
 

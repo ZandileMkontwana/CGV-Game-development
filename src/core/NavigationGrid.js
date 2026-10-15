@@ -2,7 +2,7 @@ import { Box } from 'cannon-es';
 
 /** Ground-level routes around static collision bodies, built once per level. */
 export default class NavigationGrid {
-  constructor(bodies, bounds, radius = 0.75, cellSize = 0.5) {
+  constructor(bodies, bounds, radius = 0.75, cellSize = 0.5, height = 1.2) {
     this.bounds = bounds;
     this.cellSize = cellSize;
     this.columns = Math.floor((bounds.maxX - bounds.minX) / cellSize) + 1;
@@ -18,8 +18,7 @@ export default class NavigationGrid {
       if (!body || body.mass !== 0 || !body.shapes.some(shape => shape instanceof Box)) continue;
       body.updateAABB();
       const { lowerBound, upperBound } = body.aabb;
-      // The actor's collision sphere occupies the first 1.2 m above ground.
-      if (upperBound.y <= 0.05 || lowerBound.y >= 1.2) continue;
+      if (upperBound.y <= 0.05 || lowerBound.y >= height) continue;
       const obstacle = {
         minX: lowerBound.x - radius, maxX: upperBound.x + radius,
         minZ: lowerBound.z - radius, maxZ: upperBound.z + radius,
@@ -121,6 +120,7 @@ export default class NavigationGrid {
         else if (direction === 3 && row < this.rows - 1) next = current + this.columns;
         else continue;
         if (this.blocked[next] || this._visited[next]) continue;
+        if (!this.isSegmentClear(this.nodeX(current), this.nodeZ(current), this.nodeX(next), this.nodeZ(next))) continue;
         this._visited[next] = 1;
         this._parent[next] = current;
         this._queue[tail++] = next;

@@ -9,7 +9,8 @@
  * PlayerController then keeps showing the procedural engineer instead.
  */
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone } from 'three/addons/utils/SkeletonUtils.js';
+import { loadCharacterTemplate } from './CharacterAssets.js';
 import CrouchPose from './CrouchPose.js';
 
 /** Start the locomotion mixer with exactly one contributing clip. */
@@ -35,10 +36,9 @@ export default class OperatorModel {
     this._current = null;
 
     // Relative path — vite `base: './'` keeps this correct on the LAMP server.
-    new GLTFLoader(loadingManager).load(
-      'models/soldier.glb',
+    loadCharacterTemplate(loadingManager).then(
       (gltf) => {
-        const model = gltf.scene;
+        const model = clone(gltf.scene);
         model.traverse((o) => {
           if (o.isMesh) {
             o.castShadow = true;
@@ -71,7 +71,6 @@ export default class OperatorModel {
         this.crouchPose = new CrouchPose(this.group, model.getObjectByName('mixamorigSpine'), legs);
         this.ready = true;
       },
-      undefined,
       () => {} // failed — PlayerController falls back to the procedural model
     );
   }

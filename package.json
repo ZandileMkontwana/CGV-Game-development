@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "node --test",
     "preview": "vite preview",
+    "preview:deployment": "node scripts/preview-deployment.mjs",
     "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
   },
   "dependencies": {

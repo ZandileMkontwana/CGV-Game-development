@@ -1,10 +1,11 @@
 /**
  * AssetLibrary — preload and serve real game assets.
  *
- * The game ships with procedural fallbacks for every character, prop,
- * texture and sound (see CharacterFactory / LevelKit / LevelMaterials /
- * AudioManager). This module preloads the authored assets that REPLACE
- * those fallbacks when present:
+ * Optional asset integration retained for future exports. The current entry
+ * point does not call preload(); active characters, weapons, environment
+ * textures and audio are built in code. LevelManager loads the five existing
+ * public/models/ props directly. Paths below describe candidates, not an
+ * inventory of authored assets shipped in this checkout:
  *
  *   models   → public/assets/models/*.glb        (Blender exports)
  *   textures → public/assets/textures/*.jpg      (PBR map sets per theme)
@@ -12,9 +13,8 @@
  *
  * Every file in the manifest is OPTIONAL. A missing file resolves to null
  * and the consumer silently keeps its procedural build — a checkout without
- * assets is still fully playable. Loading happens once, before the engine
- * constructs (main.js awaits preload), so consumers can read the maps
- * synchronously at build time.
+ * assets is still fully playable. If integrated into startup, await preload()
+ * before constructing consumers that read these maps synchronously.
  *
  * Ids are stable API: 'monster', 'props/crate', 'lab_wall_col', 'roar', …
  *
@@ -26,20 +26,18 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /**
- * Credit roll for the menu's credits screen and CREDITS.md.
- * Updated as real files land in public/assets/ (and public/models/ drops).
+ * Reference inventory; menu/ending credits use index.html, not this export.
+ * Keep this aligned with CREDITS.md and the evidence in ASSET_CREDITS.md.
  */
 export const CREDITS = [
-  { asset: 'Blender prop models (lockers, console desks, containment tube, ceiling lights, pipe runs)', author: 'CGV team (Blender)', license: 'Made for this project' },
-  { asset: 'Character & weapon models (monster, scientist, engineer, pulse rifle)', author: 'CGV team (Blender)', license: 'Made for this project' },
-  { asset: 'Soldier.glb (third-person operator fallback)', author: 'three.js examples', license: 'MIT — bundled with three.js' },
-  { asset: 'Environment PBR texture sets (lab / damaged / emergency)', author: 'CGV team (Blender bakes)', license: 'Made for this project' },
-  { asset: 'Sampled sound cues (roar, spotted, transform, …)', author: 'CGV team', license: 'Made for this project' },
-  { asset: 'Menu background art', author: 'CGV team', license: 'Made for this project' },
+  { asset: 'Five Blender-exported facility prop GLBs', author: 'Original artist/source awaiting confirmation', license: 'Asset terms unconfirmed; see ASSET_CREDITS.md' },
+  { asset: 'Legacy soldier.glb (unused by current staff/player)', author: 'Three.js example model; original author unconfirmed', license: 'Asset-specific license unconfirmed' },
+  { asset: 'Menu background art', author: 'Original artist/source awaiting confirmation', license: 'Unconfirmed' },
   { asset: 'three.js', author: 'mrdoob & contributors', license: 'MIT' },
   { asset: 'cannon-es', author: 'pmndrs', license: 'MIT' },
   { asset: 'Vite', author: 'Evan You & Vite team', license: 'MIT' },
-  { asset: 'Procedural fallback art, levels & soundscape', author: 'CGV team', license: 'Made for this project' },
+  { asset: 'Procedural characters, weapons, textures, levels, shaders and soundscape', author: 'Project code; tutorial/source acknowledgements pending', license: 'No separate downloaded asset license asserted' },
+  { asset: 'Archived PA WAVs (unused by current gameplay)', author: 'Project scripts; Windows System.Speech / Microsoft Zira Desktop', license: 'Distribution terms unconfirmed if reused' },
 ];
 
 /**

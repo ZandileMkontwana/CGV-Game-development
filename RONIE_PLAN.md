@@ -1,5 +1,15 @@
 # Ronie's work plan
 
+Current status note — 15 October 2026: the dated progress entries below retain
+the history of this work. For current completion and grading weights, use
+[PLAN.md](./PLAN.md). The game now uses project-built coat rigs, current-level
+retry, and synthesized PA chimes/sirens with captions. The old speech WAVs are
+unused archives. A current `submission/CodeCrafters.zip` and strict production
+subdirectory preview are prepared; see [DEPLOYMENT.md](./DEPLOYMENT.md).
+Source confirmations, final human/Chrome-on-Ubuntu playtesting, Moodle upload,
+verified department hosting and the finished trailer remain open; see
+[ASSET_CREDITS.md](./ASSET_CREDITS.md).
+
 Branch: `Ronie` (created from `main` on 14 October 2026).
 Scope: UI, sound, credits, deployment, and trailer from `TASKS.md`.
 Beta deadline in `PLAN.md`: 16 October 2026.

@@ -1,13 +1,18 @@
-# Temporary facility PA clips
+# Archived facility PA clips (unused)
+
+Current status — 15 October 2026: these files remain as source archives.
+`src/ui/content.js` contains text only, and `AudioManager.playAlert()` generates
+Web Audio chimes/sirens. Neither imports or plays these WAVs. The current Vite
+entry point does not include them in the production build.
 
 These WAV files are temporary speech synthesized locally using Windows
 System.Speech and Microsoft Zira Desktop. The original three scripts come from
 TASKS.md; dispatch, power restoration and bypass dialogue support the revised
-Level 1 opening. Captions and asset paths are in `src/ui/content.js`.
+Level 1 opening. Current captions are in `src/ui/content.js`.
 Regenerate them on Windows with `scripts/generate-pa.ps1`, or replace them
 with team-recorded clips using the same filenames.
 
-| Filename | Trigger | Caption |
+| Filename | Intended original trigger (archived) | Caption |
 | --- | --- | --- |
 | `pa-dispatch.wav` | Starting Level 1 | Engineering call: auxiliary power offline in Lab A-2. Enter the laboratory and pulse the amber relay. |
 | `pa-power.wav` | Successful relay repair | Auxiliary power restored. Resuming culture protocol. |
@@ -20,11 +25,11 @@ The fifteen-minute line is the story warning specified by TASKS.md. The
 playable escape countdown remains the engine's existing ninety seconds,
 starting after the boss dies.
 
-Vite packages these files through `src/ui/content.js`. AudioManager preloads
-and decodes them, routes them through master volume/mute, prevents overlap,
-and suspends playback on pause. Captions stay available if audio fails.
+Reusing these clips would require explicit loading/playback integration and
+confirmation of distribution terms; their presence is not evidence of active
+spoken dialogue. Provenance is recorded in the project credits.
 
 The ambience, effects and level scores are procedural. Music & ambience has
 its own saved volume setting; it does not change PA or effect loudness.
-Final recordings, music
-selection and listening/balance checks remain work for Ronie and the team.
+Listening/balance checks remain pending. Any future recorded speech or music
+would be a new integration and attribution task, rather than shipped content.

@@ -1,6 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import LabOpening from '../src/core/LabOpening.js';
+import Game from '../src/core/Game.js';
+import * as THREE from 'three';
+
+test('the live game waits for a relay hit after entering the scientist room', () => {
+  const phases = [];
+  const opening = new LabOpening(phase => phases.push(phase));
+  const game = Object.create(Game.prototype);
+  game.gameState = { currentLevel: 1 };
+  game.levels = {
+    scriptedReveal: { trigger: { x: 0, z: -56, radius: 2.8 } },
+    navigationVersion: 0,
+    setWalkerThreat() {},
+  };
+  game.monster = { isActive: false };
+  game._l1NavVersion = 0;
+  game._l1Reveal = opening;
+  game.player = { position: { x: 0, z: -56 } };
+  game._setObjective = () => {};
+  game._updateL1Reveal(30);
+  assert.equal(opening.entered, true);
+  assert.equal(opening.phase, 'standby');
+  assert.deepEqual(phases, []);
+
+  const target = { material: new THREE.MeshStandardMaterial() };
+  game._repairLabPower(target);
+  assert.equal(opening.phase, 'powering');
+  assert.equal(target.material.emissive.getHex(), 0x46dfaa);
+  game._repairLabPower(target);
+  assert.deepEqual(phases, ['powering'], 'Repeated pulse hits must not restart the opening');
+  target.material.dispose();
+});
 
 test('entering the lab alone cannot trigger the breach; the repair is a single action', () => {
   const events = [];
