@@ -15,6 +15,8 @@
  *                          breach | failsafe | demolition): calm chimes for
  *                          routine calls, klaxon sirens + reactor power-down
  *                          for a lockdown.
+ *   playExplosion()        one-shot recorded nuclear-detonation cue for the
+ *                          Level-3 reactor failure
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
  *   setGameState(state)    'menu' plays the thriller title theme; the
@@ -65,6 +67,9 @@ export default class AudioManager {
     this._l1Ambience = null; // { buffer } recorded Level-1 machinery ambience loop
     this._paClips = {};      // name → { buffer } recorded P.A. announcement clips
     this._paWanted = null;   // requested clip sequence, replayed once decoded
+    this._explosion = null;      // { buffer } recorded Level-3 nuclear-detonation cue
+    this._explosionFailed = false;
+    this._explosionWanted = false; // requested before the sample finished decoding
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -138,6 +143,7 @@ export default class AudioManager {
     this._loadSuspenseSample();
     this._loadLevel1Ambience();
     this._loadAnnouncementClips();
+    this._loadExplosionSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -1495,6 +1501,53 @@ export default class AudioManager {
       // Swap it in if Level 1's procedural bed is already sounding.
       if (this._mode === 1) this._startBed(1);
     } catch (e) { /* keep the procedural bed */ }
+  }
+
+  /** Fetch + decode the recorded nuclear-detonation cue for Level 3. */
+  async _loadExplosionSample() {
+    if (!this.ctx || this._explosion || this._explosionFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/nuclear_explosion.mp3');
+      if (!res.ok) { this._explosionFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._explosion = { buffer: audio };
+      // A detonation requested while the sample was still decoding fires now.
+      if (this._explosionWanted && this._playing) {
+        this._explosionWanted = false;
+        this.playExplosion();
+      }
+    } catch (e) { this._explosionFailed = true; }
+  }
+
+  /**
+   * Detonate the Level-3 reactor: the recorded nuclear-blast sample fires once
+   * on the SFX bus, ducking the ambience/chaos bed beneath its shockwave.
+   */
+  playExplosion(vol = 1) {
+    if (!this._unlocked || this.muted) return;
+    if (!this._explosion) {
+      // Still decoding — remember the intent; stay silent if the file is missing.
+      if (!this._explosionFailed) this._explosionWanted = true;
+      return;
+    }
+    this._explosionWanted = false;
+    const sample = this._explosion;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = sample.buffer;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    const dur = sample.buffer.duration;
+    // Instant attack (the blast) then a long natural tail, with edge fades.
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.03);
+    g.gain.setValueAtTime(vol, t + Math.max(0.2, dur - 1.0));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.master);
+    src.start(t);
+    // Let the blast dominate: pull the ambience/chaos bed down under it.
+    this.duck(0.7, Math.min(dur, 10) * 1000);
+    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
   }
 
   /** Fetch + decode the level-start / stage-switch suspense track. */

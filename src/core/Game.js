@@ -433,6 +433,8 @@ export default class Game {
           this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
           this.audio.startChaos();
           this.audio.setFireEmitters(this.levels._fires);
+          // The reactor finally goes critical: detonate as Level 3 opens.
+          this.audio.playExplosion();
         }
       }
       if (newState === 'gameover') {
