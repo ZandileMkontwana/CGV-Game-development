@@ -56,6 +56,7 @@ export default class AudioManager {
     this._mode = 'menu';    // currently built bed: 'menu' | 1 | 2 | 3 | null
     this._noise = null;
     this._dist = null;      // cached waveshaper curve
+    this._footstep = null;  // { buffer, segments[] } recorded step sample
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -119,6 +120,7 @@ export default class AudioManager {
     this._noise = buf;
 
     this._unlocked = true;
+    this._loadFootstepSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) this._startMenuBed();
@@ -943,6 +945,9 @@ export default class AudioManager {
   }
 
   _step(sprint) {
+    // Recorded take takes priority; falls back to the synthesized step until
+    // the sample has finished decoding (or if it is missing).
+    if (this._playFootstep(sprint ? 0.5 : 0.36)) return;
     const metal = this._level === 1;
     this._burst({
       dur: 0.1,
@@ -954,6 +959,97 @@ export default class AudioManager {
     if (metal || Math.random() < 0.4) {
       this._burst({ dur: 0.03, vol: 0.04, type: 'bandpass', freq: 2400 + Math.random() * 900, q: 2 });
     }
+  }
+
+  /**
+   * Play one pre-cut footstep take from the loaded sample. A random take is
+   * chosen and pitch-jittered so repeated steps never sound identical.
+   * @returns {boolean} true if a recorded take played.
+   */
+  _playFootstep(vol) {
+    const fs = this._footstep;
+    if (!fs || !fs.segments.length) return false;
+    const ctx = this.ctx;
+    const seg = fs.segments[(Math.random() * fs.segments.length) | 0];
+    const rate = 0.94 + Math.random() * 0.12;
+    const src = ctx.createBufferSource();
+    src.buffer = fs.buffer;
+    src.playbackRate.value = rate;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    const dur = seg.duration / rate;
+    // Short fades hide any residual click at the cut edges.
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+    g.gain.setValueAtTime(vol, t + Math.max(0.02, dur - 0.04));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.master);
+    src.start(t, seg.offset, seg.duration);
+    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+    return true;
+  }
+
+  /** Fetch + decode the footstep sample, then cut it into individual takes. */
+  async _loadFootstepSample() {
+    if (!this.ctx || this._footstep) return;
+    try {
+      const res = await fetch('/assets/audio/player/footstep_hard_floor.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._footstep = { buffer: audio, segments: this._extractStepSegments(audio) };
+    } catch (e) { /* keep the synthesized fallback */ }
+  }
+
+  /** Split a footstep recording into single takes by scanning its RMS envelope. */
+  _extractStepSegments(buffer) {
+    const data = buffer.getChannelData(0);
+    const rate = buffer.sampleRate;
+    const win = Math.max(1, Math.floor(rate * 0.01));       // 10 ms windows
+    const n = Math.min(Math.floor(data.length / win), 4000); // analyse <= 40 s
+    const env = new Float32Array(n);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const base = i * win;
+      for (let j = 0; j < win; j++) { const s = data[base + j]; sum += s * s; }
+      const rms = Math.sqrt(sum / win);
+      env[i] = rms;
+      if (rms > peak) peak = rms;
+    }
+    const fallback = [{ offset: 0, duration: buffer.duration }];
+    if (peak <= 0) return fallback;
+    const hi = peak * 0.30;       // onset threshold
+    const lo = peak * 0.06;       // decay threshold
+    const gap = 9;                // windows below `lo` that end a take (~90 ms)
+    const minSeg = 0.14;          // keep the natural tail; never clip a step
+    const maxSeg = 0.5;
+    const minWin = Math.ceil(minSeg * rate / win);
+    const maxWin = Math.ceil(maxSeg * rate / win);
+    const segs = [];
+    let i = 0;
+    while (i < n && segs.length < 16) {
+      while (i < n && env[i] <= hi) i++;
+      if (i >= n) break;
+      const start = i;
+      let below = 0;
+      while (i < n && below <= gap) {
+        if (env[i] <= lo) below++; else below = 0;
+        i++;
+      }
+      const s = Math.max(0, start - 2);                 // 20 ms pre-roll keeps the attack
+      let e = Math.min(n, i - below + 3);               // ~30 ms tail keeps the decay
+      if (e - s < minWin) e = Math.min(n, s + minWin);  // never clip a step short
+      if (e - s > maxWin) e = s + maxWin;
+      if (e - s >= 3) {
+        const offset = (s * win) / rate;
+        segs.push({ offset, duration: Math.min(((e - s) * win) / rate, buffer.duration - offset) });
+      }
+    }
+    // Drop takes that start too close together — an over-split of one step.
+    for (let k = segs.length - 1; k > 0; k--) {
+      if (segs[k].offset - segs[k - 1].offset < minSeg) segs.splice(k, 1);
+    }
+    return segs.length ? segs : fallback;
   }
 
   /** Double-thump heartbeat. */
