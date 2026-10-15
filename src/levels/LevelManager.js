@@ -97,6 +97,12 @@ export default class LevelManager {
     this.navigationVersion = 0;
     this.healthPacks = [];
     this.escapeRoute = [];
+
+    /** L2 staging-bay sidearm pickup {x, z, radius, mesh, light, taken}. */
+    this.weaponPickup = null;
+
+    /** Static fallen-worker figures (L2 storytelling) — traverse-disposed. */
+    this._casualties = [];
     this.serverAmbush = null;
 
     /** Heat-haze zone meshes — ShaderManager swaps in the haze material. */
@@ -214,6 +220,19 @@ export default class LevelManager {
     for (const pack of this.healthPacks) pack.dispose();
     this.healthPacks = [];
     this.escapeRoute = [];
+    this.weaponPickup = null;
+    // Casualties own their geometries/materials like walkers — traverse-dispose.
+    for (const figure of this._casualties) {
+      this.scene.remove(figure);
+      figure.traverse((child) => {
+        if (!child.isMesh) return;
+        if (child.geometry) child.geometry.dispose();
+        const mat = child.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+    }
+    this._casualties = [];
     this.serverAmbush = null;
     this.labChamber?.dispose();
     this.labChamber = null;
@@ -703,7 +722,7 @@ export default class LevelManager {
    * loop's last point they cycle back to the first, so a two-point path
    * reads as pacing and a 4-point ring as a proper patrol.
    *
-   * @param {'tech'|'coat'|'supervisor'} variant
+   * @param {'tech'|'coat'|'supervisor'|'security'} variant
    * @param {{x:number,z:number}[]} path  patrol loop, ≥2 points
    * @param {{speed?:number}} [o]
    */
@@ -725,6 +744,35 @@ export default class LevelManager {
     };
     this._walkers.push(walker);
     return walker;
+  }
+
+  /**
+   * Place a fallen worker — static storytelling scenery (the breach's human
+   * cost). The joint pose is set once by part name (update() is never
+   * called) and the figure is laid on its back, then spun to place it.
+   * Ownership matches walkers: per-instance geometry/materials,
+   * traverse-disposed in teardown.
+   */
+  _addCasualty(variant, x, z, rotY = 0, o = {}) {
+    const npc = createWorker(variant);
+    const g = npc.group;
+    const pose = o.pose || {
+      torso: [0.04, 0, 0], head: [0.18, 0.55, 0],
+      armL: [-0.5, 0, 1.05], elbL: [-0.65, 0, 0],
+      armR: [0.35, 0, -0.85], elbR: [-0.55, 0, 0],
+      legL: [0.22, 0, 0.26], kneeL: [-0.45, 0, 0],
+      legR: [-0.06, 0, -0.32], kneeR: [0.3, 0, 0],
+    };
+    g.traverse((child) => {
+      const p = pose[child.name];
+      if (p) child.rotation.set(p[0], p[1], p[2]);
+    });
+    g.position.set(x, o.y ?? 0.16, z);
+    g.rotation.set(0, rotY, Math.PI / 2);
+    this.scene.add(g);
+    this._track(g);
+    this._casualties.push(g);
+    return g;
   }
 
   /**
@@ -853,6 +901,8 @@ export default class LevelManager {
     kit.fuseBox(-4.94, 1.7, -8.5, 'e');
     kit.extinguisher(-4.94, 1.2, -3.0);
     kit.floorDecal(3.2, -5.0, 'stripes', { size: 1.2 });
+    // Station status board greeting the arriving shift engineer.
+    kit.wallScreen(4.93, 1.9, -4.6, 'w', { w: 2.2, h: 1.2 });
 
     // ── Corridor C1 (x -2..2, z -10..-20) ────────────────────────────────
     kit.floorSlab(4.3, 10.0, 0, -15.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
@@ -928,6 +978,7 @@ export default class LevelManager {
     kit.ventGrille(6.5, 2.6, -31.94, 's', { w: 0.9, h: 0.6 });
     // Alarm beacon near containment (the scripted beat's visual anchor).
     kit.lamp(-7.6, -27.5, { y: 2.6, color: 'red', light: false });
+    kit.sign(-8.95, 2.35, -28.4, 'e', 'BIO-CONTAINMENT', { sub: 'AUTHORISED STAFF ONLY', fg: '#ffd27f', w: 2.0 });
     // Dust hanging in the lab's overhead light.
     this._dustMotes(70, 0, -26, 6.5, 0.3, 2.7);
 
@@ -942,6 +993,7 @@ export default class LevelManager {
     kit.cableTray('z', 7.5, 1.95, 2.55, -36.15);
     kit.fuseBox(1.94, 1.6, -34.0, 'w');
     kit.floorDecal(0, -33.2, 'stripes', { size: 1.0 });
+    kit.valveWheel(1.95, 1.6, -37.8, 'w');
 
     // ── Reactor hall (x -10..10, z -40..-54) ─────────────────────────────
     kit.floorSlab(20.6, 14.0, 0, -47.15, { trim: true });
@@ -1000,8 +1052,8 @@ export default class LevelManager {
     kit.steamGenerator(7.3, -47.6, 'z');
     // Coolant tank on the west wall.
     kit.coolantTank(-8.8, -48.6);
-    // Control-rod drive bank beside the core, inside the railing.
-    kit.controlRodDrives(2.7, -47.0);
+    // Control-rod drive bank beside the core, inside the shield ring.
+    kit.controlRodDrives(2.2, -47.0);
     // Spent-fuel transfer rack in the south-west corner.
     kit.fuelRack(-6.9, -52.6, 'n');
     // Instrumentation: wall gauge banks + radiation monitors.
@@ -1009,6 +1061,25 @@ export default class LevelManager {
     kit.gaugeCluster(9.96, 1.7, -49.5, 'w');
     kit.radiationMonitor(-3.9, -41.4);
     kit.radiationMonitor(3.9, -53.0);
+
+    // ── Reactor hall dressing — shield ring, turbine line, coolant loop ──
+    // Concrete biological-shield ring standing inside the railing pen.
+    kit.reactorContainmentRing(0, -47.0, { r: 3.0, count: 13 });
+    // Turbine line in the north-west bay (plinth is the collider).
+    kit.turbineHousing(-7.4, -42.2, 'z');
+    // Coolant cross-feeds dropping between the overhead runs + isolation.
+    kit.pipeRun('z', 2.8, -6.4, 2.45, -43.7, { count: 2, r: 0.09 });
+    kit.pipeRun('z', 2.8, 6.4, 2.45, -50.5, { count: 2, r: 0.09 });
+    kit.valveWheel(-9.85, 1.6, -43.6, 'e');
+    kit.valveWheel(9.85, 1.6, -51.6, 'w');
+    // Hazard striping + warning signage at the hall thresholds and walls.
+    kit.floorDecal(-1.9, -40.9, 'stripes', { size: 1.0 });
+    kit.floorDecal(1.9, -40.9, 'stripes', { size: 1.0 });
+    kit.sign(-9.98, 2.3, -47.0, 'e', 'CAUTION / RADIATION AREA', { sub: 'DOSIMETERS REQUIRED', fg: '#ffd27f', w: 2.4 });
+    kit.sign(9.98, 2.3, -47.0, 'w', 'HIGH VOLTAGE / COOLANT LOOP', { sub: 'ISOLATE BEFORE WORK', fg: '#ffd27f', w: 2.6 });
+    // Ambient steam: turbine gland + coolant pump discharge.
+    this._createSteamVent('l1-steam-1', -7.4, 2.05, -41.7, { count: 10, rate: 0.16, rise: 0.4, alpha: 0.3, lifeSpan: 1.1, drift: 0.08 });
+    this._createSteamVent('l1-steam-2', 8.0, 1.7, -50.6, { count: 8, rate: 0.22, rise: 0.35, alpha: 0.26, lifeSpan: 1.0, drift: 0.08 });
 
     // ── Control room (x -5..5, z -54..-64) ───────────────────────────────
     kit.floorSlab(10.6, 10.0, 0, -59.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
@@ -1034,6 +1105,11 @@ export default class LevelManager {
     kit.extinguisher(4.94, 1.2, -56.0);
     kit.debrisPile(-2.6, -63.2, { s: 0.7, seed: 21 });
     kit.floorDecal(0, -60.4, 'stripes', { size: 1.4, color: '#5cff8a' });
+    // Annunciator fascias flanking the status wall + side instrumentation.
+    kit.annunciatorBoard(-2.6, 2.15, -63.95, 's');
+    kit.annunciatorBoard(2.6, 2.15, -63.95, 's');
+    kit.gaugeCluster(-4.94, 1.9, -61.6, 'e');
+    kit.gaugeCluster(4.94, 1.9, -56.8, 'w');
 
     // ── Walking staff — the station is alive before the breach ───────────
     // Patrol loops stay on walkable floor, clear of props and doorways;
@@ -1042,6 +1118,11 @@ export default class LevelManager {
     this._addWalker('coat', [
       { x: 2.4, z: -7.2 }, { x: -1.6, z: -7.2 },
       { x: -1.6, z: -2.6 }, { x: 2.4, z: -2.6 },
+    ]);
+    // Reception: security guard walking the entrance lane by the desk.
+    this._addWalker('security', [
+      { x: -1.9, z: -2.0 }, { x: -1.9, z: -6.4 },
+      { x: 0.9, z: -6.4 }, { x: 0.9, z: -2.0 },
     ]);
     // Corridor C1: tech shuttling between reception and the lab.
     this._addWalker('tech', [{ x: 0.7, z: -11.5 }, { x: 0.7, z: -18.5 }]);
@@ -1089,8 +1170,10 @@ export default class LevelManager {
   // ── Level 2 — The Hunt (damaged facility, amber palette) ────────────────
   //
   // Flow (player walks toward -z):
-  //   Staging (0..-8) → door 'l2-entry' (shoot conduit) → corridor C1 with
-  //   fan (-8..-18) → Crew quarters (-18..-30; lockers/bunks = hiding cover)
+  //   Staging (0..-8; security sidearm locker = the L2 gun pickup) → door
+  //   'l2-entry' (shoot conduit) → corridor C1 with fan (-8..-18; a fallen
+  //   scientist marks the breach's first victim) → Crew quarters (-18..-30;
+  //   lockers/bunks = hiding cover, a security casualty by the scorch) →
   //   → Maintenance C2 (-30..-40; steam vents + heat haze + sparks) →
   //   Server room (-40..-52; rack maze) → C3 (-52..-58) → Exit vestibule
   //   (-58..-64) → WIN. Stealth-first: tall props feed the occluder list.
@@ -1141,6 +1224,16 @@ export default class LevelManager {
     kit.debrisPile(2.3, -1.9, { s: 0.9, seed: 31 });
     kit.fallenPanel(-2.2, 0.3, -6.2, { rx: 0.32, ry: 0.5 });
     kit.floorDecal(-1.0, -5.0, 'dashes', { size: 1.6 });
+    // Security weapons locker — the pulse sidearm pickup. Game.js gates
+    // firing on levels.weaponPickup until the player takes it (E prompt).
+    const locker = kit.weaponsLocker(-3.82, 1.35, -5.8, 'e');
+    this.weaponPickup = {
+      x: -3.4, z: -5.8, radius: 1.6,
+      mesh: locker.gun, light: locker.light, taken: false,
+    };
+    kit.sign(-3.98, 2.12, -5.8, 'e', 'SECURITY / SIDEARM LOCKER', { sub: 'SIGNED OUT UNDER LOCKDOWN ORDER 6-11', fg: '#8bebbd', w: 1.9, h: 0.45 });
+    this._flickerLight(-3.4, 2.55, -7.4, 0xff3520, 0.9, 7); // red lockdown wash
+    this._dustMotes(40, 0, -4, 4, 0.35, 2.6);
 
     // ── Corridor C1 (x -2..2, z -8..-18) — fan hazard ────────────────────
     kit.floorSlab(4.3, 10.0, 0, -13.15, { lines: [{ axis: 'z', len: 8, color: 'warn' }] });
@@ -1159,6 +1252,10 @@ export default class LevelManager {
     kit.debrisPile(-1.6, -16.4, { s: 0.8, seed: 32 });
     kit.canister(-1.8, -9.4);
     kit.fallenPanel(1.5, 0.28, -15.5, { rx: 0.4, ry: -0.6 });
+    // The breach's human cost — an evacuating scientist who didn't make it.
+    this._scorchDecal(-1.05, 0, -15.5, 2.0);
+    this._addCasualty('coat', -1.05, -15.5, Math.PI * 0.62);
+    this._dustMotes(50, 0, -13, 4.5, 0.3, 2.6);
     // Big ceiling fan — rotating hazard (visual, atmosphere).
     this._addRotatingHazard(kit.fanBlade(0, 2.45, -13.0, { r: 0.95 }), 5.0);
     kit.sign(0, 2.45, -17.9, 's', 'KEEP LOW / USE COVER', { sub: 'C: CROUCH   /   SHOTS ATTRACT THE CREATURE', fg: '#a5e5dc', w: 2.5, h: 0.6 });
@@ -1208,6 +1305,8 @@ export default class LevelManager {
     kit.floorDecal(-3.0, -22.0, 'dashes', { size: 1.6 });
     this._scorchDecal(0.5, 0, -24.0, 1.6);
     this._scorchDecal(-4.0, 0, -19.2, 1.1);
+    // A security officer made their stand by the lockers — and lost.
+    this._addCasualty('security', 1.35, -23.6, -Math.PI * 0.35, { y: 0.17 });
     // Steam vent + its shootable valve on the west wall.
     this._createSteamVent('l2-vent-1', -6.5, 0.35, -26.2);
     kit.valveWheel(-7.9, 1.2, -26.2, 'e');
@@ -1216,6 +1315,7 @@ export default class LevelManager {
     // Dying bulbs over the quarters — one right on the monster's route.
     this._flickerLight(0, 2.55, -25.5, 0xffaa66, 1.1, 7);
     this._flickerLight(-6.4, 2.55, -20.5, 0xffaa66, 0.8, 6);
+    this._flickerLight(3.5, 2.5, -19.6, 0xff3520, 0.7, 6);  // red wash at the mouth
     // Dusty beam through the ceiling gap the fallen panel dropped from.
     // Dust catches the practical lighting without a solid-looking cone.
     this._dustMotes(80, 0, -24, 7, 0.3, 2.8);
@@ -1259,6 +1359,9 @@ export default class LevelManager {
     });
     this._hazeZone(2.8, 2.2, 2.4, 0.9, 1.1, -33.4);
     this._hazeZone(2.8, 2.2, 2.4, -0.9, 1.1, -36.4);
+    // Vented steam carries the haze into the quarters and server room.
+    this._hazeZone(2.2, 2.0, 2.2, -5.0, 1.0, -26.2);
+    this._hazeZone(2.6, 2.2, 2.6, -4.4, 1.1, -44.0);
 
     // ── Server room (x -8..8, z -40..-52) — rack maze ────────────────────
     kit.floorSlab(16.6, 12.0, 0, -46.15, { trim: true });

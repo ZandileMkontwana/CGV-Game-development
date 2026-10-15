@@ -131,6 +131,11 @@ export default class Game {
     // Level 1 scripted creature reveal state (rebuilt on each level load).
     this._l1Reveal = null;
 
+    // Level 2 opens unarmed — firing unlocks at the staging-bay security
+    // locker (see _takeSidearm); the breach briefing beats live in _l2Opening.
+    this._weaponReady = true;
+    this._l2Opening = null;
+
     // Level 1 tutorial — controls walkthrough (see _updateTutorial).
     this._tutorialSteps = [
       {
@@ -487,13 +492,16 @@ export default class Game {
       // Level 1 scripted beats: mutation reveal, tutorial, scientist NPC.
       this._updateL1Reveal(dt);
       this._updateTutorial(dt);
+      // Level 2 breach briefing (staged PA + instruction beats).
+      this._updateL2Opening(dt);
       if (this._scientist.group.visible) {
         this._scientist.update(dt, this._scientistState);
       }
 
       // First-person rifle: sway/bob/ADS driven by the same stance state,
-      // hidden in third person so it doesn't float beside the body.
-      this.weapon.setVisible(this.camera.isFirstPerson);
+      // hidden in third person so it doesn't float beside the body. Also
+      // hidden while unarmed (Level 2 before the security-locker pickup).
+      this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady);
       this.weapon.update(dt, {
         moving: this.player._charState.moving,
         sprinting: this.player._charState.sprinting,
@@ -678,6 +686,12 @@ export default class Game {
     // 5. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
 
+    // 5a. Level 2 opens unarmed: the sidearm waits in the staging-bay
+    //     security locker (see _takeSidearm) — firing stays gated till then.
+    this._weaponReady = levelNum !== 2;
+    this.pulseTool.enabled = this._weaponReady;
+    this.player.weaponStowed = !this._weaponReady;
+
     // 5b. Switch the procedural ambience to this level's mood.
     this.audio.setLevel(levelNum);
     this.audio.stopRumble();
@@ -721,13 +735,15 @@ export default class Game {
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
       1: 'ENGINEERING CALL: RESTORE AUXILIARY POWER IN LAB A-2 — PULSE THE AMBER RELAY',
-      2: 'SECTOR B / PULSE THE BLUE DOOR RELAY TO ENTER THE EVACUATION ROUTE',
+      2: 'SECTOR B / TAKE THE PULSE SIDEARM FROM THE STAGING-BAY SECURITY LOCKER',
       3: 'SURFACE SEAL / DESTROY THREE CYAN NODES: CHEST AND BOTH SHOULDERS',
     };
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
     if (levelNum === 1) this._announce('dispatch');
-    if (levelNum === 2) this._announce('failsafe');
+    // Level 2 opens with the 'breach' PA inside its staged briefing
+    // (_l2Opening); the failsafe/demolition chain now starts at Level 3.
+    if (levelNum === 3) this._announce('failsafe');
 
     // 10. Level 1 runs the controls tutorial (hints only — no gating).
     if (levelNum === 1) {
@@ -741,6 +757,25 @@ export default class Game {
       this._tut = null;
       if (levelNum !== 3) this.ui.showTutorial(null);
     }
+
+    // 11. Level 2 runs the breach briefing: the PA confirms what happened in
+    //     Lab A-2, then the instructions point at the security locker. Beats
+    //     only advance during 'playing' so the black transition hides none.
+    this._l2Opening = levelNum === 2 ? {
+      t: 0, step: 0,
+      beats: [
+        { at: 1.2, run: () => this._announce('breach') },
+        { at: 7.5, run: () => this.ui.showTutorial({
+          text: 'THE LAB A-2 CULTURE WENT WRONG — SOMETHING IS LOOSE IN SECTOR B',
+          sub: 'It hunts by sight and sound. Keep your distance, stay behind solid cover.',
+        }) },
+        { at: 14.5, run: () => this.ui.showTutorial({
+          text: 'ARM YOURSELF — SECURITY LOCKER, STAGING BAY WEST WALL',
+          sub: 'Walk up to the open locker and press E to take the pulse sidearm.',
+        }) },
+        { at: 21.0, run: () => this.ui.showTutorial(null) },
+      ],
+    } : null;
   }
 
   /**
@@ -757,6 +792,39 @@ export default class Game {
     this.audio.playAnnouncement(name);
   }
 
+  /**
+   * Level 2 opening — the breach briefing. Staged text beats run while the
+   * player keeps control: the PA confirms the containment breach, then the
+   * instructions point at the security locker. Cleared once all beats fire.
+   */
+  _updateL2Opening(dt) {
+    const seq = this._l2Opening;
+    if (!seq || this.gameState.state !== 'playing') return;
+    seq.t += dt;
+    while (seq.step < seq.beats.length && seq.t >= seq.beats[seq.step].at) {
+      seq.beats[seq.step].run();
+      seq.step++;
+    }
+    if (seq.step >= seq.beats.length) this._l2Opening = null;
+  }
+
+  /**
+   * Level 2 — the player takes the pulse sidearm from the staging-bay
+   * security locker. Firing, the first-person rifle and the third-person
+   * held weapon all unlock here; the hunt beat machine retakes the HUD.
+   */
+  _takeSidearm(pickup) {
+    pickup.taken = true;
+    if (pickup.mesh) pickup.mesh.visible = false;
+    if (pickup.light) pickup.light.intensity = 0; // dim, never hide (recompile)
+    this._weaponReady = true;
+    this.pulseTool.enabled = true;
+    this.player.weaponStowed = false;
+    this.audio.play('clang');
+    this.ui.showPickup('PULSE SIDEARM ACQUIRED — LMB / F TO FIRE');
+    this._huntBeat = ''; // let the hunt beat machine retake the objective
+  }
+
   /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
   _flashHitMarker() {
     this.ui.flashHit();
@@ -768,6 +836,16 @@ export default class Game {
    * they open through the scripted boss-death flow only.
    */
   _updateDoorInteraction() {
+    // Level 2: the staging-bay weapons locker shares the E-prompt.
+    const pickup = this.levels.weaponPickup;
+    let pickupNear = false;
+    if (pickup && !pickup.taken) {
+      const pdx = this.player.position.x - pickup.x;
+      const pdz = this.player.position.z - pickup.z;
+      pickupNear = pdx * pdx + pdz * pdz < pickup.radius * pickup.radius;
+      if (pickupNear && this.input.justPressed('KeyE')) this._takeSidearm(pickup);
+    }
+
     const doors = this.levels._doors;
     let near = null;
     for (const door of doors) {
@@ -781,7 +859,9 @@ export default class Game {
     }
 
     if (this._interactPromptEl) {
-      this._interactPromptEl.classList.toggle('visible', !!near);
+      this._interactPromptEl.classList.toggle('visible', !!near || pickupNear);
+      this._interactPromptEl.textContent = near || !pickupNear
+        ? '[ E ] OPEN DOOR' : '[ E ] TAKE PULSE SIDEARM';
     }
 
     if (near && this.input.justPressed('KeyE')) {
@@ -1119,6 +1199,11 @@ export default class Game {
 
   /** Local goals and breathing spaces keep the hunt readable. */
   _updateHunt() {
+    // Unarmed: hold the arm-up objective until the sidearm is taken.
+    if (!this._weaponReady) {
+      this._setObjective('SECTOR B / TAKE THE PULSE SIDEARM FROM THE STAGING-BAY SECURITY LOCKER');
+      return;
+    }
     const z = this.player.position.z;
     const released = this.levels.pressureReleased;
     if (released && !this._huntPressureWasReleased) {

@@ -470,6 +470,8 @@ const WORKER_VARIANTS = {
   tech:       { suit: 0xb95c22, suitDark: 0x8a4419, vest: 0x4a505a, hair: 0x2f2620, head: 'cap', prop: 'toolbox' },
   coat:       { suit: 0xe6e9ee, suitDark: 0xc4cad4, vest: 0x39424c, hair: 0x4a3a2c, head: 'bare', prop: 'clipboard' },
   supervisor: { suit: 0x3a4a55, suitDark: 0x2c3a44, vest: 0xd8b62a, hair: 0x554838, head: 'hardhat', prop: 'clipboard' },
+  // Station security — navy uniform, black tactical vest, radio handset.
+  security:   { suit: 0x2e3947, suitDark: 0x222b35, vest: 0x171c22, hair: 0x111417, head: 'cap', prop: 'radio' },
 };
 
 /**
@@ -495,15 +497,18 @@ export function createWorker(variant = 'tech') {
   const shoe = std(0x22262c, { roughness: 0.9 });
   const badge = std(0x223344, { roughness: 0.4, metalness: 0.3, emissive: 0x38c8ff, emissiveIntensity: 0.5 });
 
-  // Pelvis + torso with hi-vis vest and ID badge.
+  // Pelvis + torso with hi-vis vest and ID badge. Joints carry part names
+  // so LevelManager can pose casualties by name (they never call update()).
   part(group, new THREE.BoxGeometry(0.32, 0.16, 0.22), suitDark, 0, 0.84, 0);
   const torso = joint(group, 0, 0.92, 0);
+  torso.name = 'torso';
   part(torso, new THREE.BoxGeometry(0.4, 0.48, 0.24), suit, 0, 0.24, 0);
   part(torso, new THREE.BoxGeometry(0.42, 0.34, 0.27), vest, 0, 0.26, 0);
   part(torso, new THREE.BoxGeometry(0.09, 0.11, 0.02), badge, -0.13, 0.3, 0.135);
 
   // Head with variant headgear — work cap, bare, or hi-vis hard hat.
   const head = joint(torso, 0, 0.56, 0);
+  head.name = 'head';
   part(head, new THREE.BoxGeometry(0.19, 0.2, 0.19), skin, 0, 0.08, 0.01);
   part(head, new THREE.BoxGeometry(0.205, 0.07, 0.205), hairMat, 0, 0.175, -0.015);
   if (cfg.head === 'cap') {
@@ -522,6 +527,8 @@ export function createWorker(variant = 'tech') {
     const elbow = joint(arm, 0, -0.29, 0);
     part(elbow, new THREE.BoxGeometry(0.1, 0.26, 0.1), suitDark, 0, -0.13, 0);
     part(elbow, new THREE.BoxGeometry(0.08, 0.09, 0.08), skin, 0, -0.28, 0);
+    arm.name = side === 'l' ? 'armL' : 'armR';
+    elbow.name = side === 'l' ? 'elbL' : 'elbR';
     return { arm, elbow };
   };
   const { arm: armL, elbow: elbL } = buildArm('l');
@@ -536,6 +543,11 @@ export function createWorker(variant = 'tech') {
     const clipMat = std(0xd9dde3, { roughness: 0.7 });
     part(elbL, new THREE.BoxGeometry(0.17, 0.23, 0.02), clipMat, 0, -0.31, 0.07);
     part(elbL, new THREE.BoxGeometry(0.1, 0.04, 0.03), suitDark, 0, -0.21, 0.07); // clamp
+  } else if (cfg.prop === 'radio') {
+    // Security radio — handset held at the chest, stub antenna up.
+    const radioMat = std(0x14181d, { roughness: 0.5, metalness: 0.45 });
+    part(elbL, new THREE.BoxGeometry(0.09, 0.16, 0.05), radioMat, 0, -0.3, 0.08);
+    part(elbL, new THREE.BoxGeometry(0.015, 0.11, 0.015), radioMat, 0.03, -0.19, 0.08);
   }
 
   // Legs.
@@ -546,6 +558,8 @@ export function createWorker(variant = 'tech') {
     const knee = joint(leg, 0, -0.36, 0);
     part(knee, new THREE.BoxGeometry(0.12, 0.34, 0.13), suitDark, 0, -0.17, 0);
     part(knee, new THREE.BoxGeometry(0.13, 0.08, 0.24), shoe, 0, -0.37, 0.05);
+    leg.name = side === 'l' ? 'legL' : 'legR';
+    knee.name = side === 'l' ? 'kneeL' : 'kneeR';
     return { leg, knee };
   };
   const { leg: legL, knee: kneeL } = buildLeg('l');

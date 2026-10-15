@@ -731,6 +731,142 @@ export default class LevelKit {
     return core;
   }
 
+  /**
+   * Containment shield ring — a circle of angled concrete shield blocks
+   * around the reactor core (the biological shield), with alternating
+   * hazard bands and amber position beacons. Decor only: the railing pen
+   * already keeps the player out, so no colliders.
+   */
+  reactorContainmentRing(x, z, o = {}) {
+    const r = o.r || 3.0;
+    const count = o.count || 13;
+    for (let i = 0; i < count; i++) {
+      const a = (Math.PI * 2) * (i / count);
+      const seg = this.box(this.mats.concrete, 1.42, 1.1, 0.3,
+        x + Math.cos(a) * r, 0.55, z + Math.sin(a) * r,
+        { rotY: -a - Math.PI / 2 });
+      // Chamfer cap, alternating hazard band, beacons on a few blocks.
+      this._child(seg, this.mats.metalDark, 1.42, 0.07, 0.36, 0, 0.585, 0);
+      if (i % 2 === 0) {
+        this._child(seg, this.mats.hazard, 1.42, 0.15, 0.36, 0, -0.26, 0);
+      }
+      if (i % 5 === 2) {
+        this._child(seg, this.mats.beaconAmber, 0.11, 0.11, 0.11, 0, 0.63, 0);
+      }
+    }
+  }
+
+  /**
+   * Turbine housing — a horizontal rotor casing on a concrete plinth with
+   * bearing pedestals, a coupling half and gland pipework off the top.
+   * axis 'x' or 'z' sets the shaft direction; the plinth is the collider.
+   */
+  turbineHousing(x, z, axis, o = {}) {
+    const alongX = axis !== 'z';
+    const len = o.len || 2.9;
+    const r = o.r || 0.55;
+    const pw = alongX ? len + 0.5 : 1.3;
+    const pd = alongX ? 1.3 : len + 0.5;
+    const plinth = this.box(this.mats.concrete, pw, 0.35, pd, x, 0.175, z,
+      { physics: true });
+    // Bearing pedestals carry the casing above the plinth.
+    for (const s of [-1, 1]) {
+      this._child(plinth, this.mats.metalDark, alongX ? 0.36 : 0.8, 0.5,
+        alongX ? 0.8 : 0.36,
+        alongX ? s * (len / 2 - 0.4) : 0, 0.425,
+        alongX ? 0 : s * (len / 2 - 0.4));
+    }
+    const casing = new THREE.Mesh(cylGeo(r, r, len, 16), this.mats.panel);
+    casing.position.set(0, 1.05, 0);
+    if (alongX) casing.rotation.z = Math.PI / 2;
+    else casing.rotation.x = Math.PI / 2;
+    casing.castShadow = true;
+    plinth.add(casing);
+    // Coupling half at one shaft end + gland stubs off the casing top.
+    const coupling = new THREE.Mesh(cylGeo(r + 0.1, r + 0.1, 0.22, 16),
+      this.mats.metalDark);
+    coupling.position.set(alongX ? len / 2 + 0.11 : 0, 1.05,
+      alongX ? 0 : len / 2 + 0.11);
+    if (alongX) coupling.rotation.z = Math.PI / 2;
+    else coupling.rotation.x = Math.PI / 2;
+    coupling.castShadow = true;
+    plinth.add(coupling);
+    for (const s of [-1, 1]) {
+      const gland = new THREE.Mesh(cylGeo(0.07, 0.07, 0.45, 8), this.mats.pipe);
+      gland.position.set(alongX ? s * 0.5 : 0, 1.68, alongX ? 0 : s * 0.5);
+      gland.castShadow = true;
+      plinth.add(gland);
+    }
+    // Hazard band around the plinth base.
+    this._child(plinth, this.mats.hazard, pw + 0.02, 0.14, pd + 0.02, 0, -0.11, 0);
+    return plinth;
+  }
+
+  /**
+   * Annunciator board — a grid of amber indicator tiles on a metal
+   * backplate (control-room alarm fascia). The lit pattern is
+   * deterministic so the level rebuilds identically.
+   */
+  annunciatorBoard(x, y, z, face, o = {}) {
+    const cols = o.cols || 8;
+    const rows = o.rows || 4;
+    const board = this.box(this.mats.metalDark,
+      cols * 0.16 + 0.12, rows * 0.16 + 0.12, 0.07, x, y, z,
+      { rotY: this.faceAngle(face), cast: false });
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const lit = ((r * 5 + c * 3 + ((r * c) % 4)) % 9) < 3;
+        this._child(board, lit ? this.mats.beaconAmber : this.mats.panel,
+          0.13, 0.13, 0.02,
+          (c - (cols - 1) / 2) * 0.16, ((rows - 1) / 2 - r) * 0.16, 0.045);
+      }
+    }
+    return board;
+  }
+
+  /**
+   * Security weapons locker — an open wall cabinet with the pulse sidearm on
+   * the rack. Level 2's gun pickup: Game.js hides the returned gun group and
+   * dims the rack light when the player takes the weapon. The cabinet box is
+   * the collider; interior details and the sidearm are visual children.
+   */
+  weaponsLocker(x, y, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const cabinet = this.box(this.mats.metalDark, 0.95, 1.15, 0.34, x, y, z,
+      { physics: true, rotY });
+    // Recessed dark interior, rack shelf, hazard foot stripe.
+    this._child(cabinet, this.mats.rubber, 0.78, 0.95, 0.06, 0, 0, 0.15);
+    this._child(cabinet, this.mats.metal, 0.82, 0.04, 0.22, 0, -0.28, 0.12);
+    this._child(cabinet, this.mats.hazard, 0.95, 0.09, 0.02, 0, -0.53, 0.18);
+    // Door swung open flat against the adjoining wall.
+    this._child(cabinet, this.mats.metal, 0.44, 1.05, 0.04, 0.6, 0, 0.24, 0, -1.2);
+    // The sidearm — pulse rifle silhouette propped on the rack.
+    const gun = new THREE.Group();
+    const part = (geo, mat, px, py, pz) => {
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(px, py, pz);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      gun.add(mesh);
+      return mesh;
+    };
+    part(boxGeo(0.46, 0.09, 0.07), this.mats.metal, 0, 0, 0);            // receiver
+    const barrel = part(cylGeo(0.026, 0.026, 0.3, 8), this.mats.metalDark, 0.36, 0.01, 0);
+    barrel.rotation.z = Math.PI / 2;
+    part(boxGeo(0.14, 0.12, 0.05), this.mats.metalDark, -0.27, -0.03, 0); // stock
+    const grip = part(boxGeo(0.05, 0.12, 0.05), this.mats.rubber, -0.1, -0.1, 0);
+    grip.rotation.x = 0.35;
+    part(boxGeo(0.09, 0.05, 0.075), this.mats.accent, 0.03, 0.07, 0);     // energy cell
+    gun.position.set(-0.05, -0.21, 0.09);
+    gun.rotation.y = 0.06;
+    cabinet.add(gun);
+    // Rack light — dimmed on pickup (never visibility-toggled: recompile).
+    const light = new THREE.PointLight(0x5cff8a, 0.55, 2.4, 1.8);
+    light.position.set(0, 0.25, 0.42);
+    cabinet.add(light);
+    return { cabinet, gun, light };
+  }
+
   /** Power generator — vents, pipes, warning label. */
   generator(x, z, face, o = {}) {
     const rotY = this.faceAngle(face);
