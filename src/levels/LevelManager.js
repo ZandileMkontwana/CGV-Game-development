@@ -65,9 +65,8 @@ const PROP_PLACEMENTS = {
 // ── Level 1 layout ──────────────────────────────────────────────────────────
 // The training wing occupies z 0 … -TRAIN_LEN (the player still spawns at the
 // same place near z 0). The original route (Reception → Control room) is
-// authored in its old coordinates and pushed south by TRAIN_LEN via L1Z().
+// authored with direct z values pushed south by TRAIN_LEN.
 const TRAIN_LEN = 34;
-const L1Z = (z) => z - TRAIN_LEN;
 
 // Control labels shown on the training signs — edit these to match your game.
 const L1_KEYS = { move: 'WASD', look: 'MOUSE', fire: 'CLICK', jump: 'SPACE' };
@@ -1138,7 +1137,7 @@ export default class LevelManager {
     const m = this._mats;
 
     this._winTriggers = [
-      { x: 0, z: L1Z(-62), radius: 2.0 }, // control room console
+      { x: 0, z: -96, radius: 2.0 }, // control room console
     ];
     this._monsterWaypoints = []; // L1 monster is a scripted cameo (see below)
 
@@ -1146,20 +1145,20 @@ export default class LevelManager {
     // Story beat: the bitten scientist convulses and mutates into the
     // creature, which then flees into the ducts — the player witnesses it.
     this.scriptedReveal = {
-      trigger: { x: 0, z: L1Z(-22.0), radius: 2.8 },   // fires as the player enters the lab
-      spawn: { x: -2.45, y: 1.4, z: L1Z(-25.25) },      // the scientist's console seat
+      trigger: { x: 0, z: -56, radius: 2.8 },   // fires as the player enters the lab
+      spawn: { x: -2.45, y: 1.4, z: -59.25 },      // the scientist's console seat
       escape: [                                          // flees toward the SE duct
-        { x: 2.5, z: L1Z(-27.5) },
-        { x: 6.5, z: L1Z(-30.8) },
+        { x: 2.5, z: -61.5 },
+        { x: 6.5, z: -64.8 },
       ],
       patrol: [                                          // settles into a prowl loop
-        { x: 4, z: L1Z(-22) },
-        { x: -4, z: L1Z(-21) },
-        { x: 0, z: L1Z(-26) },
+        { x: 4, z: -56 },
+        { x: -4, z: -55 },
+        { x: 0, z: -60 },
       ],
     };
     this.npcAnchors = {
-      scientist: { x: -2.45, z: L1Z(-25.25), face: 'w' }, // seated, typing at the console
+      scientist: { x: -2.45, z: -59.25, face: 'w' }, // seated, typing at the console
     };
 
     // Training hub first (z 0 … -TRAIN_LEN), then the real facility, then the
@@ -1167,54 +1166,54 @@ export default class LevelManager {
     this._buildTrainingWing();
 
 // ── Reception (x -5..5, z 0..-10) ─────────────────────────────────────
-    kit.floorSlab(10.6, 10.45, 0, L1Z(-4.93), { lines: [{ axis: 'z', len: 8, color: 'accent' }] });
-    kit.ceilingSlab(10.6, 10.45, 0, H, L1Z(-4.93), {
+    kit.floorSlab(10.6, 10.45, 0, -38.93, { lines: [{ axis: 'z', len: 8, color: 'accent' }] });
+    kit.ceilingSlab(10.6, 10.45, 0, H, -38.93, {
       lamps: [
         { x: -2.4, z: 2.0, light: true, intensity: 0.8 },
         { x: 2.4, z: -2.2 },
       ],
     });
     // North wall: opening to the training wing (x -1.3..1.3).
-    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, L1Z(0.15));
-    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, L1Z(0.15));
-    kit.doorway(2.6, 2.6, 0, 1.3, L1Z(0.15), 's');
-    kit.wallRun(0.3, H, 10.45, -5.15, H / 2, L1Z(-4.93));           // west
+    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, -33.85);
+    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, -33.85);
+    kit.doorway(2.6, 2.6, 0, 1.3, -33.85, 's');
+    kit.wallRun(0.3, H, 10.45, -5.15, H / 2, -38.93);           // west
     // East wall: opening to the Break Room (optional side room).
-    this._gappedSideWall(5.15, L1Z(0.3), L1Z(-10.3), L1Z(-7.2), 2.4, H);
+    this._gappedSideWall(5.15, -33.7, -44.3, -41.2, 2.4, H);
     // South wall with a door-sized arch (x -1.3..1.3).
-    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, L1Z(-10.15));
-    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, L1Z(-10.15));
-    kit.doorway(2.6, 2.6, 0, 1.3, L1Z(-10.15), 's');
-    kit.sign(-3.3, 2.3, L1Z(-9.97), 's', 'RECEPTION', { sub: 'SECTOR A', fg: '#7fe7ff' });
-    kit.sign(3.3, 2.3, L1Z(-9.97), 's', 'BREACH PROTOCOL', { sub: 'FOLLOW THE EXIT MARKERS', fg: '#7fe7ff' });
-    kit.consoleDesk(-3.6, L1Z(-5.0), 'e', { w: 1.8, monitors: 1 });
-    kit.crateStack(4.0, L1Z(-3.2), { w: 1.2, h: 1.2, d: 0.8, rotY: 0.3 });
-    kit.crate(4.3, L1Z(-4.7), { s: 0.7, rotY: 0.4 });   // moved off the Break Room doorway
-    kit.fuseBox(-4.94, 1.7, L1Z(-8.5), 'e');
-    kit.extinguisher(-4.94, 1.2, L1Z(-3.0));
-    kit.floorDecal(3.2, L1Z(-5.0), 'stripes', { size: 1.2 });
+    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, -44.15);
+    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, -44.15);
+    kit.doorway(2.6, 2.6, 0, 1.3, -44.15, 's');
+    kit.sign(-3.3, 2.3, -43.97, 's', 'RECEPTION', { sub: 'SECTOR A', fg: '#7fe7ff' });
+    kit.sign(3.3, 2.3, -43.97, 's', 'BREACH PROTOCOL', { sub: 'FOLLOW THE EXIT MARKERS', fg: '#7fe7ff' });
+    kit.consoleDesk(-3.6, -39, 'e', { w: 1.8, monitors: 1 });
+    kit.crateStack(4.0, -37.2, { w: 1.2, h: 1.2, d: 0.8, rotY: 0.3 });
+    kit.crate(4.3, -38.7, { s: 0.7, rotY: 0.4 });   // moved off the Break Room doorway
+    kit.fuseBox(-4.94, 1.7, -42.5, 'e');
+    kit.extinguisher(-4.94, 1.2, -37);
+    kit.floorDecal(3.2, -39, 'stripes', { size: 1.2 });
 
     // ── Corridor C1 (x -2..2, z -10..-20) ────────────────────────────────
-    kit.floorSlab(4.3, 10.0, 0, L1Z(-15.15), { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
-    kit.ceilingSlab(4.3, 10.0, 0, H, L1Z(-15.15), {
+    kit.floorSlab(4.3, 10.0, 0, -49.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
+    kit.ceilingSlab(4.3, 10.0, 0, H, -49.15, {
       lamps: [
         { x: 0, z: 2.4, light: true, intensity: 0.7 },
         { x: 0, z: -2.4 },
       ],
     });
-    this._gappedSideWall(-2.15, L1Z(-10.0), L1Z(-20.3), L1Z(-15.0), 2.4, H); // west: Equipment Nook
-    this._gappedSideWall(2.15, L1Z(-10.0), L1Z(-20.3), L1Z(-15.0), 2.4, H);  // east: Records Vault (door)
-    kit.pipeRun('z', 9.5, -1.95, 2.55, L1Z(-15.15), { count: 2, r: 0.06 });
-    kit.cableTray('z', 9.5, 1.95, 2.6, L1Z(-15.15));
-    kit.sign(0, 2.3, L1Z(-19.97), 's', 'LAB A-2 ▸', { sub: 'BIOHAZARD LEVEL 2', fg: '#7fe7ff' });
-    kit.fuseBox(-1.94, 1.6, L1Z(-12.5), 'e');
-    kit.ventGrille(-1.95, 2.2, L1Z(-17.5), 'e', { w: 0.8, h: 0.5 });
+    this._gappedSideWall(-2.15, -44, -54.3, -49, 2.4, H); // west: Equipment Nook
+    this._gappedSideWall(2.15, -44, -54.3, -49, 2.4, H);  // east: Records Vault (door)
+    kit.pipeRun('z', 9.5, -1.95, 2.55, -49.15, { count: 2, r: 0.06 });
+    kit.cableTray('z', 9.5, 1.95, 2.6, -49.15);
+    kit.sign(0, 2.3, -53.97, 's', 'LAB A-2 ▸', { sub: 'BIOHAZARD LEVEL 2', fg: '#7fe7ff' });
+    kit.fuseBox(-1.94, 1.6, -46.5, 'e');
+    kit.ventGrille(-1.95, 2.2, -51.5, 'e', { w: 0.8, h: 0.5 });
 
     // ── Laboratory (x -9..9, z -20..-32) ─────────────────────────────────
-    kit.floorSlab(18.6, 12.0, 0, L1Z(-26.15), {
+    kit.floorSlab(18.6, 12.0, 0, -60.15, {
       lines: [{ axis: 'z', len: 10, color: 'accent' }],
     });
-    kit.ceilingSlab(18.6, 12.0, 0, H, L1Z(-26.15), {
+    kit.ceilingSlab(18.6, 12.0, 0, H, -60.15, {
       lamps: [
         { x: -4.5, z: 4.0, light: true, intensity: 0.9 },
         { x: 4.5, z: 4.0 },
@@ -1223,45 +1222,45 @@ export default class LevelManager {
       ],
     });
     // North wall (corridor mouth) + south wall (door 'l1-lab').
-    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, L1Z(-20.15));
-    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, L1Z(-20.15));
-    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, L1Z(-32.15));
-    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, L1Z(-32.15));
-    kit.wallRun(0.3, H, 12.3, -9.15, H / 2, L1Z(-26.15));          // west
-    this._gappedSideWall(9.15, L1Z(-20.0), L1Z(-32.3), L1Z(-25.0), 2.4, H);   // east: Lab Annex
-    kit.doorway(2.6, 2.6, 0, 1.3, L1Z(-20.15), 's');
+    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -54.15);
+    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -54.15);
+    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -66.15);
+    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -66.15);
+    kit.wallRun(0.3, H, 12.3, -9.15, H / 2, -60.15);          // west
+    this._gappedSideWall(9.15, -54, -66.3, -59, 2.4, H);   // east: Lab Annex
+    kit.doorway(2.6, 2.6, 0, 1.3, -54.15, 's');
     // The tutorial door: shoot the conduit beside it.
-    kit.doorway(2.6, 2.6, 0, 1.3, L1Z(-32.15), 's');
-    this._createDoor('l1-lab', 2.6, 2.6, 0, 1.3, L1Z(-32.15), 0, m.metalDark);
-    const l1Conduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, L1Z(-31.96), 'conduit', 0);
+    kit.doorway(2.6, 2.6, 0, 1.3, -66.15, 's');
+    this._createDoor('l1-lab', 2.6, 2.6, 0, 1.3, -66.15, 0, m.metalDark);
+    const l1Conduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, -65.96, 'conduit', 0);
     l1Conduit.userData.doorId = 'l1-lab';
-    kit.sign(0, 2.55, L1Z(-31.97), 's', 'MAINTENANCE ▸', { sub: 'PULSE TOOL REQUIRED', fg: '#ffd27f' });
+    kit.sign(0, 2.55, -65.97, 's', 'MAINTENANCE ▸', { sub: 'PULSE TOOL REQUIRED', fg: '#ffd27f' });
 
     // Focal props: containment tube + scientist console + benches.
-    kit.containmentTube(-5.0, L1Z(-26.0));
-    kit.consoleDesk(-3.4, L1Z(-25.2), 'e', { w: 1.8, monitors: 2 });
-    kit.chair(-1.55, L1Z(-25.05), 'w');
-    kit.labBench(5.6, L1Z(-23.5), 'w', { len: 2.6 });
-    kit.labBench(5.6, L1Z(-27.5), 'w', { len: 2.6 });
-    kit.shelfUnit(-8.2, L1Z(-22.0), 'e', { w: 1.5 });
-    kit.cabinet(-8.2, L1Z(-29.2), 'e');
-    kit.wallScreen(-8.93, 1.9, L1Z(-26.0), 'e', { w: 2.4, h: 1.3 });
-    kit.wallScreen(-8.93, 1.9, L1Z(-23.4), 'e', { w: 1.2, h: 1.3, alt: true, dotMat: m.emergencyRed });
-    kit.canister(-5.8, L1Z(-30.5));
-    kit.canister(-5.4, L1Z(-30.2));
-    kit.crate(-7.5, L1Z(-30.6), { s: 0.7 });
-    kit.crateStack(-7.8, L1Z(-21.2), { w: 1.4, h: 1.4, d: 0.9 });
-    kit.barrel(8.2, L1Z(-30.5));
-    kit.barrel(7.6, L1Z(-30.8));
-    kit.debrisPile(-8.0, L1Z(-27.6), { s: 0.8, seed: 11 });
-    kit.floorDecal(3.0, L1Z(-25.0), 'dashes', { size: 2.0 });
+    kit.containmentTube(-5.0, -60);
+    kit.consoleDesk(-3.4, -59.2, 'e', { w: 1.8, monitors: 2 });
+    kit.chair(-1.55, -59.05, 'w');
+    kit.labBench(5.6, -57.5, 'w', { len: 2.6 });
+    kit.labBench(5.6, -61.5, 'w', { len: 2.6 });
+    kit.shelfUnit(-8.2, -56, 'e', { w: 1.5 });
+    kit.cabinet(-8.2, -63.2, 'e');
+    kit.wallScreen(-8.93, 1.9, -60, 'e', { w: 2.4, h: 1.3 });
+    kit.wallScreen(-8.93, 1.9, -57.4, 'e', { w: 1.2, h: 1.3, alt: true, dotMat: m.emergencyRed });
+    kit.canister(-5.8, -64.5);
+    kit.canister(-5.4, -64.2);
+    kit.crate(-7.5, -64.6, { s: 0.7 });
+    kit.crateStack(-7.8, -55.2, { w: 1.4, h: 1.4, d: 0.9 });
+    kit.barrel(8.2, -64.5);
+    kit.barrel(7.6, -64.8);
+    kit.debrisPile(-8.0, -61.6, { s: 0.8, seed: 11 });
+    kit.floorDecal(3.0, -59, 'dashes', { size: 2.0 });
     // Ventilation duct along the south wall — the creature escapes here.
-    kit.duct('x', 18.3, 0, 2.8, L1Z(-31.7), { grilles: [-6.5, 6.5] });
-    kit.ventGrille(6.5, 2.6, L1Z(-31.94), 's', { w: 0.9, h: 0.6 });
+    kit.duct('x', 18.3, 0, 2.8, -65.7, { grilles: [-6.5, 6.5] });
+    kit.ventGrille(6.5, 2.6, -65.94, 's', { w: 0.9, h: 0.6 });
     // Lingering smoke leak from the damaged duct grille.
     this._createSteamVent(
       'l1-lab-leak',
-      6.5, 2.15, L1Z(-31.7),
+      6.5, 2.15, -65.7,
       {
         count: 24, rate: 0.08, rise: 0.3, drift: 0.25,
         lifeSpan: 2.8, alpha: 0.35,
@@ -1269,36 +1268,36 @@ export default class LevelManager {
     );
     // Breakable pipes along the creature's escape path (smashed during reveal).
     // Pipe 1: east wall vertical run (creature smashes as it bursts out).
-    const pipe1Segs = kit.breakablePipeRun('z', 7.0, 8.5, 2.5, L1Z(-26.5), { count: 2, r: 0.06 });
-    this._addBreakablePipe(pipe1Segs, { x: 8.5, y: 2.5, z: L1Z(-26.5) });
+    const pipe1Segs = kit.breakablePipeRun('z', 7.0, 8.5, 2.5, -60.5, { count: 2, r: 0.06 });
+    this._addBreakablePipe(pipe1Segs, { x: 8.5, y: 2.5, z: -60.5 });
     // Pipe 2: crossing near the creature's flee waypoint.
-    const pipe2Segs = kit.breakablePipeRun('x', 4.0, 3.0, 2.4, L1Z(-28.0), { count: 2, r: 0.06 });
-    this._addBreakablePipe(pipe2Segs, { x: 3.0, y: 2.4, z: L1Z(-28.0) });
+    const pipe2Segs = kit.breakablePipeRun('x', 4.0, 3.0, 2.4, -62, { count: 2, r: 0.06 });
+    this._addBreakablePipe(pipe2Segs, { x: 3.0, y: 2.4, z: -62 });
     // Pipe 3: south wall near the duct (final smash before escape).
-    const pipe3Segs = kit.breakablePipeRun('x', 5.0, 5.0, 2.6, L1Z(-31.3), { count: 2, r: 0.07 });
-    this._addBreakablePipe(pipe3Segs, { x: 5.0, y: 2.6, z: L1Z(-31.3) });
+    const pipe3Segs = kit.breakablePipeRun('x', 5.0, 5.0, 2.6, -65.3, { count: 2, r: 0.07 });
+    this._addBreakablePipe(pipe3Segs, { x: 5.0, y: 2.6, z: -65.3 });
     // Alarm beacon near containment (the scripted beat's visual anchor).
-    kit.lamp(-7.6, L1Z(-27.5), { y: 2.6, color: 'red', light: false });
-    this._scorchDecal(-5.0, 0, L1Z(-28.4), 1.6, 0.4);
+    kit.lamp(-7.6, -61.5, { y: 2.6, color: 'red', light: false });
+    this._scorchDecal(-5.0, 0, -62.4, 1.6, 0.4);
     // Red emergency spotlight on the lab ceiling — flickers when the monster emerges.
-    this._labRedSpot = this._flickerLight(0, 2.9, L1Z(-26), 0xff2200, 0.0, 12);
+    this._labRedSpot = this._flickerLight(0, 2.9, -60, 0xff2200, 0.0, 12);
     this._labRedSpot.intensity = 0; // starts off, activated when monster appears
 
     // ── Maintenance C2 (x -2..2, z -32..-40) ─────────────────────────────
-    kit.floorSlab(4.3, 8.0, 0, L1Z(-36.15), { lines: [{ axis: 'z', len: 6.5, color: 'accent' }] });
-    kit.ceilingSlab(4.3, 8.0, 0, H, L1Z(-36.15), {
+    kit.floorSlab(4.3, 8.0, 0, -70.15, { lines: [{ axis: 'z', len: 6.5, color: 'accent' }] });
+    kit.ceilingSlab(4.3, 8.0, 0, H, -70.15, {
       lamps: [{ x: 0, z: 0, light: true, intensity: 0.7 }],
     });
-    kit.wallRun(0.3, H, 8.3, -2.15, H / 2, L1Z(-36.15));
-    kit.wallRun(0.3, H, 8.3, 2.15, H / 2, L1Z(-36.15));
-    kit.pipeRun('z', 7.5, -1.95, 2.5, L1Z(-36.15), { count: 3, r: 0.06 });
-    kit.cableTray('z', 7.5, 1.95, 2.55, L1Z(-36.15));
-    kit.fuseBox(1.94, 1.6, L1Z(-34.0), 'w');
-    kit.floorDecal(0, L1Z(-33.2), 'stripes', { size: 1.0 });
+    kit.wallRun(0.3, H, 8.3, -2.15, H / 2, -70.15);
+    kit.wallRun(0.3, H, 8.3, 2.15, H / 2, -70.15);
+    kit.pipeRun('z', 7.5, -1.95, 2.5, -70.15, { count: 3, r: 0.06 });
+    kit.cableTray('z', 7.5, 1.95, 2.55, -70.15);
+    kit.fuseBox(1.94, 1.6, -68, 'w');
+    kit.floorDecal(0, -67.2, 'stripes', { size: 1.0 });
 
     // ── Reactor hall (x -10..10, z -40..-54) ─────────────────────────────
-    kit.floorSlab(20.6, 14.0, 0, L1Z(-47.15), { trim: true });
-    kit.ceilingSlab(20.6, 14.0, 0, H, L1Z(-47.15), {
+    kit.floorSlab(20.6, 14.0, 0, -81.15, { trim: true });
+    kit.ceilingSlab(20.6, 14.0, 0, H, -81.15, {
       lamps: [
         { x: -6, z: 5, light: true, intensity: 0.85 },
         { x: 6, z: 5 },
@@ -1306,67 +1305,67 @@ export default class LevelManager {
         { x: 6, z: -5, light: true, intensity: 0.85 },
       ],
     });
-    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, L1Z(-40.15));
-    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, L1Z(-40.15));
-    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, L1Z(-54.15));
-    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, L1Z(-54.15));
-    kit.wallRun(0.3, H, 14.3, -10.15, H / 2, L1Z(-47.15));         // west
-    kit.wallRun(0.3, H, 14.3, 10.15, H / 2, L1Z(-47.15));          // east
-    kit.doorway(2.6, 2.6, 0, 1.3, L1Z(-40.15), 's');
-    kit.doorway(2.6, 2.6, 0, 1.3, L1Z(-54.15), 's');
-    kit.sign(0, 2.4, L1Z(-39.97), 's', 'REACTOR HALL ▸', { fg: '#ffd27f' });
-    kit.sign(0, 2.5, L1Z(-40.32), 'n', 'REACTOR HALL', { sub: 'AUTHORISED PERSONNEL ONLY', fg: '#ffd27f' });
+    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, -74.15);
+    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, -74.15);
+    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, -88.15);
+    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, -88.15);
+    kit.wallRun(0.3, H, 14.3, -10.15, H / 2, -81.15);         // west
+    kit.wallRun(0.3, H, 14.3, 10.15, H / 2, -81.15);          // east
+    kit.doorway(2.6, 2.6, 0, 1.3, -74.15, 's');
+    kit.doorway(2.6, 2.6, 0, 1.3, -88.15, 's');
+    kit.sign(0, 2.4, -73.97, 's', 'REACTOR HALL ▸', { fg: '#ffd27f' });
+    kit.sign(0, 2.5, -74.32, 'n', 'REACTOR HALL', { sub: 'AUTHORISED PERSONNEL ONLY', fg: '#ffd27f' });
     // Focal reactor core (top stays clear of the 3 m ceiling).
-    kit.reactorCore(0, L1Z(-47.0), { r: 1.5, h: 2.4 });
-    for (const [cx, cz] of [[-6.5, L1Z(-43.5)], [6.5, L1Z(-43.5)], [-6.5, L1Z(-50.5)], [6.5, L1Z(-50.5)]]) {
+    kit.reactorCore(0, -81, { r: 1.5, h: 2.4 });
+    for (const [cx, cz] of [[-6.5, -77.5], [6.5, -77.5], [-6.5, -84.5], [6.5, -84.5]]) {
       kit.column(cx, cz, { h: H, r: 0.26 });
     }
-    kit.railing('x', 7.2, 0, 0, L1Z(-43.6));
-    kit.railing('x', 7.2, 0, 0, L1Z(-50.4));
-    kit.railing('z', 6.8, -3.6, 0, L1Z(-47.0));
-    kit.railing('z', 6.8, 3.6, 0, L1Z(-47.0));
-    kit.pipeRun('x', 20, 0, 2.55, L1Z(-41.9), { count: 3 });
-    kit.pipeRun('x', 20, 0, 2.55, L1Z(-52.4), { count: 2 });
-    kit.wallScreen(9.93, 2.0, L1Z(-44.0), 'w', { w: 2.8, h: 1.4 });
-    kit.generator(-8.3, L1Z(-50.8), 'e');
-    kit.generator(8.3, L1Z(-43.2), 'w');
-    kit.crateStack(6.5, L1Z(-51.6), { w: 1.5, h: 1.5, d: 0.9, rotY: -0.2 });
-    kit.barrel(-9.0, L1Z(-44.0));
-    kit.barrel(9.0, L1Z(-51.0));
-    kit.canister(-9.2, L1Z(-47.4));
-    kit.canister(9.2, L1Z(-46.8));
-    kit.floorDecal(-3.4, L1Z(-44.0), 'stripes', { size: 1.2 });
-    kit.floorDecal(3.4, L1Z(-50.2), 'stripes', { size: 1.2 });
-    kit.floorLine(0, L1Z(-44.0), 7, { axis: 'x', color: 'warn' });
-    this._scorchDecal(-5.5, 0, L1Z(-45.2), 1.3);
-    this._scorchDecal(5.0, 0, L1Z(-49.0), 1.1);
+    kit.railing('x', 7.2, 0, 0, -77.6);
+    kit.railing('x', 7.2, 0, 0, -84.4);
+    kit.railing('z', 6.8, -3.6, 0, -81);
+    kit.railing('z', 6.8, 3.6, 0, -81);
+    kit.pipeRun('x', 20, 0, 2.55, -75.9, { count: 3 });
+    kit.pipeRun('x', 20, 0, 2.55, -86.4, { count: 2 });
+    kit.wallScreen(9.93, 2.0, -78, 'w', { w: 2.8, h: 1.4 });
+    kit.generator(-8.3, -84.8, 'e');
+    kit.generator(8.3, -77.2, 'w');
+    kit.crateStack(6.5, -85.6, { w: 1.5, h: 1.5, d: 0.9, rotY: -0.2 });
+    kit.barrel(-9.0, -78);
+    kit.barrel(9.0, -85);
+    kit.canister(-9.2, -81.4);
+    kit.canister(9.2, -80.8);
+    kit.floorDecal(-3.4, -78, 'stripes', { size: 1.2 });
+    kit.floorDecal(3.4, -84.2, 'stripes', { size: 1.2 });
+    kit.floorLine(0, -78, 7, { axis: 'x', color: 'warn' });
+    this._scorchDecal(-5.5, 0, -79.2, 1.3);
+    this._scorchDecal(5.0, 0, -83, 1.1);
     // Dust around the reactor core.
-    this._dustMotes(60, 0, L1Z(-47), 6.5, 0.4, 2.7);
+    this._dustMotes(60, 0, -81, 6.5, 0.4, 2.7);
 
     // ── Control room (x -5..5, z -54..-64) ───────────────────────────────
-    kit.floorSlab(10.6, 10.0, 0, L1Z(-59.15), { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
-    kit.ceilingSlab(10.6, 10.0, 0, H, L1Z(-59.15), {
+    kit.floorSlab(10.6, 10.0, 0, -93.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
+    kit.ceilingSlab(10.6, 10.0, 0, H, -93.15, {
       lamps: [
         { x: -2.6, z: 2.0, light: true, intensity: 0.8 },
         { x: 2.6, z: -2.0, light: true, intensity: 0.8 },
       ],
     });
-    kit.wallRun(0.3, H, 10.3, -5.15, H / 2, L1Z(-59.15));
-    kit.wallRun(0.3, H, 10.3, 5.15, H / 2, L1Z(-59.15));
-    kit.wallRun(10.6, H, 0.3, 0, H / 2, L1Z(-64.15));              // south end wall
-    kit.sign(0, 2.6, L1Z(-54.32), 'n', 'CONTROL ROOM', { fg: '#7fe7ff' });
-    kit.consoleDesk(0, L1Z(-62.6), 'n', { w: 3.2, monitors: 3 });
-    kit.chair(-0.7, L1Z(-61.3), 'n');
-    kit.chair(0.7, L1Z(-61.3), 'n');
-    kit.wallScreen(0, 2.2, L1Z(-63.93), 's', { w: 3.4, h: 1.5 });
-    kit.serverRack(-4.6, L1Z(-55.8), 'e');
-    kit.serverRack(4.6, L1Z(-55.8), 'w');
-    kit.cabinet(-4.6, L1Z(-60.0), 'e');
-    kit.shelfUnit(4.6, L1Z(-60.0), 'w', { w: 1.4, h: 1.8 });
-    kit.fuseBox(-4.94, 1.7, L1Z(-58.0), 'e');
-    kit.extinguisher(4.94, 1.2, L1Z(-56.0));
-    kit.debrisPile(-2.6, L1Z(-63.2), { s: 0.7, seed: 21 });
-    kit.floorDecal(0, L1Z(-60.4), 'stripes', { size: 1.4, color: '#5cff8a' });
+    kit.wallRun(0.3, H, 10.3, -5.15, H / 2, -93.15);
+    kit.wallRun(0.3, H, 10.3, 5.15, H / 2, -93.15);
+    kit.wallRun(10.6, H, 0.3, 0, H / 2, -98.15);              // south end wall
+    kit.sign(0, 2.6, -88.32, 'n', 'CONTROL ROOM', { fg: '#7fe7ff' });
+    kit.consoleDesk(0, -96.6, 'n', { w: 3.2, monitors: 3 });
+    kit.chair(-0.7, -95.3, 'n');
+    kit.chair(0.7, -95.3, 'n');
+    kit.wallScreen(0, 2.2, -97.93, 's', { w: 3.4, h: 1.5 });
+    kit.serverRack(-4.6, -89.8, 'e');
+    kit.serverRack(4.6, -89.8, 'w');
+    kit.cabinet(-4.6, -94, 'e');
+    kit.shelfUnit(4.6, -94, 'w', { w: 1.4, h: 1.8 });
+    kit.fuseBox(-4.94, 1.7, -92, 'e');
+    kit.extinguisher(4.94, 1.2, -90);
+    kit.debrisPile(-2.6, -97.2, { s: 0.7, seed: 21 });
+    kit.floorDecal(0, -94.4, 'stripes', { size: 1.4, color: '#5cff8a' });
 
     // Optional side rooms (lore, health pickups, relay puzzle).
     this._buildLevel1SideRooms();
@@ -1541,81 +1540,81 @@ export default class LevelManager {
 
     // ── Break Room (east of Reception; x 5.3..11.3, z -4.65..-9.75) ──────
     // Always lit. Lore + a health pickup as the "you explored" reward.
-    kit.floorSlab(5.85, 5.1, 8.225, L1Z(-7.2), { lines: [{ axis: 'x', len: 4, color: 'accent' }] });
-    kit.ceilingSlab(5.85, 5.1, 8.225, H, L1Z(-7.2), {
+    kit.floorSlab(5.85, 5.1, 8.225, -41.2, { lines: [{ axis: 'x', len: 4, color: 'accent' }] });
+    kit.ceilingSlab(5.85, 5.1, 8.225, H, -41.2, {
       lamps: [{ x: 0, z: 0, light: true, intensity: 0.6 }],
     });
-    kit.wallRun(6.0, H, 0.3, 8.3, H / 2, L1Z(-4.65));          // north
-    kit.wallRun(6.0, H, 0.3, 8.3, H / 2, L1Z(-9.75));          // south
-    kit.wallRun(0.3, H, 5.4, 11.15, H / 2, L1Z(-7.2));         // east end
-    kit.sign(8.3, 2.4, L1Z(-4.65) - 0.17, 'n', 'NOTE TO NIGHT STAFF', { sub: 'B-7 IS RESTLESS TONIGHT', fg: '#ffd27f' });
-    kit.sign(8.3, 2.4, L1Z(-9.75) + 0.18, 's', 'BREAK ROOM', { sub: 'VAULT POWER: RELAYS A + B', fg: '#7fe7ff' });
-    kit.wallScreen(10.93, 1.9, L1Z(-7.2), 'w', { w: 2.0, h: 1.2 });
-    kit.labBench(7.4, L1Z(-6.0), 'w', { len: 1.8 });
-    kit.cabinet(6.6, L1Z(-9.1), 'n');
-    kit.shelfUnit(10.2, L1Z(-9.1), 'n', { w: 1.4, h: 1.8 });
-    kit.crate(6.2, L1Z(-5.3), { s: 0.7, rotY: 0.3 });
-    kit.barrel(10.6, L1Z(-5.3));
-    kit.extinguisher(10.9, 1.2, L1Z(-5.1));
-    this._addPickup('l1-health-lounge', 'health', 9.3, L1Z(-7.6), { amount: 25 });
+    kit.wallRun(6.0, H, 0.3, 8.3, H / 2, -38.65);          // north
+    kit.wallRun(6.0, H, 0.3, 8.3, H / 2, -43.75);          // south
+    kit.wallRun(0.3, H, 5.4, 11.15, H / 2, -41.2);         // east end
+    kit.sign(8.3, 2.4, -38.65 - 0.17, 'n', 'NOTE TO NIGHT STAFF', { sub: 'B-7 IS RESTLESS TONIGHT', fg: '#ffd27f' });
+    kit.sign(8.3, 2.4, -43.75 + 0.18, 's', 'BREAK ROOM', { sub: 'VAULT POWER: RELAYS A + B', fg: '#7fe7ff' });
+    kit.wallScreen(10.93, 1.9, -41.2, 'w', { w: 2.0, h: 1.2 });
+    kit.labBench(7.4, -40, 'w', { len: 1.8 });
+    kit.cabinet(6.6, -43.1, 'n');
+    kit.shelfUnit(10.2, -43.1, 'n', { w: 1.4, h: 1.8 });
+    kit.crate(6.2, -39.3, { s: 0.7, rotY: 0.3 });
+    kit.barrel(10.6, -39.3);
+    kit.extinguisher(10.9, 1.2, -39.1);
+    this._addPickup('l1-health-lounge', 'health', 9.3, -41.6, { amount: 25 });
 
     // ── Equipment Nook (west of C1; x -2.3..-6.3, z -12.9..-17.1) ────────
     // Dark until Relay A is shot; the relay panel glows red so it can be found.
-    const nookLight = this._powerLight(-4.2, 2.5, L1Z(-15.0), 0xbfe6ff, 0.9, 8);
-    kit.floorSlab(3.85, 4.2, -4.225, L1Z(-15.0), {});
-    kit.ceilingSlab(3.85, 4.2, -4.225, H, L1Z(-15.0), { lamps: [{ x: 0, z: 0 }] });
-    kit.wallRun(4.0, H, 0.3, -4.3, H / 2, L1Z(-12.9));          // north
-    kit.wallRun(4.0, H, 0.3, -4.3, H / 2, L1Z(-17.1));          // south
-    kit.wallRun(0.3, H, 4.5, -6.15, H / 2, L1Z(-15.0));         // west end
-    kit.sign(-4.3, 2.3, L1Z(-17.1) + 0.18, 's', 'RELAY A — OFFLINE', { sub: 'SHOOT THE PANEL', fg: '#ff8f7f' });
-    kit.crate(-3.5, L1Z(-13.6), { s: 0.7, rotY: 0.4 });
-    kit.barrel(-3.3, L1Z(-16.6));
-    kit.canister(-5.6, L1Z(-13.5));
-    kit.debrisPile(-5.5, L1Z(-16.5), { s: 0.6, seed: 51 });
-    this._addPowerNode('l1-relay-a', -5.94, 1.4, L1Z(-15.0), Math.PI / 2, {
+    const nookLight = this._powerLight(-4.2, 2.5, -49, 0xbfe6ff, 0.9, 8);
+    kit.floorSlab(3.85, 4.2, -4.225, -49, {});
+    kit.ceilingSlab(3.85, 4.2, -4.225, H, -49, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(4.0, H, 0.3, -4.3, H / 2, -46.9);          // north
+    kit.wallRun(4.0, H, 0.3, -4.3, H / 2, -51.1);          // south
+    kit.wallRun(0.3, H, 4.5, -6.15, H / 2, -49);         // west end
+    kit.sign(-4.3, 2.3, -51.1 + 0.18, 's', 'RELAY A — OFFLINE', { sub: 'SHOOT THE PANEL', fg: '#ff8f7f' });
+    kit.crate(-3.5, -47.6, { s: 0.7, rotY: 0.4 });
+    kit.barrel(-3.3, -50.6);
+    kit.canister(-5.6, -47.5);
+    kit.debrisPile(-5.5, -50.5, { s: 0.6, seed: 51 });
+    this._addPowerNode('l1-relay-a', -5.94, 1.4, -49, Math.PI / 2, {
       lights: [nookLight], doorIds: ['l1-vault'], halo: false,
     });
 
     // ── Lab Annex (east of the Laboratory; x 9.3..14.3, z -22.7..-27.3) ──
     // Dark until Relay B is shot. Also holds a health pickup.
-    const annexLight = this._powerLight(11.7, 2.5, L1Z(-25.0), 0xbfe6ff, 0.9, 8);
-    const vaultLight = this._powerLight(5.3, 2.5, L1Z(-15.0), 0xffd9a0, 0.9, 8);
-    kit.floorSlab(4.85, 4.6, 11.725, L1Z(-25.0), {});
-    kit.ceilingSlab(4.85, 4.6, 11.725, H, L1Z(-25.0), { lamps: [{ x: 0, z: 0 }] });
-    kit.wallRun(5.0, H, 0.3, 11.8, H / 2, L1Z(-22.7));          // north
-    kit.wallRun(5.0, H, 0.3, 11.8, H / 2, L1Z(-27.3));          // south
-    kit.wallRun(0.3, H, 5.0, 14.15, H / 2, L1Z(-25.0));         // east end
-    kit.sign(11.7, 2.4, L1Z(-27.3) + 0.18, 's', 'RELAY B — OFFLINE', { sub: 'VAULT NEEDS BOTH RELAYS', fg: '#ff8f7f' });
-    kit.shelfUnit(11.9, L1Z(-26.9), 'n', { w: 1.4, h: 1.8 });
-    kit.cabinet(10.3, L1Z(-26.9), 'n');
-    kit.crateStack(13.2, L1Z(-23.6), { w: 1.2, h: 1.2, d: 0.8, rotY: 0.2 });
-    kit.canister(10.0, L1Z(-23.3));
-    kit.barrel(10.1, L1Z(-26.2));
-    this._addPickup('l1-health-annex', 'health', 11.4, L1Z(-24.4), { amount: 25 });
-    this._addPowerNode('l1-relay-b', 13.94, 1.4, L1Z(-25.0), -Math.PI / 2, {
+    const annexLight = this._powerLight(11.7, 2.5, -59, 0xbfe6ff, 0.9, 8);
+    const vaultLight = this._powerLight(5.3, 2.5, -49, 0xffd9a0, 0.9, 8);
+    kit.floorSlab(4.85, 4.6, 11.725, -59, {});
+    kit.ceilingSlab(4.85, 4.6, 11.725, H, -59, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(5.0, H, 0.3, 11.8, H / 2, -56.7);          // north
+    kit.wallRun(5.0, H, 0.3, 11.8, H / 2, -61.3);          // south
+    kit.wallRun(0.3, H, 5.0, 14.15, H / 2, -59);         // east end
+    kit.sign(11.7, 2.4, -61.3 + 0.18, 's', 'RELAY B — OFFLINE', { sub: 'VAULT NEEDS BOTH RELAYS', fg: '#ff8f7f' });
+    kit.shelfUnit(11.9, -60.9, 'n', { w: 1.4, h: 1.8 });
+    kit.cabinet(10.3, -60.9, 'n');
+    kit.crateStack(13.2, -57.6, { w: 1.2, h: 1.2, d: 0.8, rotY: 0.2 });
+    kit.canister(10.0, -57.3);
+    kit.barrel(10.1, -60.2);
+    this._addPickup('l1-health-annex', 'health', 11.4, -58.4, { amount: 25 });
+    this._addPowerNode('l1-relay-b', 13.94, 1.4, -59, -Math.PI / 2, {
       lights: [annexLight, vaultLight], doorIds: ['l1-vault'], halo: false,
     });
 
     // ── Records Vault (east of C1; x 2.3..8.3, z -12.45..-17.55) ─────────
     // Door opens only when Relay A and Relay B are both live.
-    kit.floorSlab(6.0, 5.1, 5.3, L1Z(-15.0), {});
-    kit.ceilingSlab(6.0, 5.1, 5.3, H, L1Z(-15.0), { lamps: [{ x: 0, z: 0 }] });
-    kit.wallRun(6.0, H, 0.3, 5.3, H / 2, L1Z(-12.45));          // north
-    kit.wallRun(6.0, H, 0.3, 5.3, H / 2, L1Z(-17.55));          // south
-    kit.wallRun(0.3, H, 5.4, 8.15, H / 2, L1Z(-15.0));          // east end
-    this._createDoor('l1-vault', 2.4, 2.5, 2.15, 1.25, L1Z(-15.0), Math.PI / 2, m.metalDark, {
+    kit.floorSlab(6.0, 5.1, 5.3, -49, {});
+    kit.ceilingSlab(6.0, 5.1, 5.3, H, -49, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(6.0, H, 0.3, 5.3, H / 2, -46.45);          // north
+    kit.wallRun(6.0, H, 0.3, 5.3, H / 2, -51.55);          // south
+    kit.wallRun(0.3, H, 5.4, 8.15, H / 2, -49);          // east end
+    this._createDoor('l1-vault', 2.4, 2.5, 2.15, 1.25, -49, Math.PI / 2, m.metalDark, {
       needPower: ['l1-relay-a', 'l1-relay-b'],
     });
-    kit.sign(5.3, 2.3, L1Z(-17.55) + 0.18, 's', 'LOG 07 — DR. MOKOENA', { sub: 'IT WAS NEVER MEANT TO WAKE', fg: '#ffd27f' });
-    kit.sign(5.3, 2.3, L1Z(-12.45) - 0.17, 'n', 'FINAL ENTRY', { sub: 'IF YOU READ THIS, RUN', fg: '#ff8f7f' });
-    kit.serverRack(7.6, L1Z(-13.4), 'w');
-    kit.serverRack(7.6, L1Z(-16.6), 'w');
-    kit.wallScreen(7.93, 2.0, L1Z(-15.0), 'w', { w: 2.2, h: 1.2 });
-    kit.cabinet(3.4, L1Z(-16.9), 'n');
-    kit.shelfUnit(5.4, L1Z(-16.9), 'n', { w: 1.4, h: 1.8 });
-    kit.crate(3.6, L1Z(-13.2), { s: 0.7, rotY: 0.2 });
-    this._addPickup('l1-health-vault', 'health', 5.6, L1Z(-14.6), { amount: 50 });
-    this._dustMotes(30, 5.3, L1Z(-15.0), 2.4, 0.3, 2.6);
+    kit.sign(5.3, 2.3, -51.55 + 0.18, 's', 'LOG 07 — DR. MOKOENA', { sub: 'IT WAS NEVER MEANT TO WAKE', fg: '#ffd27f' });
+    kit.sign(5.3, 2.3, -46.45 - 0.17, 'n', 'FINAL ENTRY', { sub: 'IF YOU READ THIS, RUN', fg: '#ff8f7f' });
+    kit.serverRack(7.6, -47.4, 'w');
+    kit.serverRack(7.6, -50.6, 'w');
+    kit.wallScreen(7.93, 2.0, -49, 'w', { w: 2.2, h: 1.2 });
+    kit.cabinet(3.4, -50.9, 'n');
+    kit.shelfUnit(5.4, -50.9, 'n', { w: 1.4, h: 1.8 });
+    kit.crate(3.6, -47.2, { s: 0.7, rotY: 0.2 });
+    this._addPickup('l1-health-vault', 'health', 5.6, -48.6, { amount: 50 });
+    this._dustMotes(30, 5.3, -49, 2.4, 0.3, 2.6);
   }
 
   // ── Level 2 — The Hunt (damaged facility, amber palette) ────────────────
