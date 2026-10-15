@@ -92,30 +92,139 @@ export default class Game {
     // Level 1 scripted creature reveal state (rebuilt on each level load).
     this._l1Reveal = null;
 
-    // Level 1 tutorial — controls walkthrough (see _updateTutorial).
+    // Level 1 tutorial — contextual walkthrough (see _updateTutorial).
     this._tutorialEl = document.getElementById('tutorial');
     this._tutorialTextEl = document.getElementById('tutorial-text');
     this._tutorialSubEl = document.getElementById('tutorial-sub');
-    this._tutorialSteps = [
+    // Zone/event-gated hints that guide the player through Level 1.
+    // trigger: 'spawn' | 'zone' | 'event' | 'reveal'
+    // dismiss: 'walk' | 'event' | 'door' | 'zone' | 'reveal'
+    this._l1Tutorial = [
       {
-        text: 'WASD — MOVE   ·   SHIFT — SPRINT   ·   SPACE — JUMP',
-        sub: 'MOUSE — LOOK   ·   V — TOGGLE FIRST/THIRD PERSON',
+        text: 'WASD \u2014 MOVE   \u00b7   SHIFT \u2014 SPRINT   \u00b7   SPACE \u2014 JUMP',
+        sub: 'MOUSE \u2014 LOOK   \u00b7   V \u2014 TOGGLE FIRST/THIRD PERSON',
+        trigger: 'spawn', dismiss: 'walk', dismissDist: 4,
       },
       {
-        text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
-        sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
+        text: 'SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR',
+        sub: 'LEFT CLICK / F \u2014 FIRE THE PULSE TOOL',
+        trigger: 'zone', triggerZ: -3, dismiss: 'event', dismissEvent: 'fired',
       },
       {
-        text: 'SHOOT THE GLOWING PANELS — CONDUITS & VALVES',
-        sub: 'THEY OPEN DOORS AND SHUT DOWN HAZARDS',
+        text: 'GOOD \u2014 MOVE THROUGH THE DOOR',
+        sub: 'FOLLOW THE CORRIDOR TO THE TRAINING HUB',
+        trigger: 'door', triggerDoor: 'tr-a', dismiss: 'zone', dismissZ: -9,
       },
       {
-        text: 'LISTEN — GROWLS AND YOUR HEARTBEAT MEAN IT IS NEAR',
-        sub: 'HIDE BEHIND COVER TO BREAK LINE OF SIGHT · M — MUTE',
+        text: 'FINISH BOTH ROOMS TO OPEN THE GATE',
+        sub: 'WEST \u2014 JUMP ROOM   \u00b7   EAST \u2014 SHOOT ROOM',
+        trigger: 'zone', triggerZ: -13, dismiss: 'zone', dismissXOut: 5,
+      },
+      {
+        text: 'SPACE \u2014 JUMP OVER THE HURDLES',
+        sub: 'SHOOT THE PANEL IN THE CHAMBER',
+        trigger: 'zone', triggerXLess: -9, triggerZRange: [-16, -22], dismiss: 'event', dismissEvent: 'relayJump',
+      },
+      {
+        text: 'SHOOT ALL 3 GLOWING PANELS',
+        sub: 'LOOK UP AND DOWN \u2014 THEY ARE AT DIFFERENT HEIGHTS',
+        trigger: 'zone', triggerXMore: 9, triggerZRange: [-14, -24], dismiss: 'event', dismissEvent: 'relayShoot',
+      },
+      {
+        text: 'THE GATE IS OPEN \u2014 MOVE THROUGH',
+        sub: 'FOLLOW THE MARKERS TO RECEPTION',
+        trigger: 'event', triggerEvent: 'allTrainingDone', dismiss: 'zone', dismissZ: -27,
+      },
+      {
+        text: 'LOOK FOR THE LABORATORY',
+        sub: 'SHOOT GLOWING PANELS TO INTERACT',
+        trigger: 'zone', triggerZ: -37, dismiss: 'zone', dismissZ: -44,
+      },
+      {
+        text: 'APPROACH THE CONSOLE \u2014 SOMETHING IS WRONG',
+        sub: 'WAIT AND WATCH',
+        trigger: 'zone', triggerZ: -54, dismiss: 'reveal', dismissRevealPhase: 'alarm',
+      },
+      {
+        text: 'THE CREATURE PROWLS \u2014 SHOOT THE CONDUIT TO OPEN THE DOOR',
+        sub: 'HIDE BEHIND COVER IF IT GETS CLOSE',
+        trigger: 'reveal', triggerRevealPhase: 'done', dismiss: 'event', dismissEvent: 'labDoorOpen',
+      },
+      {
+        text: 'MOVE THROUGH \u2014 FIND THE EXIT',
+        sub: 'LISTEN \u2014 GROWLS MEAN IT IS NEAR',
+        trigger: 'door', triggerDoor: 'l1-lab', dismiss: 'zone', dismissZ: -66,
+      },
+      {
+        text: 'REACH THE CONTROL ROOM',
+        sub: 'THE EXIT IS BEYOND THE REACTOR HALL',
+        trigger: 'zone', triggerZ: -73, dismiss: 'zone', dismissZ: -88,
+      },
+      {
+        text: 'FIND THE EXIT DOOR',
+        sub: 'COMPLETE THE LEVEL',
+        trigger: 'zone', triggerZ: -88, dismiss: 'zone', dismissZ: -98,
       },
     ];
     this._tut = null;         // built per Level-1 load
     this._baseObjective = ''; // restored after scripted beats change it
+
+    // --- Pre-level briefing overlay -----------------------------------------
+    this._briefingActive = false;
+    this._briefingOverlay = document.getElementById('briefing-overlay');
+    this._briefingLevel = document.getElementById('briefing-level');
+    this._briefingTitle = document.getElementById('briefing-title');
+    this._briefingNarrative = document.getElementById('briefing-narrative');
+    this._briefingObjList = document.getElementById('briefing-obj-list');
+    this._btnBriefingBegin = document.getElementById('btn-briefing-begin');
+    this._btnBriefingBegin?.addEventListener('click', () => this._dismissBriefing());
+    window.addEventListener('keydown', (e) => {
+      if (this._briefingActive) this._dismissBriefing();
+    });
+    this._briefings = {
+      1: {
+        title: 'WITNESS',
+        narrative: [
+          'You are the engineer on shift at the containment lab.',
+          'A scientist\u2019s experiment has gone wrong \u2014 the creature in the containment tube is changing.',
+          'Make your way through the training wing, then reach the laboratory to witness the transformation.',
+        ],
+        objectives: [
+          'Complete the training rooms to unlock the gate',
+          'Navigate through Reception to the Laboratory',
+          'Witness the scientist\u2019s mutation',
+          'Survive the creature\u2019s emergence',
+          'Find the exit through Maintenance',
+        ],
+      },
+      2: {
+        title: 'THE HUNT',
+        narrative: [
+          'The facility is in ruins. The creature is loose in the damaged corridors.',
+          'It knows these halls better than you \u2014 but you have the pulse tool.',
+          'Stay quiet, stay hidden, and find a way out.',
+        ],
+        objectives: [
+          'Navigate the damaged facility',
+          'Avoid or evade the creature',
+          'Restore power to unlock the path forward',
+          'Reach the reactor control room',
+        ],
+      },
+      3: {
+        title: 'THE COLLAPSE',
+        narrative: [
+          'The automated failsafe protocol has activated.',
+          'The facility will be destroyed \u2014 you have minutes to escape.',
+          'The creature guards the exit. Put it down and run.',
+        ],
+        objectives: [
+          'Defeat the creature before the failsafe detonation',
+          'Shoot the glowing weak points to damage it',
+          'Escape through the failsafe seal door',
+        ],
+      },
+    };
 
     // Combined PulseTool raycast list: level shootables + monster weak points.
     // Rebuilt once per level load (not per frame — zero-allocation rule).
@@ -227,6 +336,8 @@ export default class Game {
       if (target.userData.doorId) {
         this.levels.openDoor(target.userData.doorId);
         this.audio.play('doorOpen');
+        // Tutorial: track when the lab door opens after the reveal.
+        if (this._tut && target.userData.doorId === 'l1-lab') this._tut.labDoorOpen = true;
       }
       if (target.userData.ventId) {
         this.levels.disableVent(target.userData.ventId);
@@ -242,6 +353,17 @@ export default class Game {
           this._updatePowerHUD(res.live, res.total);
           if (res.unlockedDoor) {
             this.audio.play('doorOpen');
+          }
+          // Tutorial: track training relay activations.
+          if (this._tut) {
+            const nodeId = target.userData.powerNode.id;
+            if (nodeId === 'tr-relay-jump') this._tut.relayJump = true;
+            if (nodeId === 'tr-relay-1' || nodeId === 'tr-relay-2' || nodeId === 'tr-relay-3') {
+              this._tut.relayShootCount = (this._tut.relayShootCount || 0) + 1;
+              if (this._tut.relayShootCount >= 3) this._tut.relayShoot = true;
+            }
+            // Check if all 4 training relays are done.
+            if (this._tut.relayJump && this._tut.relayShoot) this._tut.allTrainingDone = true;
           }
         }
       }
@@ -380,6 +502,14 @@ export default class Game {
 
     // Only update simulation while playing.
     if (this.gameState.isPlaying) {
+      // Briefing overlay blocks all gameplay input until dismissed.
+      if (this._briefingActive) {
+        // Still render the scene behind the overlay, but block all gameplay.
+        this.shaders.update(dt);
+        this.input.endFrame();
+        this.postfx.render(dt);
+        return;
+      }
       // Stance/aim from raw input — feeds both the player (move speed) and
       // the camera (FOV zoom, shoulder tighten, pivot height).
       const aiming = this.input.mouse.rightDown === true;
@@ -486,6 +616,9 @@ export default class Game {
       if (this._collapseActive) {
         this._updateCollapseTimer(dt);
       }
+
+      // Update dissolve uniforms for broken pipes (L1 creature escape).
+      this._updatePipeDissolve();
 
       // Check win triggers (player reached objective for this level).
       this._checkWinTriggers();
@@ -626,18 +759,25 @@ export default class Game {
       }
     }
 
-    // 10. Level 1 runs the controls tutorial (hints only — no gating).
+    // 10. Level 1 runs the contextual tutorial (zone/event-gated hints).
     if (levelNum === 1) {
       this._tut = {
         step: 0, timer: 0,
         startX: sp.x, startZ: sp.z,
-        moved: false, fired: false, hit: false,
+        fired: false, hit: false,
+        relayJump: false, relayShootCount: 0, relayShoot: false,
+        allTrainingDone: false,
+        labDoorOpen: false,
+        shown: new Set(), // track which steps have been shown
       };
       this._showTutorialStep(0);
     } else {
       this._tut = null;
       if (this._tutorialEl) this._tutorialEl.classList.remove('visible');
     }
+
+    // 11. Show the pre-level briefing overlay (blocks input until dismissed).
+    this._showBriefing(levelNum);
   }
 
   /**
@@ -687,6 +827,8 @@ export default class Game {
         this.monster.detectionRange = 0;    // can never detect the player
         this.monster.setActive(false);
         this._l1Reveal = { phase: 'idle', timer: 0 };
+        // Track which breakable pipes have been triggered during the reveal.
+        this._l1PipeBreaks = { triggered: [false, false, false] };
         return;
       case 2:
         // Stealth: sweeps the damaged facility between the rebuilt waypoints.
@@ -822,6 +964,17 @@ export default class Game {
       const k = Math.min(1, r.timer / 0.45);
       this.monster.model.scale.setScalar(0.3 + 0.7 * k);
       this._mutateLight.intensity = 3.2 + Math.sin(r.timer * 46) * 1.6;
+      // When the monster first appears, add flickering lights in the lab
+      // to simulate electrical disturbance from the creature's emergence.
+      if (r.timer < 0.05 && !this._l1PipeBreaks._lightsAdded) {
+        this._l1PipeBreaks._lightsAdded = true;
+        this._addLabFlickerLights();
+      }
+      // Break the first pipe (east wall) as the creature bursts out.
+      if (r.timer >= 0.2 && !this._l1PipeBreaks.triggered[0]) {
+        this._l1PipeBreaks.triggered[0] = true;
+        this._triggerPipeBreak(0);
+      }
       if (k >= 1) {
         r.phase = 'flee';
         r.timer = 0;
@@ -837,6 +990,40 @@ export default class Game {
     }
 
     if (r.phase === 'flee') {
+      // Break pipes along the creature's escape path as it flees.
+      if (r.timer >= 0.5 && !this._l1PipeBreaks.triggered[1]) {
+        this._l1PipeBreaks.triggered[1] = true;
+        this._triggerPipeBreak(1);
+      }
+      if (r.timer >= 1.5 && !this._l1PipeBreaks.triggered[2]) {
+        this._l1PipeBreaks.triggered[2] = true;
+        this._triggerPipeBreak(2);
+      }
+      // Monster destruction effects: debris, scorch marks, camera shake,
+      // and sound effects as the creature rampages through the lab.
+      if (!this._l1PipeBreaks._debrisTimers) {
+        this._l1PipeBreaks._debrisTimers = [];
+      }
+      // Spawn debris and destruction effects periodically during the flee.
+      if (r.timer > 0.3 && r.timer < 6) {
+        const mx = this.monster.position.x;
+        const mz = this.monster.position.z;
+        // Spawn debris pile at monster's position every ~1.2 seconds.
+        if (!this._l1PipeBreaks._lastDebris || r.timer - this._l1PipeBreaks._lastDebris > 1.2) {
+          this._l1PipeBreaks._lastDebris = r.timer;
+          // Spawn a debris pile where the monster just was.
+          this.levels._scorchDecal(mx, 0, mz, 1.2 + Math.random() * 0.6, Math.random() * Math.PI * 2);
+          this.levels._sparkBurst(mx, 0.5, mz);
+          // Camera shake to sell the impact.
+          this.camera.shake(0.25 + Math.random() * 0.2);
+          // Sound effects: creaks and impacts as the monster destroys things.
+          if (Math.random() > 0.5) {
+            this.audio.play('creak');
+          } else {
+            this.audio.play('clang');
+          }
+        }
+      }
       // At the duct it doesn't vanish — it turns and starts circling the
       // facility on the patrol loop (the timer cap handles any path snag).
       const end = reveal.escape[reveal.escape.length - 1];
@@ -855,21 +1042,132 @@ export default class Game {
   }
 
   /**
+   * Trigger a breakable pipe destruction: swap to dissolve material,
+   * spawn sparks, steam vent, play sounds, camera shake.
+   * @param {number} index - pipe index in levels._breakablePipes
+   */
+  _triggerPipeBreak(index) {
+    const pipe = this.levels._breakPipe(index);
+    if (!pipe) return;
+
+    // Swap each segment's material to a dissolve material.
+    const dissolveMats = [];
+    for (const seg of pipe.segments) {
+      const baseColor = seg.mesh.material.color
+        ? seg.mesh.material.color.getHex()
+        : 0x888888;
+      const dissolveMat = this.shaders.createDissolveMaterial(baseColor);
+      // Remove from global dissolve array so setDissolveAmount doesn't affect it.
+      const idx = this.shaders._dissolveMaterials.indexOf(dissolveMat);
+      if (idx !== -1) this.shaders._dissolveMaterials.splice(idx, 1);
+      dissolveMat.uniforms.uDissolveAmount.value = 0;
+      seg.mesh.material = dissolveMat;
+      dissolveMats.push(dissolveMat);
+    }
+    // Store dissolve refs so _tick can update uniforms.
+    pipe._dissolveMats = dissolveMats;
+
+    // Spawn spark burst at the break point.
+    const bp = pipe.breakPoint;
+    this.levels._sparkBurst(bp.x, bp.y, bp.z);
+
+    // Spawn a persistent steam vent at the break point (after dissolve).
+    // Dense smoke that gradually fills the room.
+    const ventId = `pipe-steam-${index}-${Date.now()}`;
+    this.levels._createSteamVent(ventId, bp.x, bp.y - 0.3, bp.z, {
+      count: 36, rate: 0.04, rise: 0.25, drift: 1.1,
+      lifeSpan: 4.0, alpha: 0.55, color: 0x98a0a8,
+    });
+
+    // Audio + camera feedback.
+    this.audio.play('clang');
+    setTimeout(() => this.audio.play('spark'), 80);
+    setTimeout(() => this.audio.play('ventHiss'), 300);
+    this.camera.shake(0.5);
+  }
+
+  /**
+   * Update dissolve uniforms for broken pipes (called each frame).
+   */
+  _updatePipeDissolve() {
+    for (const pipe of this.levels._breakablePipes) {
+      if (!pipe._dissolveMats) continue;
+      for (const mat of pipe._dissolveMats) {
+        mat.uniforms.uDissolveAmount.value = pipe.dissolveT;
+        mat.uniforms.uTime.value = this._fpsTime; // reuse existing time
+      }
+    }
+  }
+
+  /**
+   * Add flickering lights in the lab when the monster emerges.
+   * Simulates electrical disturbance from the creature's emergence.
+   * Also activates the red emergency spotlight and dims ceiling lights.
+   */
+  _addLabFlickerLights() {
+    // Activate the red emergency spotlight on the lab ceiling.
+    if (this.levels._labRedSpot) {
+      this.levels._labRedSpot.intensity = 2.5;
+      // Make it flicker aggressively by registering it with fast timing.
+      this.levels._flickerLights.push({
+        light: this.levels._labRedSpot,
+        base: 2.5,
+        timer: 0,
+        next: 0.1,
+        burst: 0,
+        seed: Math.random() * 100,
+      });
+    }
+
+    // Dim the existing ceiling lights to create a darker atmosphere.
+    // Reduce base intensity of all flicker lights in the lab area.
+    const labZ = this.levels.constructor.name === 'LevelManager' ? -26 - 34 : -26; // L1Z(-26)
+    for (const fl of this.levels._flickerLights) {
+      const lz = fl.light.position.z;
+      // Check if this light is in the lab area (z between L1Z(-20) and L1Z(-32)).
+      if (lz < -40 && lz > -70) { // approximate lab Z range in world coords
+        fl.base *= 0.3; // dim to 30% of original
+        fl.light.intensity = fl.base;
+      }
+    }
+
+    // Add 3 flickering amber lights at key positions for electrical disturbance.
+    const positions = [
+      { x: 0, y: 2.7, z: -26 - 34 },    // centre of lab (overhead)
+      { x: -5, y: 2.6, z: -28 - 34 },   // near containment tube
+      { x: 6, y: 2.6, z: -24 - 34 },    // east side near lab benches
+    ];
+    for (const pos of positions) {
+      const light = this.levels._flickerLight(pos.x, pos.y, pos.z, 0xffaa66, 0.6, 8);
+      this.levels._flickerLights.push({
+        light,
+        base: light.intensity,
+        timer: Math.random() * 2,
+        next: 0.5 + Math.random() * 2,
+        burst: 0,
+        seed: Math.random() * 100,
+      });
+    }
+  }
+
+  /**
    * Show a tutorial step (text + sub-line) in the bottom-centre hint.
    * @param {number} i step index
    */
   _showTutorialStep(i) {
-    const step = this._tutorialSteps[i];
+    const step = this._l1Tutorial[i];
     if (!step || !this._tutorialEl) return;
     this._tutorialTextEl.textContent = step.text;
     this._tutorialSubEl.textContent = step.sub;
     this._tutorialEl.classList.add('visible');
+    this._tut.shown.add(i);
   }
 
   /**
-   * Drive the Level-1 controls tutorial. Steps advance in order once their
-   * goal is met (walked 6 m → fired the pulse tool → hit a glowing panel),
-   * with a minimum display time so hints never cascade in a single frame.
+   * Drive the Level-1 contextual tutorial. Each step has a trigger condition
+   * (zone entry, event, door state, reveal phase) and a dismiss condition.
+   * Steps advance in order — the next hint only appears once the current one
+   * is dismissed AND its trigger is met.
    * @param {number} dt
    */
   _updateTutorial(dt) {
@@ -877,29 +1175,134 @@ export default class Game {
     if (!tut || !this._tutorialEl) return;
     tut.timer += dt;
 
-    // Step 0 goal: player has walked a few metres from the spawn point.
-    if (!tut.moved) {
-      const dx = this.player.position.x - tut.startX;
-      const dz = this.player.position.z - tut.startZ;
-      if (dx * dx + dz * dz > 36) tut.moved = true;
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+
+    // Skip steps that are no longer relevant (player already completed them
+    // out of order). This handles the case where the player visits the shoot
+    // room before the jump room or vice versa.
+    while (tut.step < this._l1Tutorial.length) {
+      const s = this._l1Tutorial[tut.step];
+      // Skip jump room hint if already completed.
+      if (s.dismissEvent === 'relayJump' && tut.relayJump) { tut.step++; tut.timer = 0; continue; }
+      // Skip shoot room hint if already completed.
+      if (s.dismissEvent === 'relayShoot' && tut.relayShoot) { tut.step++; tut.timer = 0; continue; }
+      break;
     }
 
-    const complete =
-      (tut.step === 0 && tut.moved) ||
-      (tut.step === 1 && tut.fired) ||
-      (tut.step === 2 && tut.hit) ||
-      (tut.step === 3 && tut.timer > 6); // listen-hint lingers, then fades
+    const step = this._l1Tutorial[tut.step];
+    if (!step) {
+      // All steps done — hide the tutorial.
+      this._tutorialEl.classList.remove('visible');
+      this._tut = null;
+      return;
+    }
 
-    if (complete && tut.timer > 1.6) {
+    // Check if the current step's trigger condition is met.
+    let triggerMet = false;
+    if (step.trigger === 'spawn') {
+      triggerMet = true; // shown at load time
+    } else if (step.trigger === 'zone') {
+      if (step.triggerZ !== undefined && step.triggerZRange) {
+        triggerMet = pz < step.triggerZ && pz >= step.triggerZRange[1] && pz <= step.triggerZRange[0];
+      } else if (step.triggerZ !== undefined) {
+        triggerMet = pz < step.triggerZ;
+      } else if (step.triggerXLess !== undefined && step.triggerZRange) {
+        triggerMet = px < step.triggerXLess && pz >= step.triggerZRange[1] && pz <= step.triggerZRange[0];
+      } else if (step.triggerXMore !== undefined && step.triggerZRange) {
+        triggerMet = px > step.triggerXMore && pz >= step.triggerZRange[1] && pz <= step.triggerZRange[0];
+      }
+    } else if (step.trigger === 'door') {
+      const door = this.levels._doors.find(d => d.id === step.triggerDoor);
+      triggerMet = door && door.opening;
+    } else if (step.trigger === 'event') {
+      triggerMet = !!tut[step.triggerEvent];
+    } else if (step.trigger === 'reveal') {
+      triggerMet = this._l1Reveal && this._l1Reveal.phase === step.triggerRevealPhase;
+    }
+
+    // If trigger not met yet, don't show this step (and don't advance).
+    if (!triggerMet && !tut.shown.has(tut.step)) return;
+
+    // Show the step if it hasn't been shown yet.
+    if (!tut.shown.has(tut.step)) {
+      this._showTutorialStep(tut.step);
+    }
+
+    // Check dismiss condition.
+    let dismissed = false;
+    if (step.dismiss === 'walk') {
+      const dx = px - tut.startX;
+      const dz = pz - tut.startZ;
+      dismissed = (dx * dx + dz * dz) >= (step.dismissDist * step.dismissDist);
+    } else if (step.dismiss === 'event') {
+      dismissed = !!tut[step.dismissEvent];
+    } else if (step.dismiss === 'zone') {
+      if (step.dismissZ !== undefined) {
+        dismissed = pz < step.dismissZ;
+      } else if (step.dismissXOut !== undefined) {
+        dismissed = Math.abs(px) > step.dismissXOut;
+      }
+    } else if (step.dismiss === 'door') {
+      const door = this.levels._doors.find(d => d.id === step.dismissDoor);
+      dismissed = door && door.opening;
+    } else if (step.dismiss === 'reveal') {
+      dismissed = this._l1Reveal && this._l1Reveal.phase === step.dismissRevealPhase;
+    }
+
+    // Advance to next step once dismissed and minimum display time elapsed.
+    if (dismissed && tut.timer > 1.6) {
       tut.step++;
       tut.timer = 0;
-      if (tut.step < this._tutorialSteps.length) {
+      if (tut.step < this._l1Tutorial.length) {
         this._showTutorialStep(tut.step);
       } else {
-        this._tutorialEl.classList.remove('visible'); // tutorial done
+        this._tutorialEl.classList.remove('visible');
         this._tut = null;
       }
     }
+  }
+
+  /**
+   * Show the pre-level briefing overlay for the given level number.
+   * Populates the title, narrative paragraphs, and objective list from
+   * the _briefings data. Blocks player input until dismissed.
+   * @param {number} levelNum
+   */
+  _showBriefing(levelNum) {
+    const data = this._briefings[levelNum];
+    if (!data || !this._briefingOverlay) return;
+    this._briefingActive = true;
+    if (this._briefingLevel) this._briefingLevel.textContent = `LEVEL ${levelNum}`;
+    if (this._briefingTitle) this._briefingTitle.textContent = data.title;
+    if (this._briefingNarrative) {
+      this._briefingNarrative.innerHTML = '';
+      for (const line of data.narrative) {
+        const p = document.createElement('p');
+        p.textContent = line;
+        this._briefingNarrative.appendChild(p);
+      }
+    }
+    if (this._briefingObjList) {
+      this._briefingObjList.innerHTML = '';
+      for (const obj of data.objectives) {
+        const li = document.createElement('li');
+        li.textContent = obj;
+        this._briefingObjList.appendChild(li);
+      }
+    }
+    this._briefingOverlay.style.display = 'flex';
+  }
+
+  /**
+   * Dismiss the briefing overlay and resume player input.
+   * Requests pointer lock so the player can immediately look around.
+   */
+  _dismissBriefing() {
+    if (!this._briefingActive) return;
+    this._briefingActive = false;
+    if (this._briefingOverlay) this._briefingOverlay.style.display = 'none';
+    this.renderer.domElement.requestPointerLock?.();
   }
 
   /**

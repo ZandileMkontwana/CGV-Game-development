@@ -394,14 +394,50 @@ export default class LevelKit {
     return null;
   }
 
+  /**
+   * Breakable pipe run — same visual as pipeRun() but returns mesh data
+   * for the host to track and later swap to dissolve materials.
+   * Returns [{ mesh, position: {x,y,z} }] for each cylinder.
+   */
+  breakablePipeRun(axis, length, x, y, z, o = {}) {
+    const count = o.count || 2;
+    const r = o.r || 0.07;
+    const mat = o.mat || this.mats.pipe;
+    const spacing = o.spacing || 0.18;
+    const segments = [];
+    for (let i = 0; i < count; i++) {
+      const off = (i - (count - 1) / 2) * spacing;
+      const px = axis === 'x' ? x : x + off;
+      const pz = axis === 'x' ? z + off : z;
+      const py = y - i * 0.02;
+      const m = this.cyl(mat, r, r, length, px, py, pz, { cast: false });
+      if (axis === 'x') m.rotation.z = Math.PI / 2;
+      else m.rotation.x = Math.PI / 2;
+      segments.push({ mesh: m, position: { x: px, y: py, z: pz } });
+      if (o.flanges !== false) {
+        const n = Math.max(2, Math.round(length / 3));
+        for (let f = 1; f < n; f++) {
+          const t = -length / 2 + (length / n) * f;
+          const fx = axis === 'x' ? x + t : px;
+          const fz = axis === 'x' ? pz : z + t;
+          const fl = this.cyl(mat, r * 1.5, r * 1.5, 0.06, fx, py, fz, { cast: false });
+          if (axis === 'x') fl.rotation.z = Math.PI / 2;
+          else fl.rotation.x = Math.PI / 2;
+          segments.push({ mesh: fl, position: { x: fx, y: py, z: fz } });
+        }
+      }
+    }
+    return segments;
+  }
+
   /** Ventilation duct (box) with straps and optional grille openings. */
   duct(axis, length, x, y, z, o = {}) {
     const w = o.w || 0.55;
     const h = o.h || 0.42;
     const mat = o.mat || this.mats.metalDark;
     const main = axis === 'x'
-      ? this.box(mat, length, h, w, x, y, z, { cast: false })
-      : this.box(mat, w, h, length, x, y, z, { cast: false });
+      ? this.box(mat, length, h, w, x, y, z, { physics: true, cast: false })
+      : this.box(mat, w, h, length, x, y, z, { physics: true, cast: false });
     const n = Math.max(2, Math.round(length / 4));
     for (let i = 1; i < n; i++) {
       const t = -length / 2 + (length / n) * i;
@@ -460,6 +496,13 @@ export default class LevelKit {
     const h = o.h || 1.1;
     const mat = o.mat || this.mats.metal;
     const posts = Math.max(2, Math.round(length / 1.6));
+    // Continuous collider spanning the full length so the player sphere
+    // cannot squeeze between the thin visual posts.
+    if (axis === 'x') {
+      this.physics.createBox(0, length / 2, h / 2, 0.06, new CANNON.Vec3(x, y + h / 2, z));
+    } else {
+      this.physics.createBox(0, 0.06, h / 2, length / 2, new CANNON.Vec3(x, y + h / 2, z));
+    }
     for (let i = 0; i <= posts; i++) {
       const t = -length / 2 + (length / posts) * i;
       if (axis === 'x') this.box(mat, 0.06, h, 0.06, x + t, y + h / 2, z, { cast: false });
