@@ -467,7 +467,8 @@ export default class AudioManager {
   stopAmbient() {
     this._stopBed(1.2);
     this.stopSuspense(1.2);
-    this.stopChaos();
+    // NOTE: the chaos layer is intentionally NOT stopped here — it carries
+    // through the ending. It is stopped explicitly on gameover / menu.
     this.setBreathing(false, 0);
     this.setRecharge(false);
   }
@@ -738,6 +739,17 @@ export default class AudioManager {
     if (T.scream <= 0) { this._scream(); T.scream = 6 + Math.random() * 9; }
     T.rumble -= dt;
     if (T.rumble <= 0) { this._distantRumble(); T.rumble = 6 + Math.random() * 10; }
+  }
+
+  /**
+   * Keep the collapse chaos alive through the ending. The victory screen and
+   * credits are DOM overlays and the main loop stops advancing gameplay, so
+   * this is called directly from Game's frame loop to keep the random events
+   * (explosions, machinery failures, screams) firing underneath them.
+   */
+  updateEnding(dt) {
+    if (!this._chaosOn) return;
+    this._updateChaos(dt);
   }
 
   /** Distant explosion: sub-bass boom, pressure crackle, debris tail. */

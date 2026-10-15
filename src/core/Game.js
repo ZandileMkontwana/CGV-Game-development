@@ -438,11 +438,15 @@ export default class Game {
         this.audio.play('gameover');
         this.audio.stopAmbient();
         this.audio.stopRumble();
+        this.audio.stopChaos();
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
         this.audio.stopAmbient();
         this.audio.stopRumble();
+        // Victory keeps the collapse chaos running under the ending; only
+        // returning to the menu finally silences it.
+        if (newState === 'menu') this.audio.stopChaos();
       }
       if (newState === 'menu' || newState === 'gameover' || newState === 'victory') {
         // Release the level while a menu or the ending covers the canvas.
@@ -495,6 +499,11 @@ export default class Game {
     // Prepare a new level once behind its transition screen, rather than
     // drawing it continuously while the player waits for the next briefing.
     if (!this.gameState.isPlaying) {
+      // The ending (victory screen + credits) is a DOM overlay over the torn-
+      // down level, but the collapse chaos keeps sounding underneath it.
+      if (this.gameState.state === 'victory' || this.gameState.state === 'credits') {
+        this.audio.updateEnding(dt);
+      }
       if (this.gameState.state === 'levelTransition' && this._transitionNeedsRender) {
         this.camera.update(0, this.player.position);
         this.player.syncModel();
