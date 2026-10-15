@@ -7,12 +7,10 @@
  *                                   'levelTransition' → 'playing'
  *                                       ↓
  *                                   'gameover' → 'menu'
- *                                   'victory'  → 'menu'
+ *                                   'victory' → 'credits' → 'menu'
  *
  * Other systems subscribe via `onChange(callback)` to react to state changes.
  */
-import { CREDITS } from './AssetLibrary.js';
-
 
 const STATES = new Set([
   'loading',
@@ -22,6 +20,7 @@ const STATES = new Set([
   'levelTransition',
   'gameover',
   'victory',
+  'credits',
 ]);
 
 export default class GameState {
@@ -41,19 +40,9 @@ export default class GameState {
     this._menuOverlay = document.getElementById('menu-overlay');
     this._pauseOverlay = document.getElementById('pause-overlay');
     this._transitionOverlay = document.getElementById('transition-overlay');
-    this._transitionText = document.getElementById('transition-text');
     this._loadingScreen = document.getElementById('loading-screen');
-    this._loadingBar = document.getElementById('loading-bar');
-    this._levelIndicator = document.getElementById('level-indicator');
-    this._hud = document.getElementById('hud');
 
-    // Credits overlay (content comes from AssetLibrary's credit roll).
-    this._creditsOverlay = document.getElementById('credits-overlay');
-    this._creditsList = document.getElementById('credits-list');
-    this._btnCreditsBack = document.getElementById('btn-credits-back');
-    this._populateCredits();
-
-    // Game over / victory overlays.
+    // Game over overlay. Victory presentation belongs to UIManager.
     this._gameOverOverlay = document.getElementById('gameover-overlay');
     this._gameOverTitle = document.getElementById('gameover-title');
     this._gameOverSubtitle = document.getElementById('gameover-subtitle');
@@ -62,8 +51,6 @@ export default class GameState {
 
     // Button listeners.
     this._btnStart?.addEventListener('click', () => this.startGame());
-    this._btnCredits?.addEventListener('click', () => this._showCredits(true));
-    this._btnCreditsBack?.addEventListener('click', () => this._showCredits(false));
     this._btnResume?.addEventListener('click', () => this.resume());
     this._btnRestart?.addEventListener('click', () => this.restart());
     this._btnMainMenu?.addEventListener('click', () => this.goToMenu());
@@ -72,6 +59,7 @@ export default class GameState {
 
     // ESC to pause / resume.
     window.addEventListener('keydown', (e) => {
+      if (document.querySelector('dialog[open]')) return;
       if (e.code === 'Escape') {
         if (this._state === 'playing') this.pause();
         else if (this._state === 'paused') this.resume();
@@ -95,14 +83,9 @@ export default class GameState {
     this._setState('menu');
   }
 
-  /** Update the loading bar (0–100). */
-  setLoadingProgress(percent) {
-    if (this._loadingBar) this._loadingBar.style.width = percent + '%';
-  }
-
   startGame() {
+    if (this._state !== 'menu') return;
     this._currentLevel = 1;
-    this._updateLevelIndicator();
     this._setState('playing');
   }
 
@@ -119,8 +102,7 @@ export default class GameState {
 
   restart() {
     this._currentLevel = 1;
-    this._updateLevelIndicator();
-    this._setState('playing');
+    this._setState('playing', 'restart');
   }
 
   goToMenu() {
@@ -135,12 +117,11 @@ export default class GameState {
       return false;
     }
     this._currentLevel++;
-    this._updateLevelIndicator();
     this._setState('levelTransition');
     // Brief transition pause, then resume.
     setTimeout(() => {
       if (this._state === 'levelTransition') this._setState('playing');
-    }, 1500);
+    }, 3000);
     return true;
   }
 
@@ -153,18 +134,22 @@ export default class GameState {
   /** Called when all levels are completed. */
   victory() {
     document.exitPointerLock?.();
-    this._showEndScreen('FACILITY CLEARED', 'You survived the containment breach.');
     this._setState('victory');
+  }
+
+  /** The congratulations card leads into the movie-style ending credits. */
+  showEndCredits() {
+    if (this._state === 'victory') this._setState('credits');
   }
 
   // --- Internals ------------------------------------------------------------
 
-  _setState(newState) {
+  _setState(newState, reason) {
     if (!STATES.has(newState)) return;
     const old = this._state;
     this._state = newState;
     this._syncUI();
-    for (const fn of this._listeners) fn(newState, old);
+    for (const fn of this._listeners) fn(newState, old, reason);
   }
 
   _syncUI() {
@@ -189,22 +174,13 @@ export default class GameState {
       this._transitionOverlay.style.display =
         this._state === 'levelTransition' ? 'flex' : 'none';
     }
-    if (this._transitionText) {
-      this._transitionText.textContent =
-        `ENTERING LEVEL ${this._currentLevel}…`;
-    }
 
-    // Game over / victory overlay.
+    // Game over overlay.
     if (this._gameOverOverlay) {
-      const showEnd = this._state === 'gameover' || this._state === 'victory';
+      const showEnd = this._state === 'gameover';
       this._gameOverOverlay.style.display = showEnd ? 'flex' : 'none';
     }
 
-    // HUD visible only while playing.
-    if (this._hud) {
-      this._hud.style.display =
-        this._state === 'playing' || this._state === 'paused' ? 'block' : 'none';
-    }
   }
 
   /**
@@ -215,47 +191,8 @@ export default class GameState {
   _showEndScreen(title, subtitle) {
     if (this._gameOverTitle) {
       this._gameOverTitle.textContent = title;
-      // Green for victory, red for game over.
-      const isVictory = this._state === 'victory' || title === 'FACILITY CLEARED';
-      this._gameOverTitle.style.color = isVictory ? '#4f4' : '#f44';
-      this._gameOverTitle.style.textShadow = isVictory
-        ? '0 0 30px rgba(50, 255, 50, 0.5)'
-        : '0 0 30px rgba(255, 50, 50, 0.5)';
     }
     if (this._gameOverSubtitle) this._gameOverSubtitle.textContent = subtitle;
   }
 
-  _updateLevelIndicator() {
-    if (this._levelIndicator) {
-      this._levelIndicator.textContent = `LEVEL ${this._currentLevel}`;
-    }
-  }
-
-  /** Build the credits list rows from AssetLibrary's credit roll. */
-  _populateCredits() {
-    if (!this._creditsList) return;
-    for (const c of CREDITS) {
-      const row = document.createElement('div');
-      row.className = 'credit-row';
-
-      const asset = document.createElement('span');
-      asset.className = 'credit-asset';
-      asset.textContent = c.asset;
-
-      const detail = document.createElement('span');
-      detail.className = 'credit-detail';
-      detail.textContent = `${c.author} — ${c.license}`;
-
-      row.appendChild(asset);
-      row.appendChild(detail);
-      this._creditsList.appendChild(row);
-    }
-  }
-
-  /** Toggle the credits overlay (menu context only). */
-  _showCredits(show) {
-    if (this._creditsOverlay) {
-      this._creditsOverlay.style.display = show ? 'flex' : 'none';
-    }
-  }
 }

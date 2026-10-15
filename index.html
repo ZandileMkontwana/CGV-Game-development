@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Containment Breach — Research Lab</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <style>
       /* Reset — fills the viewport with no scrollbars */
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -97,33 +98,6 @@
         text-shadow: 0 0 6px rgba(0, 255, 100, 0.3);
         pointer-events: none;
         max-width: 45%;
-      }
-
-      /* Power-routing progress chip (levels with power nodes) */
-      #power-chip {
-        position: absolute;
-        top: 58px; left: 10px;
-        font-size: 13px;
-        font-weight: bold;
-        letter-spacing: 3px;
-        color: #7fe7ff;
-        text-shadow: 0 0 10px rgba(60, 200, 255, 0.45);
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.3s;
-      }
-      #power-chip.active { opacity: 1; }
-      #power-chip.done {
-        color: #5cff8a;
-        text-shadow: 0 0 10px rgba(60, 255, 130, 0.5);
-      }
-      #power-chip .power-label {
-        display: block;
-        font-size: 9px;
-        font-weight: normal;
-        letter-spacing: 4px;
-        color: #9fd9e8;
-        margin-bottom: 2px;
       }
 
       /* Menu overlay — industrial backdrop with story briefing */
@@ -310,76 +284,6 @@
         background: #000;
         z-index: 30;
       }
-
-      /* Credits overlay — above the menu, below loading */
-      #credits-overlay {
-        position: absolute;
-        top: 0; left: 0;
-        width: 100%; height: 100%;
-        display: none;
-        align-items: center;
-        justify-content: center;
-        background: rgba(3, 5, 9, 0.94);
-        z-index: 22;
-      }
-      .credits-panel {
-        width: min(560px, 86vw);
-        max-height: 72vh;
-        display: flex;
-        flex-direction: column;
-        border: 1px solid rgba(80, 120, 160, 0.28);
-        background: rgba(6, 12, 20, 0.8);
-        box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.55);
-        padding: 26px 30px;
-      }
-      .credits-panel h2 {
-        font-size: 20px;
-        color: #e4f2ff;
-        letter-spacing: 6px;
-        margin-bottom: 6px;
-        text-align: center;
-        text-shadow: 0 0 18px rgba(0, 190, 255, 0.35);
-      }
-      .credits-panel .credits-sub {
-        font-size: 10px;
-        color: #5d7a90;
-        letter-spacing: 3px;
-        text-align: center;
-        margin-bottom: 16px;
-      }
-      #credits-list {
-        overflow-y: auto;
-        font-size: 11.5px;
-        line-height: 1.7;
-        color: #9fb2c4;
-      }
-      .credit-row {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 5px 2px;
-        border-bottom: 1px solid rgba(80, 120, 160, 0.14);
-      }
-      .credit-row:last-child { border-bottom: none; }
-      .credit-asset { color: #cfe3f2; }
-      .credit-detail { color: #7d93a8; text-align: right; white-space: nowrap; }
-      .credits-panel button {
-        margin-top: 18px;
-        background: rgba(8, 14, 24, 0.6);
-        border: 1px solid #3c5568;
-        color: #cfe3f2;
-        font-family: 'Courier New', monospace;
-        font-size: 14px;
-        padding: 9px 34px;
-        cursor: pointer;
-        letter-spacing: 2px;
-        transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
-      }
-      .credits-panel button:hover {
-        border-color: #7fd4ff;
-        color: #fff;
-        box-shadow: 0 0 18px rgba(0, 170, 255, 0.35);
-      }
       #loading-screen .loading-text {
         font-size: 14px;
         color: #666;
@@ -453,34 +357,23 @@
         transition: width 0.2s ease;
       }
 
-      /* Tutorial hint — bordered data panel, bottom centre (Level 1) */
+      /* Tutorial hint — bottom centre, fades in/out (Level 1) */
       #tutorial {
         position: absolute;
-        bottom: 80px; left: 50%;
+        bottom: 92px; left: 50%;
         transform: translateX(-50%);
-        width: 420px;
-        background: rgba(5, 10, 20, 0.85);
-        border: 1px solid rgba(100, 180, 255, 0.25);
-        border-radius: 4px;
-        padding: 16px 20px;
+        max-width: 70%;
         text-align: center;
         opacity: 0;
         pointer-events: none;
         transition: opacity 0.4s ease;
-        box-shadow: 0 0 20px rgba(0, 100, 200, 0.1);
       }
       #tutorial.visible { opacity: 1; }
       #tutorial-text {
-        font-size: 13px;
-        letter-spacing: 2.5px;
+        font-size: 15px;
+        letter-spacing: 3px;
         color: #bfe8ff;
         text-shadow: 0 0 12px rgba(0, 170, 255, 0.45);
-      }
-      #tutorial-sub {
-        margin-top: 8px;
-        font-size: 10px;
-        letter-spacing: 2px;
-        color: #6f8ba1;
       }
       /* Audio mute indicator (procedural soundscape). */
       #mute-indicator {
@@ -497,100 +390,11 @@
       }
       #mute-indicator.visible { opacity: 1; }
 
-      /* Pre-level briefing overlay */
-      #briefing-overlay {
-        position: absolute;
-        top: 0; left: 0;
-        width: 100%; height: 100%;
-        display: none;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        background: rgba(2, 4, 10, 0.92);
-        z-index: 20;
-        font-family: 'Courier New', monospace;
-      }
-      #briefing-level {
-        font-size: 12px;
-        letter-spacing: 6px;
+      #tutorial-sub {
+        margin-top: 6px;
+        font-size: 10.5px;
+        letter-spacing: 2px;
         color: #6f8ba1;
-        margin-bottom: 6px;
-      }
-      #briefing-title {
-        font-size: 42px;
-        font-weight: bold;
-        letter-spacing: 8px;
-        color: #bfe8ff;
-        text-shadow: 0 0 24px rgba(0, 170, 255, 0.35);
-        margin-bottom: 24px;
-      }
-      #briefing-narrative {
-        max-width: 520px;
-        text-align: center;
-        margin-bottom: 28px;
-      }
-      #briefing-narrative p {
-        font-size: 12px;
-        line-height: 1.8;
-        letter-spacing: 1.5px;
-        color: #8aa4b8;
-        margin: 0 0 8px 0;
-      }
-      #briefing-objectives {
-        background: rgba(5, 10, 20, 0.7);
-        border: 1px solid rgba(100, 180, 255, 0.15);
-        border-radius: 4px;
-        padding: 16px 24px;
-        max-width: 460px;
-        width: 80%;
-        margin-bottom: 32px;
-      }
-      .briefing-obj-header {
-        font-size: 10px;
-        letter-spacing: 4px;
-        color: #ffb066;
-        margin-bottom: 10px;
-      }
-      #briefing-obj-list {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-      }
-      #briefing-obj-list li {
-        font-size: 11px;
-        letter-spacing: 1.5px;
-        color: #6f8ba1;
-        padding: 4px 0;
-        border-bottom: 1px solid rgba(100, 180, 255, 0.06);
-      }
-      #briefing-obj-list li:last-child {
-        border-bottom: none;
-      }
-      #briefing-obj-list li::before {
-        content: '\25B8 ';
-        color: #4af;
-      }
-      #btn-briefing-begin {
-        background: none;
-        border: 1px solid rgba(100, 180, 255, 0.35);
-        color: #bfe8ff;
-        font-family: 'Courier New', monospace;
-        font-size: 14px;
-        padding: 10px 40px;
-        cursor: pointer;
-        letter-spacing: 3px;
-        transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
-        margin-bottom: 12px;
-      }
-      #btn-briefing-begin:hover {
-        border-color: #4af;
-        color: #fff;
-        box-shadow: 0 0 16px rgba(0, 170, 255, 0.2);
-      }
-      .briefing-hint {
-        font-size: 9px;
-        letter-spacing: 3px;
-        color: #4a5a6a;
       }
 
       /* Stealth vignette — red border that pulses when monster is near */
@@ -751,20 +555,21 @@
       <div id="debug-keys">Keys: none</div>
       <div id="mute-indicator">[ MUTED ]</div>
       <div id="level-indicator">LEVEL 1</div>
-      <div id="objective"></div>
+      <div id="objective" role="status" aria-live="polite"></div>
+      <div id="pa-caption" role="status" aria-live="polite" hidden></div>
 
       <!-- Pulse Tool energy bar -->
       <div id="energy-bar-wrap">
-        <div id="energy-bar-label">PULSE</div>
-        <div id="energy-bar-bg">
+        <div id="energy-bar-label">PULSE <span id="energy-value">100%</span></div>
+        <div id="energy-bar-bg" role="progressbar" aria-label="Pulse energy" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
           <div id="energy-bar-fill"></div>
         </div>
       </div>
 
       <!-- Health bar -->
       <div id="health-bar-wrap">
-        <div id="health-bar-label">HEALTH</div>
-        <div id="health-bar-bg">
+        <div id="health-bar-label">HEALTH <span id="health-value">100%</span></div>
+        <div id="health-bar-bg" role="progressbar" aria-label="Health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
           <div id="health-bar-fill"></div>
         </div>
       </div>
@@ -779,6 +584,7 @@
       <div id="stealth-vignette"></div>
       <div id="stealth-warning">! DETECTED !</div>
       <div id="stealth-hidden">[ HIDDEN ]</div>
+      <div id="pickup-notice" role="status" aria-live="polite" hidden></div>
 
       <!-- Collapse timer (Level 3) -->
       <div id="collapse-timer">
@@ -788,11 +594,14 @@
 
       <!-- Boss phase indicator (Level 3) -->
       <div id="boss-phase"></div>
-
-      <!-- Power-routing progress (levels with power nodes) -->
-      <div id="power-chip">
-        <span class="power-label">SYSTEMS ONLINE</span>
-        <span id="power-chip-value">0/3</span>
+      <div id="boss-status" hidden>
+        <div class="boss-title">ENTITY / THREE NODES</div>
+        <div class="boss-node-list">
+          <span data-weak-node="0">CHEST</span>
+          <span data-weak-node="1">RIGHT</span>
+          <span data-weak-node="2">LEFT</span>
+        </div>
+        <div id="boss-cue"></div>
       </div>
     </div>
 
@@ -802,13 +611,12 @@
       <div class="subtitle">Research Lab Facility</div>
       <div class="story">
         <p>
-          A scientist&rsquo;s experiment to grow a creature in the containment tube
-          went wrong. The creature broke free and bit the scientist &mdash; mutating
-          them into a monster. The failsafe protocol has already sealed the exits.
+          Auxiliary power is down in Lab A-2. You are the engineer on shift,
+          sent to restore the relay and get the research systems running again.
         </p>
         <p>
-          You are the engineer on shift. Witness the transformation, survive the
-          hunt, and escape the collapse.
+          The maintenance order looks routine. Follow the service route, repair
+          the fault, and find out what the laboratory has been keeping alive.
         </p>
       </div>
       <div class="acts">
@@ -817,35 +625,114 @@
         <span>III &middot; THE COLLAPSE</span>
       </div>
       <button id="btn-start">Start Game</button>
+      <button id="btn-options">Options</button>
       <button id="btn-credits">Credits</button>
-      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB PULSE TOOL &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA &middot; M MUTE</div>
+      <p id="asset-warning" role="status" hidden></p>
+      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB/F PULSE TOOL &middot; SHIFT SPRINT &middot; C CROUCH &middot; SPACE JUMP &middot; V CAMERA &middot; L FLASHLIGHT &middot; M MUTE</div>
     </div>
 
     <!-- Pause menu -->
     <div id="pause-overlay">
       <h2>Paused</h2>
       <button id="btn-resume">Resume</button>
+      <button id="btn-pause-options">Options</button>
       <button id="btn-restart">Restart</button>
       <button id="btn-main-menu">Main Menu</button>
     </div>
 
-    <!-- Pre-level briefing -->
-    <div id="briefing-overlay">
-      <div id="briefing-level"></div>
-      <div id="briefing-title"></div>
-      <div id="briefing-narrative"></div>
-      <div id="briefing-objectives">
-        <div class="briefing-obj-header">OBJECTIVES</div>
-        <ul id="briefing-obj-list"></ul>
-      </div>
-      <button id="btn-briefing-begin">BEGIN</button>
-      <div class="briefing-hint">PRESS ANY KEY TO CONTINUE</div>
-    </div>
-
     <!-- Level transition (hides the rebuild/warm-up stall) -->
-    <div id="transition-overlay"><span id="transition-text">ENTERING NEXT SECTOR…</span></div>
+    <div id="transition-overlay" role="status"><span id="transition-text">ENTERING NEXT SECTOR…</span><p id="transition-objective"></p></div>
 
-    <!-- Game Over / Victory overlay -->
+    <dialog id="options-dialog" aria-labelledby="options-title">
+      <h2 id="options-title">Options</h2>
+      <p class="dialog-intro">Make the facility feel right for you.</p>
+      <label for="volume-setting">Master volume <output id="volume-value" for="volume-setting">65%</output></label>
+      <input id="volume-setting" type="range" min="0" max="100" step="1" value="65" />
+      <label for="music-setting">Music &amp; ambience <output id="music-value" for="music-setting">80%</output></label>
+      <input id="music-setting" type="range" min="0" max="100" step="1" value="80" />
+      <label for="sensitivity-setting">Mouse sensitivity <output id="sensitivity-value" for="sensitivity-setting">1.00×</output></label>
+      <input id="sensitivity-setting" type="range" min="0.5" max="5" step="0.1" value="2" />
+      <p class="dialog-note">Audio levels and sensitivity are saved on this device.</p>
+      <button id="mute-setting" aria-pressed="false">Mute audio</button>
+      <button data-close-dialog autofocus>Back</button>
+    </dialog>
+
+    <dialog id="credits-dialog" aria-labelledby="credits-title">
+      <h2 id="credits-title">Credits</h2>
+      <div id="credits-details">
+      <p class="dialog-intro">Containment Breach · University of the Witwatersrand · CGV group project</p>
+      <h3>The team</h3>
+      <ul>
+        <li><span class="credit-name">Zandile</span> <span class="credit-role">— engine and controls</span></li>
+        <li><span class="credit-name">Mlungisi</span> <span class="credit-role">— levels and models</span></li>
+        <li><span class="credit-name">Kutloano</span> <span class="credit-role">— visuals and shaders</span></li>
+        <li><span class="credit-name">Ronie</span> <span class="credit-role">— UI, sound and deployment</span></li>
+      </ul>
+      <h3>Libraries and tools</h3>
+      <ul>
+        <li><a href="https://threejs.org/" target="_blank" rel="noopener noreferrer">Three.js</a>, including its loaders and post-processing tools — Three.js authors, MIT. <a href="./licenses/three.txt" target="_blank" rel="noopener noreferrer">License</a></li>
+        <li><a href="https://github.com/pmndrs/cannon-es" target="_blank" rel="noopener noreferrer">cannon-es</a> — cannon.js authors and cannon-es contributors, MIT. <a href="./licenses/cannon-es.txt" target="_blank" rel="noopener noreferrer">License</a></li>
+        <li><a href="https://vite.dev/" target="_blank" rel="noopener noreferrer">Vite</a> — Vite contributors, MIT (build tool). <a href="./licenses/vite.txt" target="_blank" rel="noopener noreferrer">License notices</a></li>
+      </ul>
+      <h3>Art and audio</h3>
+      <ul>
+        <li>Facility geometry, procedural characters, textures and soundscape — generated by the project's code.</li>
+        <li>Soldier operator — bundled Three.js example model. Original model author and asset license still need confirmation.</li>
+        <li>Menu background — added by Zandile; original source and license still need confirmation.</li>
+        <li>Temporary facility announcements — project scripts synthesized with Windows System.Speech, Microsoft Zira Desktop voice.</li>
+      </ul>
+      <p class="dialog-note">Additional asset and tutorial credits will be added as their sources are confirmed.</p>
+      </div>
+      <button data-close-dialog autofocus>Back</button>
+    </dialog>
+
+    <!-- Congratulations, followed automatically by the end credits. -->
+    <section id="victory-overlay" class="ending-overlay" aria-labelledby="victory-title" hidden>
+      <div class="ending-card">
+        <div class="escape-emblem" aria-hidden="true">✓</div>
+        <p class="ending-eyebrow">Facility cleared</p>
+        <h1 id="victory-title">Congratulations</h1>
+        <p class="ending-subtitle">You made it out.</p>
+        <p class="ending-message">You survived the containment breach.<br>The facility is behind you.</p>
+        <div class="ending-milestones" aria-label="All three levels completed">
+          <span>Experiment survived</span><span>Hunt evaded</span><span>Collapse escaped</span>
+        </div>
+        <div class="ending-actions">
+          <button id="btn-watch-credits">Watch credits</button>
+          <button id="btn-victory-menu" class="ending-secondary">Main menu</button>
+        </div>
+        <p class="ending-hint">The credits will begin shortly.</p>
+      </div>
+    </section>
+
+    <section id="end-credits-overlay" class="ending-overlay" aria-label="End credits" hidden>
+      <div id="credits-viewport" aria-label="Project credits">
+        <div id="credits-track">
+          <div class="credits-opening">
+            <p class="ending-eyebrow">A CGV group project</p>
+            <h2>Containment<br>Breach</h2>
+            <p>You made it out.</p>
+          </div>
+          <div id="credits-roll-content"></div>
+          <p class="credits-closing">Thank you for playing.</p>
+        </div>
+      </div>
+      <div id="credits-controls">
+        <button id="btn-credits-pause" aria-pressed="false">Pause credits</button>
+        <button id="btn-credits-skip" class="ending-secondary">Skip credits</button>
+      </div>
+      <div id="credits-complete" class="ending-card" hidden>
+        <p class="ending-eyebrow">Containment Breach</p>
+        <h2>Thank you<br>for playing.</h2>
+        <p class="ending-message">You survived. Will you go back in?</p>
+        <div class="ending-actions">
+          <button id="btn-credits-replay">Play again</button>
+          <button id="btn-credits-menu" class="ending-secondary">Main menu</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Game Over overlay -->
     <div id="gameover-overlay">
       <div id="gameover-title">GAME OVER</div>
       <div id="gameover-subtitle"></div>
@@ -853,22 +740,13 @@
       <button id="btn-gameover-menu">Main Menu</button>
     </div>
 
-    <!-- Credits overlay (populated from AssetLibrary.CREDITS by GameState) -->
-    <div id="credits-overlay">
-      <div class="credits-panel">
-        <h2>Credits</h2>
-        <div class="credits-sub">ASSETS · ENGINES · PEOPLE</div>
-        <div id="credits-list"></div>
-        <button id="btn-credits-back">Back</button>
-      </div>
-    </div>
-
     <!-- Loading screen -->
     <div id="loading-screen">
       <div class="loading-text">Loading</div>
-      <div id="loading-bar-container">
+      <div id="loading-bar-container" role="progressbar" aria-label="Loading assets" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div id="loading-bar"></div>
       </div>
+      <p id="loading-status" role="status" aria-live="polite">Preparing the facility…</p>
     </div>
 
     <script type="module" src="./src/main.js"></script>

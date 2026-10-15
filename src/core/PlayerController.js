@@ -3,6 +3,8 @@ import * as CANNON from 'cannon-es';
 import InputManager from './InputManager.js';
 import { createEngineer } from './CharacterFactory.js';
 import OperatorModel from './OperatorModel.js';
+import HeldWeapon from './HeldWeapon.js';
+import CrouchPose from './CrouchPose.js';
 
 /**
  * PlayerController — first/third-person movement and physics body.
@@ -24,7 +26,7 @@ export default class PlayerController {
    * @param {import('./PhysicsWorld.js').default} physicsWorld
    * @param {InputManager} input
    */
-  constructor(scene, physicsWorld, input) {
+  constructor(scene, physicsWorld, input, loadingManager) {
     this.input = input;
     this.physicsWorld = physicsWorld;
 
@@ -60,12 +62,6 @@ export default class PlayerController {
     this._rayTo = new CANNON.Vec3();
     this._rayResult = new CANNON.RaycastResult();
 
-    // --- Landing detection (drives the camera dip and the noise a landing makes)
-    this._wasOnGround = false;
-    this._peakFall = 0;        // fastest downward speed since leaving the ground
-    this._landImpact = 0;      // pending impact speed, cleared by consumeLanding()
-    this._skipLanding = true;  // ignore the drop onto the floor right after a spawn
-
     // --- Reusable vectors (avoid per-frame allocation) ---------------------
     this._forward = new THREE.Vector3();
     this._right = new THREE.Vector3();
@@ -81,16 +77,19 @@ export default class PlayerController {
     // Swappable to a Blender .glb behind the same { group, update } API.
     this.scene = scene;
     this.character = createEngineer();
+    this._engineerCrouch = new CrouchPose(this.character.group, this.character.torso, this.character.legs, 0.32, 1);
+    this.character.tool.visible = false;
     this.playerModel = this.character.group;
 
     // Animation inputs — filled by update(), consumed by syncModel().
     this._lastDt = 0.016;
     this._charState = { moving: false, sprinting: false, grounded: true };
+    this._wantsSprint = false;
 
     // --- Stance / aim state (drives camera + speed) ------------------------
     this.isCrouching = false;
     this.isAiming = false;
-    this._crouchBlend = 0; // smoothed 0..1 for the model squash
+    this._crouchBlend = 0; // smoothed 0..1 articulated stance
 
     // Hidden upper body in first-person (legs stay visible when looking down).
     // The engineer builds everything above the hips under one joint at y 0.9,
@@ -105,16 +104,17 @@ export default class PlayerController {
     }
     this.isFirstPerson = true;
 
-    // --- Realistic third-person operator (skinned Soldier.glb) -------------
+    // --- Realistic third-person operator (skinned soldier.glb) -------------
     // Streams in async; until it's ready (or if it fails) the procedural
     // engineer doubles as the third-person body.
-    this.operator = new OperatorModel();
+    this.operator = new OperatorModel(loadingManager);
     this.operator.group.visible = false;
     scene.add(this.operator.group);
 
     // Hidden by default — starts in first-person mode.
     this.playerModel.visible = false;
     scene.add(this.playerModel);
+    this.heldWeapon = new HeldWeapon(scene);
   }
 
   /** Reset to a spawn position. */
@@ -123,10 +123,8 @@ export default class PlayerController {
     this.body.velocity.setZero();
     this.body.angularVelocity.setZero();
     this._groundTime = -10;
-    this._peakFall = 0;
-    this._landImpact = 0;
-    this._wasOnGround = false;
-    this._skipLanding = true;
+    this._wantsSprint = false;
+    this._charState.moving = this._charState.sprinting = false;
   }
 
   /**
@@ -139,7 +137,7 @@ export default class PlayerController {
     const keys = this.input.keys;
     const sprint = (keys['ShiftLeft'] || keys['ShiftRight']) && !this.isCrouching && !this.isAiming;
     let speed = this.moveSpeed * (sprint ? this.sprintMultiplier : 1);
-    if (this.isCrouching) speed *= 0.5;   // sneaking — slower, quieter
+    if (this.isCrouching) speed *= 0.6;   // sneaking with enough speed to reach cover
     if (this.isAiming) speed *= 0.6;      // ADS — careful steps
 
     // --- Grounding: short ray each frame ------------------------------------
@@ -156,18 +154,7 @@ export default class PlayerController {
       { skipBackfaces: true, collisionFilterMask: 1 },
       this._rayResult
     );
-    const onGround = this._rayResult.hasHit;
-    if (onGround) {
-      this._groundTime = this._clock;
-      if (!this._wasOnGround && !this._skipLanding && this._peakFall > 3.5) {
-        this._landImpact = Math.max(this._landImpact, this._peakFall);
-      }
-      this._skipLanding = false;
-      this._peakFall = 0;
-    } else {
-      this._peakFall = Math.max(this._peakFall, -this.body.velocity.y);
-    }
-    this._wasOnGround = onGround;
+    if (this._rayResult.hasHit) this._groundTime = this._clock;
     this.grounded = (this._clock - this._groundTime) < this.coyoteTime;
 
     // --- Movement direction relative to camera yaw -------------------------
@@ -213,32 +200,15 @@ export default class PlayerController {
     }
 
     // --- Animation state for the character model ---------------------------
-    this._charState.moving = (moveX !== 0 || moveZ !== 0);
-    this._charState.sprinting = sprint;
+    this._wantsSprint = sprint;
+    this.refreshMovementState();
+  }
+
+  /** Re-sample after physics so pushing into a wall does not animate walking. */
+  refreshMovementState() {
+    this._charState.moving = this.grounded && Math.hypot(this.body.velocity.x, this.body.velocity.z) > 0.15;
+    this._charState.sprinting = this._wantsSprint && this._charState.moving;
     this._charState.grounded = this.grounded;
-  }
-
-  /**
-   * How loud the player is right now, 0..1. The monster's hearing reads this:
-   * sprinting is loud, crouch-walking is nearly silent, standing still is quiet.
-   */
-  get noiseLevel() {
-    const cs = this._charState;
-    if (!this.grounded) return 0.3;
-    if (!cs.moving) return 0.05;
-    if (cs.sprinting) return 1;
-    if (this.isCrouching) return 0.22;
-    return this.isAiming ? 0.4 : 0.55;
-  }
-
-  /**
-   * Returns the impact speed (m/s) of a landing since the last call, or 0.
-   * Game feeds it to the camera (dip) and the monster (noise).
-   */
-  consumeLanding() {
-    const v = this._landImpact;
-    this._landImpact = 0;
-    return v;
   }
 
   /** World-space position of the player's feet. */
@@ -252,6 +222,9 @@ export default class PlayerController {
    * position and yaw regardless of who is driving the update.
    */
   syncModel() {
+    this.refreshMovementState();
+    this._engineerCrouch.restore();
+    this.operator.crouchPose?.restore();
     // The physics body is a sphere centred on the torso — offset by its
     // radius so the character's feet (built at local y = 0) touch the floor.
     const px = this.body.position.x;
@@ -259,23 +232,23 @@ export default class PlayerController {
     const pz = this.body.position.z;
     const yaw = this.cameraPivot ? this.cameraPivot.rotation.y : 0;
 
-    // Smooth crouch: squash the model toward the floor. The camera lowers
-    // itself via the crouching state — this keeps the silhouette matching.
+    // Blend the articulated stance without changing body proportions.
     const target = this.isCrouching ? 1 : 0;
     this._crouchBlend += (target - this._crouchBlend) * Math.min(1, this._lastDt * 10);
 
     // Procedural engineer (first-person legs + TP fallback).
     this.playerModel.position.set(px, py, pz);
-    this.playerModel.rotation.y = yaw;
-    this.playerModel.scale.y = 1 - this._crouchBlend * 0.32;
+    this.playerModel.rotation.y = yaw + Math.PI;
+    this.playerModel.scale.y = 1;
     this.character.update(this._lastDt, this._charState);
+    this._engineerCrouch.apply(this._crouchBlend, this._charState.moving);
 
-    // Skinned operator (third person) — same transform, subtler crouch.
+    // Skinned operator (third person) with an articulated crouch overlay.
     if (this.operator.ready) {
       this.operator.group.position.set(px, py, pz);
       this.operator.group.rotation.y = yaw;
-      this.operator.group.scale.y = 1 - this._crouchBlend * 0.18;
-      this.operator.update(this._lastDt, this._charState);
+      this.operator.group.scale.y = 1;
+      this.operator.update(this._lastDt, this._charState, this._crouchBlend);
     }
   }
 
@@ -302,6 +275,7 @@ export default class PlayerController {
     this.isFirstPerson = firstPerson;
     const useOperator = !firstPerson && this.operator.ready;
     this.operator.group.visible = useOperator;
+    this.heldWeapon.group.visible = !firstPerson;
     // TP+soldier: skinned operator only. FP / fallback: procedural engineer,
     // upper body hidden in FP (camera sits inside the torso) but legs stay
     // visible so looking down shows the character, like CoD.

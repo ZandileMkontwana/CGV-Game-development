@@ -100,6 +100,10 @@ export function buildRifle(scale = 1) {
   add(new THREE.BoxGeometry(0.015, 0.05, 0.12), accent, 0.038, 0.01, -0.05);
   add(new THREE.BoxGeometry(0.015, 0.05, 0.12), accent, -0.038, 0.01, -0.05);
 
+  g.muzzle = new THREE.Object3D();
+  g.muzzle.position.set(0, 0.012, -0.665);
+  g.add(g.muzzle);
+
   g.scale.setScalar(scale);
   return g;
 }
@@ -117,6 +121,7 @@ export default class WeaponViewmodel {
     // light keeps its tuned position either way.
     this.rifle = buildRifleFromGLB() || buildRifle(1);
     this.group.add(this.rifle);
+    this.muzzle = this.rifle.muzzle;
 
     // Fill light so the weapon reads even in unlit corners (cheap, no shadows).
     this._fill = new THREE.PointLight(0xbfd4ff, 0.35, 2.2, 1.8);

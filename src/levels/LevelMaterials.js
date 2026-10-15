@@ -7,10 +7,6 @@
  * cheap and materials/geometries can safely be shared and kept for the
  * whole session instead of being disposed per level.
  *
- * Authored image sets (public/assets/textures/{theme}_{role}_{col|nrm|rgh}.jpg)
- * take priority for the wall/floor/trim roles when present — the canvas
- * generators then serve as the fallback for missing files and channels.
- *
  * Theme bundles:
  *   lab        — clean research facility (Level 1)
  *   damaged    — rusted, water-stained, collapsed (Level 2)
@@ -21,7 +17,6 @@
  */
 import * as THREE from 'three';
 import { buildPBRMaps } from '../shaders/textures.js';
-import AssetLibrary from '../core/AssetLibrary.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Seeded drawing helpers
@@ -409,74 +404,6 @@ export function decalMaterial(kind, color = '#e8b23a') {
         for (let y = 0; y < size; y += 32) ctx.fillRect(52, y, 24, 18);
         break;
       }
-      case 'grime': {
-        // Layered dark blotches — wear accumulated around machinery.
-        ctx.fillStyle = 'rgba(16,18,22,0.5)';
-        for (let i = 0; i < 5; i++) {
-          const a = (i * 2.4) % 6.283;
-          ctx.beginPath();
-          ctx.ellipse(
-            64 + Math.cos(a) * 22, 64 + Math.sin(a) * 22,
-            16 + i * 5, 11 + i * 4, a, 0, 6.283
-          );
-          ctx.fill();
-        }
-        break;
-      }
-      case 'leak': {
-        // Long tapering stain — a rust/water run under a pipe.
-        const grad = ctx.createLinearGradient(0, 0, size, 0);
-        grad.addColorStop(0, 'rgba(30,22,14,0.62)');
-        grad.addColorStop(0.6, 'rgba(22,16,10,0.4)');
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(6, 34, 116, 60);
-        ctx.fillStyle = 'rgba(40,28,16,0.5)';
-        ctx.fillRect(6, 50, 30, 28);
-        break;
-      }
-      case 'scratches': {
-        // Bright abrasion marks — dragged equipment.
-        ctx.strokeStyle = 'rgba(200,214,228,0.5)';
-        ctx.lineWidth = 2;
-        for (let i = 0; i < 6; i++) {
-          ctx.beginPath();
-          ctx.moveTo(14 + i * 18, 20 + (i % 3) * 12);
-          ctx.lineTo(30 + i * 16, 96 - (i % 4) * 14);
-          ctx.stroke();
-        }
-        break;
-      }
-      case 'label': {
-        // Hazard placard — warning diamond with an exclamation bar.
-        ctx.fillStyle = color;
-        ctx.save();
-        ctx.translate(64, 64);
-        ctx.rotate(Math.PI / 4);
-        ctx.fillRect(-30, -30, 60, 60);
-        ctx.restore();
-        ctx.fillStyle = '#141414';
-        ctx.fillRect(60, 34, 8, 42);
-        ctx.fillRect(60, 84, 8, 8);
-        break;
-      }
-      case 'papers': {
-        // Scattered documents — evidence of a rushed evacuation.
-        ctx.fillStyle = 'rgba(214,222,230,0.85)';
-        for (const [px, py, rot] of [[30, 40, 0.3], [70, 52, -0.5], [48, 84, 0.9], [92, 30, 0.1]]) {
-          ctx.save();
-          ctx.translate(px, py);
-          ctx.rotate(rot);
-          ctx.fillRect(-14, -10, 28, 20);
-          ctx.restore();
-        }
-        ctx.fillStyle = 'rgba(90,100,112,0.8)';
-        for (const [px, py] of [[30, 40], [70, 52], [48, 84]]) {
-          ctx.fillRect(px - 8, py - 4, 12, 1.5);
-          ctx.fillRect(px - 8, py, 12, 1.5);
-        }
-        break;
-      }
       default: {
         ctx.strokeStyle = color;
         ctx.lineWidth = 10;
@@ -499,10 +426,10 @@ export function decalMaterial(kind, color = '#e8b23a') {
 const THEME_CONFIG = {
   lab: {
     seed: 131,
-    wall: { base: '#97a3b4', seamX: 64, seamY: 128, grime: 5, rust: 0 },
-    wallDark: { base: '#5c6779', seamX: 64, seamY: 128, grime: 8, rust: 0 },
-    ceil: { base: '#828e9d', seamX: 64, seamY: 64, grime: 3, rust: 0 },
-    floor: { base: '#3d4653', grout: 'rgba(0,0,0,0.5)', wear: 8 },
+    wall: { base: '#aebcbd', seamX: 128, seamY: 256, grime: 2, rust: 0 },
+    wallDark: { base: '#3e535b', seamX: 128, seamY: 256, grime: 3, rust: 0 },
+    ceil: { base: '#263b44', seamX: 128, seamY: 128, grime: 1, rust: 0 },
+    floor: { base: '#34494e', grout: 'rgba(0,0,0,0.2)', wear: 2 },
     concrete: { base: '#565d68', cracks: 4, stains: 6 },
     grate: { base: '#1c222b', bar: '#8e9aa8' },
     screen: { base: '#04121a', fg: '#3fd9ff' },
@@ -514,25 +441,25 @@ const THEME_CONFIG = {
   },
   damaged: {
     seed: 233,
-    wall: { base: '#6a5a48', seamX: 64, seamY: 128, grime: 12, rust: 7 },
-    wallDark: { base: '#463a2e', seamX: 64, seamY: 128, grime: 14, rust: 9, scorch: 3 },
-    ceil: { base: '#3f362c', seamX: 64, seamY: 64, grime: 10, rust: 5 },
-    floor: { base: '#3a332b', grout: 'rgba(0,0,0,0.55)', wear: 16 },
+    wall: { base: '#626d6d', seamX: 128, seamY: 256, grime: 8, rust: 6 },
+    wallDark: { base: '#283b42', seamX: 128, seamY: 256, grime: 10, rust: 7, scorch: 3 },
+    ceil: { base: '#202d33', seamX: 128, seamY: 128, grime: 8, rust: 4 },
+    floor: { base: '#263b41', grout: 'rgba(0,0,0,0.3)', wear: 10 },
     concrete: { base: '#4a4239', cracks: 9, stains: 12 },
     grate: { base: '#181410', bar: '#7a6a58' },
-    screen: { base: '#140a04', fg: '#ffb04a' },
+    screen: { base: '#07151d', fg: '#71c9dc' },
     trim: 0x332b22, beam: 0x453b30, metal: 0x7a6d5c, metalDark: 0x39322a,
     panel: 0x4e4437, pipe: 0x80705c, crate: 0x79644a, locker: 0x5a5f68,
     debris: 0x4a4239, rubber: 0x1a1712, hazardColor: '#d99a2b',
-    accent: 0xffa62b, lamp: 0xffd9a0, lampLight: 0xffb460,
+    accent: 0x71c9dc, lamp: 0xffd9a0, lampLight: 0xffb460,
     exit: 0x5cff8a, warn: 0xffb340, emer: 0xff4030,
   },
   emergency: {
     seed: 337,
-    wall: { base: '#5c3a38', seamX: 64, seamY: 128, grime: 10, rust: 6, scorch: 6 },
-    wallDark: { base: '#3a2422', seamX: 64, seamY: 128, grime: 12, rust: 8, scorch: 9 },
-    ceil: { base: '#33231f', seamX: 64, seamY: 64, grime: 12, rust: 5, scorch: 4 },
-    floor: { base: '#33221f', grout: 'rgba(0,0,0,0.6)', wear: 18 },
+    wall: { base: '#515c61', seamX: 128, seamY: 256, grime: 9, rust: 5, scorch: 6 },
+    wallDark: { base: '#28353b', seamX: 128, seamY: 256, grime: 11, rust: 7, scorch: 9 },
+    ceil: { base: '#202a30', seamX: 128, seamY: 128, grime: 10, rust: 5, scorch: 4 },
+    floor: { base: '#29353a', grout: 'rgba(0,0,0,0.35)', wear: 14 },
     concrete: { base: '#3d2c28', cracks: 11, stains: 10 },
     grate: { base: '#150f0e', bar: '#6e524a' },
     screen: { base: '#1a0505', fg: '#ff5a3c' },
@@ -546,54 +473,8 @@ const THEME_CONFIG = {
 
 const _themeCache = new Map();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Authored image sets (public/assets/textures/{theme}_{role}_{col|nrm|rgh}.jpg)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Collect one material role's authored maps, cloned per-call so each use
- * gets its own repeat (clones share the underlying image — cheap).
- * Returns null when the albedo is missing (the whole role falls back).
- * @param {string} theme lab | damaged | emergency
- * @param {string} role wall | floor | trim
- * @param {[number, number]} repeat
- */
-function themeImageSet(theme, role, repeat) {
-  const col = AssetLibrary.getTexture(`${theme}_${role}_col`);
-  if (!col) return null;
-
-  const set = {};
-  for (const key of ['col', 'nrm', 'rgh']) {
-    const tex = AssetLibrary.getTexture(`${theme}_${role}_${key}`);
-    if (!tex) continue;
-    const c = tex.clone();
-    c.repeat.set(repeat[0], repeat[1]);
-    c.needsUpdate = true;
-    set[key] = c;
-  }
-  return set;
-}
-
-/**
- * Map a role's authored set onto material options — albedo, normal,
- * roughness — leaving absent channels to the procedural fallbacks.
- * @param {object|null} set
- * @param {THREE.Texture} fallbackMap
- * @param {THREE.Texture} fallbackNrm
- * @param {THREE.Texture|null} fallbackRgh
- */
-function withImageMaps(set, fallbackMap, fallbackNrm, fallbackRgh) {
-  return {
-    map: (set && set.col) || fallbackMap,
-    normalMap: (set && set.nrm) || fallbackNrm,
-    roughnessMap: (set && set.rgh) || fallbackRgh,
-  };
-}
-
 /**
  * Build (or return the cached) material bundle for a theme.
- * Authored image sets replace the canvas-generated wall/floor/trim textures
- * when present; everything else stays procedural.
  * Materials are shared across meshes and levels — do NOT dispose them on
  * level teardown; the game keeps at most three bundles alive.
  */
@@ -601,22 +482,18 @@ export function getThemeMaterials(themeName) {
   if (_themeCache.has(themeName)) return _themeCache.get(themeName);
   const t = THEME_CONFIG[themeName] || THEME_CONFIG.lab;
 
-  const imgWall = themeImageSet(themeName, 'wall', [4, 2]);
-  const imgCeil = themeImageSet(themeName, 'wall', [5, 5]);
-  const imgFloor = themeImageSet(themeName, 'floor', [7, 7]);
-  const imgTrim = themeImageSet(themeName, 'trim', [2, 2]);
-
-  const wallTex = imgWall ? null : panelTexture({ ...t.wall, seed: t.seed, repeat: [4, 2] });
-  const wallDarkTex = imgWall ? null : panelTexture({ ...t.wallDark, seed: t.seed + 1, repeat: [4, 2] });
-  const ceilTex = imgCeil ? null : panelTexture({ ...t.ceil, seed: t.seed + 7, repeat: [5, 5] });
-  const floorTex = imgFloor ? null : tileTexture({ ...t.floor, seed: t.seed + 2, repeat: [7, 7] });
+  const wallTex = panelTexture({ ...t.wall, seed: t.seed, repeat: [4, 2] });
+  const wallDarkTex = panelTexture({ ...t.wallDark, seed: t.seed + 1, repeat: [4, 2] });
+  const ceilTex = panelTexture({ ...t.ceil, seed: t.seed + 7, repeat: [5, 5] });
+  const floorRepeat = themeName === 'lab' ? [3, 3] : [7, 7];
+  const floorTex = tileTexture({ ...t.floor, seed: t.seed + 2, repeat: floorRepeat });
   const grateTex = gratingTexture({ ...t.grate, seed: t.seed + 3, repeat: [3, 3] });
   const concreteTex = concreteTexture({ ...t.concrete, seed: t.seed + 4, repeat: [4, 4] });
   const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5 });
   const screenTex2 = screenTexture({ ...t.screen, seed: t.seed + 6 });
 
-  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
-  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: [7, 7], bumpStrength: 1.8, roughnessBase: 0.7, roughnessVariance: 0.4 });
+  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.45 : 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
+  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 0.6 : 1.8, roughnessBase: themeName === 'lab' ? 0.85 : 0.7, roughnessVariance: themeName === 'lab' ? 0.12 : 0.4 });
   const propPBR = buildPBRMaps({ seed: t.seed + 30, repeat: [2, 2], bumpStrength: 1.2, roughnessBase: 0.65, roughnessVariance: 0.3 });
 
   const std = (opts) => new THREE.MeshStandardMaterial(opts);
@@ -627,19 +504,17 @@ export function getThemeMaterials(themeName) {
 
   const mats = {
     // --- architecture ---
-    // Authored image sets (img*) replace the canvas maps channel-by-channel;
-    // wallDark keeps its tint over the shared wall set when authored.
-    wall: std({ color: 0xffffff, roughness: 1, metalness: 0.35, ...withImageMaps(imgWall, wallTex, wallPBR.normalMap, wallPBR.roughnessMap) }),
-    wallDark: std({ color: imgWall ? 0x8a8f99 : 0xffffff, roughness: 1, metalness: 0.4, ...withImageMaps(imgWall, wallDarkTex, wallPBR.normalMap, wallPBR.roughnessMap) }),
-    ceil: std({ color: 0xffffff, roughness: 0.9, metalness: 0.2, ...withImageMaps(imgCeil, ceilTex, wallPBR.normalMap, null) }),
-    floor: std({ color: 0xffffff, roughness: 1, metalness: 0.2, ...withImageMaps(imgFloor, floorTex, floorPBR.normalMap, floorPBR.roughnessMap) }),
+    wall: std({ map: wallTex, normalMap: wallPBR.normalMap, roughnessMap: wallPBR.roughnessMap, roughness: 1, metalness: 0.35, color: 0xffffff }),
+    wallDark: std({ map: wallDarkTex, normalMap: wallPBR.normalMap, roughness: 1, metalness: 0.4, color: 0xffffff }),
+    ceil: std({ map: ceilTex, normalMap: wallPBR.normalMap, roughness: 0.9, metalness: 0.2, color: 0xffffff }),
+    floor: std({ map: floorTex, normalMap: floorPBR.normalMap, roughnessMap: floorPBR.roughnessMap, roughness: 1, metalness: 0.2, color: 0xffffff }),
     grate: std({ map: grateTex, normalMap: propPBR.normalMap, roughness: 0.7, metalness: 0.6, color: 0xffffff }),
     concrete: std({ map: concreteTex, normalMap: propPBR.normalMap, roughness: 1, metalness: 0.05, color: 0xffffff }),
-    trim: std({ color: t.trim, roughness: 0.6, metalness: 0.5, ...withImageMaps(imgTrim, null, propPBR.normalMap, null) }),
+    trim: std({ color: t.trim, roughness: 0.6, metalness: 0.5, normalMap: propPBR.normalMap }),
     beam: std({ color: t.beam, roughness: 0.6, metalness: 0.55, normalMap: propPBR.normalMap }),
     metal: std({ color: t.metal, roughness: 0.35, metalness: 0.8, normalMap: propPBR.normalMap }),
     metalDark: std({ color: t.metalDark, roughness: 0.5, metalness: 0.7, normalMap: propPBR.normalMap }),
-    panel: std({ color: t.panel, roughness: 0.5, metalness: 0.6, ...withImageMaps(imgTrim, null, propPBR.normalMap, null) }),
+    panel: std({ color: t.panel, roughness: 0.5, metalness: 0.6, normalMap: propPBR.normalMap }),
     pipe: std({ color: t.pipe, roughness: 0.45, metalness: 0.7 }),
     crate: std({ color: t.crate, roughness: 0.85, metalness: 0.1, normalMap: propPBR.normalMap }),
     locker: std({ color: t.locker, roughness: 0.55, metalness: 0.6, normalMap: propPBR.normalMap }),
