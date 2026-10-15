@@ -431,6 +431,7 @@ export default class Game {
         if (this.gameState.currentLevel === 3 && oldState !== 'paused') {
           this.audio.playClipSequence(['emergencyIntercom']);
           this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
+          this.audio.startChaos();
         }
       }
       if (newState === 'gameover') {

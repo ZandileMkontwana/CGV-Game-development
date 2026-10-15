@@ -68,6 +68,9 @@ export default class AudioManager {
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
+    this._chaosBed = null;  // { gain, nodes[] } Level-3 collapse chaos bed
+    this._chaosOn = false;  // is the chaos layer running?
+    this._chaosT = { boom: 3, machine: 2, scream: 5, rumble: 4 };
     this._duckTO = 0;
 
     // Per-frame schedulers (seconds until next event).
@@ -338,6 +341,7 @@ export default class AudioManager {
          monsterDist, hiding, monsterMoving = chasing) {
     if (!this._unlocked || this.muted) return;
     this._updateScore();
+    this._updateChaos(dt);
 
     // Footsteps — cadence from walk/sprint, only while grounded.
     if (moving && grounded) {
@@ -463,6 +467,7 @@ export default class AudioManager {
   stopAmbient() {
     this._stopBed(1.2);
     this.stopSuspense(1.2);
+    this.stopChaos();
     this.setBreathing(false, 0);
     this.setRecharge(false);
   }
@@ -661,6 +666,143 @@ export default class AudioManager {
     g.exponentialRampToValueAtTime(MIN_GAIN, t + 1.4);
     try { r.src.stop(t + 1.5); } catch (e) { /* already stopped */ }
     try { r.lfo.stop(t + 1.5); } catch (e) { /* already stopped */ }
+  }
+
+  // ── Level-3 collapse chaos ───────────────────────────────────────────────
+
+  /** Start the collapse chaos: a fire/rumble bed plus randomized events. */
+  startChaos() {
+    if (!this._unlocked || this._chaosOn) return;
+    this._chaosOn = true;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+
+    const bedGain = this._gain(MIN_GAIN);
+    bedGain.connect(this.master);
+
+    // Roaring fire: broadband noise through a lowpass with a fast flicker LFO.
+    const roarSrc = this._noiseSource(true);
+    const roarF = this._filter('lowpass', 420, 0.7);
+    const roarG = this._gain(0.16);
+    const roarLfo = ctx.createOscillator();
+    roarLfo.frequency.value = 6.5;
+    const roarLfoG = this._gain(0.07);
+    roarLfo.connect(roarLfoG).connect(roarG.gain);
+    roarSrc.connect(roarF).connect(roarG).connect(bedGain);
+
+    // Deep structural rumble under everything.
+    const rumbleSrc = this._noiseSource(true);
+    const rumbleF = this._filter('lowpass', 80, 0.9);
+    const rumbleG = this._gain(0.5);
+    rumbleSrc.connect(rumbleF).connect(rumbleG).connect(bedGain);
+
+    roarSrc.start(t);
+    rumbleSrc.start(t);
+    roarLfo.start(t);
+    bedGain.gain.setValueAtTime(MIN_GAIN, t);
+    bedGain.gain.exponentialRampToValueAtTime(0.9, t + 2.5);
+
+    this._chaosBed = { gain: bedGain, nodes: [roarSrc, rumbleSrc, roarLfo, roarG, rumbleG] };
+    this._chaosT = { boom: 2.5, machine: 2, scream: 5, rumble: 4 };
+  }
+
+  /** Fade out and tear down the chaos bed. */
+  stopChaos() {
+    this._chaosOn = false;
+    const bed = this._chaosBed;
+    if (!bed) return;
+    this._chaosBed = null;
+    const t = this.ctx.currentTime;
+    const g = bed.gain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(Math.max(g.value, MIN_GAIN), t);
+    g.exponentialRampToValueAtTime(MIN_GAIN, t + 1.5);
+    setTimeout(() => {
+      for (const n of bed.nodes) {
+        try { if (n.stop) n.stop(); } catch (e) { /* already stopped */ }
+        try { n.disconnect(); } catch (e) { /* noop */ }
+      }
+      try { bed.gain.disconnect(); } catch (e) { /* noop */ }
+    }, 1700);
+  }
+
+  /** Per-frame random chaos events while the collapse rages. */
+  _updateChaos(dt) {
+    if (!this._chaosOn) return;
+    const T = this._chaosT;
+    T.boom -= dt;
+    if (T.boom <= 0) { this._boom(); T.boom = 4 + Math.random() * 7; }
+    T.machine -= dt;
+    if (T.machine <= 0) { this._machineFail(); T.machine = 3 + Math.random() * 6; }
+    T.scream -= dt;
+    if (T.scream <= 0) { this._scream(); T.scream = 6 + Math.random() * 9; }
+    T.rumble -= dt;
+    if (T.rumble <= 0) { this._distantRumble(); T.rumble = 6 + Math.random() * 10; }
+  }
+
+  /** Distant explosion: sub-bass boom, pressure crackle, debris tail. */
+  _boom() {
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(120, t);
+    o.frequency.exponentialRampToValueAtTime(28, t + 0.7);
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.7, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 1.2);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + 1.25);
+    this._burst({ dur: 0.5, vol: 0.22, type: 'lowpass', freq: 900, f1: 200, attack: 0.01 });
+    this._burst({ dur: 1.1, vol: 0.1, type: 'bandpass', freq: 2600, q: 1.2, attack: 0.05 });
+    this.duck(0.35, 700);
+  }
+
+  /** Machinery tearing apart: metal shriek, sparks, hydraulic hiss. */
+  _machineFail() {
+    const base = 180 + Math.random() * 260;
+    this._chirp(base, base * 0.35, 0.9, 0.16, 'sawtooth');
+    this._chirp(base * 1.5, base * 0.5, 0.7, 0.1, 'square');
+    for (let i = 0; i < 4; i++) {
+      setTimeout(() => this._spark(), i * 70 + Math.random() * 60);
+    }
+    this._burst({ dur: 1.4, vol: 0.13, type: 'highpass', freq: 2200, attack: 0.15 });
+  }
+
+  /** Panicked human scream — voiced formant swells, not a pure tone. */
+  _scream() {
+    const base = 380 + Math.random() * 260;
+    const t = this.ctx.currentTime;
+    for (const mult of [1, 2, 3]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(base * mult * 1.15, t);
+      o.frequency.exponentialRampToValueAtTime(base * mult * 0.82, t + 1.0);
+      const f = this._filter('bandpass', 900 * mult, 6);
+      const g = this._gain(MIN_GAIN);
+      g.gain.setValueAtTime(MIN_GAIN, t);
+      g.gain.exponentialRampToValueAtTime(0.05 / mult, t + 0.12);
+      g.gain.setValueAtTime(0.05 / mult, t + 0.7);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 1.1);
+      o.connect(f).connect(g).connect(this.master);
+      o.start(t);
+      o.stop(t + 1.15);
+    }
+  }
+
+  /** A far-off collapse / bomber swollen through a lowpass. */
+  _distantRumble() {
+    const t = this.ctx.currentTime;
+    const src = this._noiseSource(false);
+    const f = this._filter('lowpass', 120, 0.8);
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t + 1.2);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 3.0);
+    src.connect(f).connect(g).connect(this.master);
+    src.start(t, Math.random() * 1.5);
+    src.stop(t + 3.1);
   }
 
   // ── Low-level voice builders ─────────────────────────────────────────────
