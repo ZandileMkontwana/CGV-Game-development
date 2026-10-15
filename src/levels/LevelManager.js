@@ -163,6 +163,39 @@ function sootTexture() {
   return _sootTex;
 }
 
+let _alertLineTex = null;
+/**
+ * Tileable strip of bright dashes on a faint painted base. Scrolling the
+ * texture's offset makes the dashes march along a guide line — the running
+ * "emergency lights" look. Kept as a template; each line clones it so it can
+ * set its own repeat without disturbing the others.
+ */
+function alertLineTexture() {
+  if (_alertLineTex) return _alertLineTex;
+  const W = 128, Hh = 16;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = Hh;
+  const x = c.getContext('2d');
+  // Faint uniform base keeps the guideline readable between pulses.
+  x.fillStyle = 'rgba(255,255,255,0.10)';
+  x.fillRect(0, 0, W, Hh);
+  // Four soft-edged bright dashes per tile; seamless across the tile seam.
+  for (let i = 0; i < 4; i++) {
+    const cx = i * 32 + 16;
+    const g = x.createLinearGradient(cx - 10, 0, cx + 10, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0.95)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g;
+    x.fillRect(cx - 10, 0, 20, Hh);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.ClampToEdgeWrapping;
+  _alertLineTex = t;
+  return t;
+}
+
 export default class LevelManager {
   /**
    * @param {import('three').Scene} scene
@@ -225,6 +258,9 @@ export default class LevelManager {
 
     /** Dust-mote Points clouds with a slow drift (rebuilt each load). */
     this._dustFields = [];
+
+    /** Animated emergency guide lines {mesh, tex, mat, ...} (rebuilt each load). */
+    this._alertLines = [];
 
     /** Meshes the dissolve shader fades during the L3 collapse. */
     this._dissolveWalls = [];
@@ -386,6 +422,7 @@ export default class LevelManager {
     this._fires = [];
     this._rotatingHazards = [];
     this._dustFields = [];
+    this._alertLines = [];
     this._dissolveWalls = [];
     this._exitDoor = null;
     this.scriptedReveal = null;
@@ -749,6 +786,54 @@ export default class LevelManager {
   }
 
   /**
+   * Animated emergency guide line — a flat additive strip whose texture
+   * scrolls so bright dashes march along it, while its colour slowly cycles
+   * between an amber advisory and a red alarm. Not flagged staticScenery, so
+   * the StaticBatch leaves it out and update() can drive it every frame.
+   *
+   * @param {number} x    centre x
+   * @param {number} z    centre z
+   * @param {number} len  run length (along the chosen axis)
+   * @param {object} [o]  {axis:'x'|'z', width, color, opacity, speed, pulseRate}
+   */
+  _createAlertLine(x, z, len, o = {}) {
+    const axis = o.axis === 'x' ? 'x' : 'z';
+    const width = o.width || 0.16;
+    const tex = alertLineTexture().clone();
+    tex.needsUpdate = true;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.repeat.set(Math.max(1, Math.round(len / 1.2)), 1);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: o.opacity ?? 0.8,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+      color: o.color ?? 0xffa020,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(len, width), mat);
+    mesh.position.set(x, 0.022, z);
+    // Lay flat, with the texture's U (dash march) running along the line.
+    if (axis === 'x') mesh.rotation.set(-Math.PI / 2, 0, 0);
+    else mesh.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+    mesh.renderOrder = 3;
+    mesh.userData.ownsGeometry = true;
+    mesh.userData.ownsMaterial = true;
+    this.scene.add(mesh);
+    this._track(mesh);
+    this._alertLines.push({
+      mesh, tex, mat,
+      t: Math.random() * 6.283,
+      speed: o.speed ?? 0.6,
+      pulseRate: o.pulseRate ?? 1.6,
+      base: o.opacity ?? 0.8,
+      // Colour cycles between these two; a custom colour (e.g. a green exit
+      // lane) uses it for both so the line pulses without changing hue.
+      advisory: new THREE.Color(o.color ?? 0xffa020),
+      alarm: new THREE.Color(o.alarm ?? (o.color !== undefined ? o.color : 0xff2a10)),
+    });
+    return mesh;
+  }
+
+  /**
    * Register a heat-haze volume. The mesh is a kit box (so teardown skips
    * its shared resources); ShaderManager.wireLevelVisuals() replaces the
    * placeholder material with the real haze shader on level load.
@@ -985,6 +1070,20 @@ export default class LevelManager {
     // Dust motes: slow in-place swirl.
     for (const d of this._dustFields) {
       d.rotation.y += dt * 0.04;
+    }
+
+    // Animated emergency guide lines: scroll the dashes so they march along
+    // the line, pulse their brightness, and cycle the colour between an amber
+    // advisory and a red alarm — the alerts visibly change. Everything speeds
+    // up while the Level-3 collapse is underway.
+    const alertHaste = this.collapseMode ? 2.2 : 1;
+    for (const a of this._alertLines) {
+      a.t += dt * alertHaste;
+      a.tex.offset.x = (a.tex.offset.x + dt * a.speed * alertHaste) % 1;
+      const blink = 0.5 + 0.5 * Math.sin(a.t * a.pulseRate);
+      a.mat.opacity = a.base * (0.45 + 0.55 * blink);
+      const mix = 0.5 + 0.5 * Math.sin(a.t * 0.5); // 1 = advisory, 0 = alarm
+      a.mat.color.copy(a.alarm).lerp(a.advisory, mix);
     }
 
     // Walking staff NPCs (patrol loops; flee once the alarm sounds).
@@ -2145,6 +2244,13 @@ export default class LevelManager {
     this._scorchDecal(0.5, 0, -26.0, 2.2);
     this._scorchDecal(-6.0, 0, -33.0, 1.4);
     this._scorchDecal(5.0, 0, -19.0, 1.2);
+    // Animated emergency guide lines — dashes march along them and the colour
+    // cycles amber↔red, so the alert lines visibly change. The two long red
+    // lines get an overlay; a fresh centre lane guides the player to the exit.
+    this._createAlertLine(-12.6, -26, 28, { axis: 'z', speed: 0.5 });
+    this._createAlertLine(12.6, -26, 28, { axis: 'z', speed: 0.5 });
+    this._createAlertLine(0, -16, 12, { axis: 'z', speed: 0.75, opacity: 0.7 });
+    this._createAlertLine(0, -36, 10, { axis: 'z', speed: 0.75, opacity: 0.7 });
     // Wall beacon lights (visual, no extra PointLights).
     for (const [bx, bz, face] of [
       [13.94, -16, 'w'], [-13.94, -30, 'e'], [13.94, -36, 'w'], [-13.94, -14, 'e'],
@@ -2281,6 +2387,12 @@ export default class LevelManager {
       this._track(guide);
       this.escapeRoute.push(guide);
     }
+    // Animated alert lines marking the evacuation lane — centre of the escape
+    // corridor and the exit room, marching toward the surface exit.
+    this._createAlertLine(0, -47, 10, { axis: 'z', color: 0x5cff8a, speed: 0.9, pulseRate: 2.2 });
+    this._createAlertLine(-2.6, -47, 10, { axis: 'z', speed: 0.6, opacity: 0.55 });
+    this._createAlertLine(2.6, -47, 10, { axis: 'z', speed: 0.6, opacity: 0.55 });
+    this._createAlertLine(0, -55, 5.5, { axis: 'z', color: 0x5cff8a, speed: 0.9, pulseRate: 2.2 });
 
     // ── Dissolve targets (Kutloano's shader fades these during collapse) ──
     this._dissolveWalls = [];
