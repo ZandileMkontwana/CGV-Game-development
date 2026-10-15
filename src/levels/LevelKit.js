@@ -37,6 +37,11 @@ function planeGeo(w, h) {
   if (!_geoCache.has(k)) _geoCache.set(k, new THREE.PlaneGeometry(w, h));
   return _geoCache.get(k);
 }
+function sphereGeo(r, widthSegments, heightSegments) {
+  const k = `s|${r}|${widthSegments}|${heightSegments}`;
+  if (!_geoCache.has(k)) _geoCache.set(k, new THREE.SphereGeometry(r, widthSegments, heightSegments));
+  return _geoCache.get(k);
+}
 
 /** Cosmetic-only seeded variation (crate tilts, debris scatter). */
 function mulberry32(seed) {
@@ -79,23 +84,26 @@ export default class LevelKit {
     mesh.castShadow = o.cast !== false;
     mesh.receiveShadow = o.receive !== false;
     mesh.userData.kitShared = true;
+    mesh.userData.staticScenery = true;
     this.scene.add(mesh);
-    this.host._track(mesh);
 
+    let body = null;
     if (o.physics) {
       const quarter = Math.abs(Math.abs(o.rotY || 0) - Math.PI / 2) < 0.01;
       const hw = o.w !== undefined ? o.w / 2 : 0.5;
       const hh = o.h !== undefined ? o.h / 2 : 0.5;
       const hd = o.d !== undefined ? o.d / 2 : 0.5;
-      const body = this.physics.createBox(
+      body = this.physics.createBox(
         0,
         quarter ? hd : hw,
         hh,
         quarter ? hw : hd,
         new CANNON.Vec3(mesh.position.x, mesh.position.y, mesh.position.z)
       );
-      this.physics.addSyncPair(body, mesh);
+      // Kit props are static. Syncing an axis-aligned body back to a mesh
+      // would erase its intended rotation and retain it after level teardown.
     }
+    this.host._track(mesh, body);
     if (o.occluder) this.host.occluders.push(mesh);
     return mesh;
   }
@@ -357,6 +365,7 @@ export default class LevelKit {
     const g = new THREE.Group();
     g.position.set(x, y, z);
     g.rotation.y = rotY;
+    g.userData.staticScenery = true;
     const post = (px) => {
       const m = new THREE.Mesh(boxGeo(0.16, h + 0.16, 0.26), mat);
       m.position.set(px, 0, 0);
@@ -384,6 +393,7 @@ export default class LevelKit {
     const w = o.w || 0.9;
     const h = o.h || 0.5;
     const g = new THREE.Group();
+    g.userData.staticScenery = true;
     g.position.set(x, y, z);
     g.rotation.y = this.faceAngle(face);
     const frame = new THREE.Mesh(boxGeo(w, h, 0.08), this.mats.metalDark);
@@ -406,6 +416,7 @@ export default class LevelKit {
     const w = o.w || 2.2;
     const h = o.h || 1.2;
     const g = new THREE.Group();
+    g.userData.staticScenery = true;
     g.position.set(x, y, z);
     g.rotation.y = this.faceAngle(face);
     const frame = new THREE.Mesh(boxGeo(w + 0.16, h + 0.16, 0.12), this.mats.metalDark);
@@ -450,6 +461,7 @@ export default class LevelKit {
   valveWheel(x, y, z, face, o = {}) {
     const r = o.r || 0.2;
     const g = new THREE.Group();
+    g.userData.staticScenery = true;
     g.position.set(x, y, z);
     g.rotation.y = this.faceAngle(face);
     const wheel = new THREE.Mesh(cylGeo(r, r, 0.05, 12), this.mats.beaconAmber || this.mats.metal);
@@ -671,7 +683,7 @@ export default class LevelKit {
     const spec = new THREE.Mesh(cylGeo(0.3, 0.22, 1.1, 8), this.mats.specimen);
     spec.position.y = -0.1;
     glass.add(spec);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), this.mats.specimen);
+    const head = new THREE.Mesh(sphereGeo(0.26, 10, 8), this.mats.specimen);
     head.position.y = 0.55;
     glass.add(head);
     for (const s of [-0.5, 0.5]) {

@@ -18,42 +18,43 @@
 
 ## 2. Game Concept
 
-**Containment Breach** is a first-person / third-person 3D survival horror game set in a research lab facility. A scientist's experiment to grow a creature goes wrong — the creature breaks free, bites the scientist, and mutates them into a monster. The player is an engineer trying to escape the monster and the collapsing building.
+**Containment Breach** is a first-person / third-person 3D survival horror game set in a research lab facility. The player is an engineer sent to restore auxiliary power. The repair restarts a dangerous culture protocol, ruptures containment and exposes a scientist, transforming them into a monster. The engineer must escape the monster and the collapsing building.
 
 ### Three Levels — Each Genuinely Different
 
 | Level | Theme | Challenge Type | Visual Identity | Custom Shader |
 |---|---|---|---|---|
 | **1 — The Experiment** | Clean lab, everything normal | Exploration — learn the facility, witness the breach | Cool white lighting, clean lab surfaces | — |
-| **2 — The Hunt** | Damaged facility, monster prowling | Stealth + evasion — avoid the monster, navigate damaged corridors | Flickering amber lights, heat distortion | **Heat-haze / ripple** (time + proximity driven) |
-| **3 — The Collapse** | Building self-destructing, monster enraged | Boss fight + timed escape — defeat the monster, run for the exit | Red emergency lighting, pulsing, screen shake | **Dissolve / noise** (game-state driven) |
+| **2 — The Hunt** | Damaged facility, two escaped creatures | Stealth + repair + chase — use cover, isolate pressure, sprint past the second creature | Amber hazard lighting, cool archive screens, green evacuation signs | **Heat-haze / ripple** (time + proximity driven) |
+| **3 — The Collapse** | Entity locks the surface seal | Boss fight + escape — dodge warned charges, shoot three cyan nodes, follow the released route | Red emergency lights, cool fill, cyan targets and green escape guidance | **Dissolve / noise** (time + escape progress driven) |
 
 ### Core Progression
 ```
-Witness → Evade → Fight / Escape
+Repair / Witness → Evade → Fight / Escape
 ```
 Each level reuses the WASD movement controls but changes **what is being tested**.
 
 ### Story
-A scientist is working in a research lab on an experiment to grow a creature in a containment tube. Something goes wrong — the creature breaks free and bites the scientist, mutating them into a monster. The facility's automated failsafe protocol activates, starting a controlled demolition to contain the threat. The player (an engineer) must escape the monster and the collapsing building.
+An engineer answers a routine power fault in Lab A-2. Pulsing the amber relay restores power and resumes the scientist's culture experiment. Brief success turns into overload: the chamber cracks and ruptures, exposing the scientist and causing their transformation. An emergency bypass opens, and green floor lights guide the engineer to the control room. The facility's automated failsafe starts a controlled demolition to contain the threat; the remaining levels test evasion, combat and escape.
 
 ### Win Conditions
 | Level | How You Win |
 |---|---|
-| **1** | Reach the emergency control room before lockdown doors seal you in |
-| **2** | Sneak past the patrolling monster and reach the emergency exit |
-| **3** | Defeat the monster (shoot weak points), then sprint through the collapsing building to the exit |
+| **1** | Repair the amber relay, survive the breach and follow the emergency bypass to the control room |
+| **2** | Cross the crew quarters, shoot both amber pressure valves to release the server-room bypass, then evade the second creature and sprint to the green core-access beacon |
+| **3** | Destroy the cyan chest and shoulder nodes, then follow the green route to the surface exit within the 90-second countdown |
 
 ### The Pulse Tool
 The player carries an engineering pulse device — a handheld tool that fires energy bursts.
 - **Level 1:** Activate terminals, open power couplings, interact with lab equipment
-- **Level 2:** Disable malfunctioning hazards (shoot conduits to stop sparks, valves to stop steam)
-- **Level 3:** Weapon — shoot the monster's glowing weak points, destroy security drones
+- **Level 2:** Override the blue entry relay and isolate both amber pressure valves. Shots draw the creature to their origin; combat is reserved for Level 3.
+- **Level 3:** Shoot the three cyan weak points. Each hit interrupts the creature and removes a node; wind-up and recovery give clear opportunities to dodge and aim.
 
 ### Camera
 - **First-person:** Eye-level view, maximum tension (stealth, shooting, precision)
 - **Third-person:** Behind-the-player view, see the character model (exploration, awareness)
 - Press **V** to toggle between views at any time
+- Press **L** to toggle the flashlight; left click or **F** fires the pulse tool.
 
 ---
 
@@ -156,19 +157,19 @@ src/
 |---|---|---|
 | Full Level 1 geometry (lab corridors, experiment room, control room) | Mlungisi | Not started |
 | Full Level 2 geometry (damaged corridors, hiding spots, monster patrol paths) | Mlungisi | Not started |
-| Full Level 3 geometry (boss arena, collapsing sections, escape route) | Mlungisi | Not started |
+| Full Level 3 geometry (boss arena, collapsing sections, escape route) | Mlungisi | Implemented; arena movement, cover routing and escape checked |
 | Blender models: player character, monster, scientist NPC, lab equipment | Mlungisi | Not started |
 | Monster AI system (patrol, chase, attack states) | Zandile | Not started |
 | Pulse tool (raycasting, energy, cooldown, fire) | Zandile | Not started |
 | Third-person camera rig + V key toggle | Zandile | Not started |
 | Win/lose conditions per level | Zandile | Not started |
 | Level 2 stealth mechanic (detection range, chase trigger) | Zandile + Mlungisi | Not started |
-| Level 3 boss fight logic (weak points, health, phases) | Zandile + Mlungisi | Not started |
+| Level 3 boss fight logic (weak points, health, phases) | Zandile + Mlungisi | Implemented; warned charges, recovery and three-node fight checked |
 | PBR textures (diffuse, normal, roughness maps) | Kutloano | Not started |
 | Refined heat-haze shader (proper UV distortion) | Kutloano | Not started |
 | Refined dissolve shader (3D noise, edge glow) | Kutloano | Not started |
 | Pulse projectile glow shader (energy bolt + trail) | Kutloano | Not started |
-| Monster weak-point glow effects | Kutloano | Not started |
+| Monster weak-point glow effects | Kutloano | Implemented; exposed cyan cores and hit feedback checked |
 | Bump maps on lab surfaces | Kutloano | Not started |
 | Skybox (lab interior / exterior) | Kutloano | Not started |
 | HUD (health bar, energy bar, objective text, timer) | Ronie | Not started |
@@ -208,7 +209,7 @@ src/
 - [ ] PulseTool.js (raycasting, energy, cooldown, fire)
 - [ ] MonsterAI.js (patrol, chase, attack state machine)
 - [ ] Level 2 stealth mechanic (detection range, chase trigger)
-- [ ] Level 3 boss fight logic (weak points, health, phases)
+- [x] Level 3 boss fight logic (weak points, health, phases)
 - [ ] Win/lose trigger system per level
 - [ ] Integration testing with teammates' code
 - [ ] Performance profiling (Chrome DevTools)

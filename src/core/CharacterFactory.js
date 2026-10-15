@@ -66,7 +66,7 @@ export function faceToRotY(face) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _skinTexCache = null;
-let _coatTexCache = null;
+const _coatTexCache = new Map();
 let _bumpTexCache = null;
 
 /** Shared grayscale noise used as a bump map (leather / fabric grain). */
@@ -143,9 +143,9 @@ function skinTextures() {
   return _skinTexCache;
 }
 
-/** Lab coat with old bloodstains — the bite happened before you arrived. */
-function coatTextures() {
-  if (_coatTexCache) return _coatTexCache;
+/** Separate clean scientist and stained monster coat textures. */
+function coatTextures(stained = true) {
+  if (_coatTexCache.has(stained)) return _coatTexCache.get(stained);
   const c = document.createElement('canvas');
   c.width = c.height = 256;
   const ctx = c.getContext('2d');
@@ -158,7 +158,7 @@ function coatTextures() {
     ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
   }
   // Bruise/stain cluster around the chest area.
-  for (let i = 0; i < 26; i++) {
+  for (let i = 0; i < (stained ? 26 : 0); i++) {
     const r = 6 + Math.random() * 22;
     ctx.globalAlpha = 0.14 + Math.random() * 0.24;
     ctx.fillStyle = Math.random() < 0.6 ? '#571d18' : '#3d120f';
@@ -172,8 +172,9 @@ function coatTextures() {
   ctx.globalAlpha = 1;
   const map = new THREE.CanvasTexture(c);
   map.colorSpace = THREE.SRGBColorSpace;
-  _coatTexCache = { map, bump: bumpTexture() };
-  return _coatTexCache;
+  const textures = { map, bump: bumpTexture() };
+  _coatTexCache.set(stained, textures);
+  return textures;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +234,9 @@ export function createEngineer() {
   const { arm: armL, elbow: elbL } = buildArm('l');
   const { arm: armR, elbow: elbR } = buildArm('r');
 
+  const handL = joint(elbL, 0, -0.3, 0);
+  const handR = joint(elbR, 0, -0.3, 0);
+
   // Pulse-tool prop held in the right hand (emissive tip).
   const tool = new THREE.Group();
   tool.position.set(0, -0.32, 0.08);
@@ -252,11 +256,12 @@ export function createEngineer() {
     part(leg, new THREE.BoxGeometry(0.15, 0.34, 0.16), suit, 0, -0.17, 0);
     const knee = joint(leg, 0, -0.34, 0);
     part(knee, new THREE.BoxGeometry(0.13, 0.32, 0.14), suitDark, 0, -0.16, 0);
-    part(knee, new THREE.BoxGeometry(0.14, 0.09, 0.26), boot, 0, -0.36, 0.05);
-    return { leg, knee };
+    const ankle = joint(knee, 0, -0.34, 0);
+    part(ankle, new THREE.BoxGeometry(0.14, 0.09, 0.26), boot, 0, -0.02, 0.05);
+    return { leg, knee, ankle };
   };
-  const { leg: legL, knee: kneeL } = buildLeg('l');
-  const { leg: legR, knee: kneeR } = buildLeg('r');
+  const { leg: legL, knee: kneeL, ankle: ankleL } = buildLeg('l');
+  const { leg: legR, knee: kneeR, ankle: ankleR } = buildLeg('r');
 
   // ── Animation state (closure — no per-frame allocation) ───────────────────
   const TORSO_BASE_Y = 0.9;
@@ -301,7 +306,19 @@ export function createEngineer() {
     head.rotation.y = Math.sin(t * 0.55) * 0.16 * idle;
   };
 
-  return { group, update };
+  return {
+    group, update, tool,
+    torso,
+    legs: {
+      left: { upper: legL, lower: kneeL, hand: ankleL },
+      right: { upper: legR, lower: kneeR, hand: ankleR },
+    },
+    // The engineer is authored facing +Z and is rotated to face -Z in play.
+    arms: {
+      right: { upper: armL, lower: elbL, hand: handL },
+      left: { upper: armR, lower: elbR, hand: handR },
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,11 +328,11 @@ export function createEngineer() {
 export function createScientist() {
   const group = new THREE.Group();
 
-  const coatTex = coatTextures();
+  const coatTex = coatTextures(false);
   const coat = std(0xffffff, {
     roughness: 0.8, metalness: 0.02,
     map: coatTex.map, bumpMap: coatTex.bump, bumpScale: 0.01,
-  }); // bloodstained from the bite — the player walks into the aftermath
+  }); // The scientist starts clean, before the containment failure.
   const coatShade = std(0xc4cad4, { roughness: 0.85, metalness: 0.02, bumpMap: coatTex.bump, bumpScale: 0.01 });
   const trousers = std(0x363d44, { roughness: 0.9 });
   const skin = std(0xbf9f82, { roughness: 0.75, metalness: 0 }); // pallid, clammy
@@ -783,20 +800,20 @@ export function createMonster() {
   const { hip: hipL, knee: kneeL } = buildLeg('l');
   const { hip: hipR, knee: kneeR } = buildLeg('r');
 
-  // ── Weak points — mounted in chitin sockets, same offsets as before ──────
-  // (Gameplay-critical: PulseTool raycasts these exact spheres.)
+  // Weak points mount in sockets on the animated chest and shoulders.
+  // PulseTool still raycasts these spheres; sockets follow their animated joints.
   const wpGeo = new THREE.SphereGeometry(0.28, 10, 10);
-  const socketGeo = new THREE.SphereGeometry(0.32, 8, 8);
+  const socketGeo = new THREE.SphereGeometry(0.25, 8, 8);
   const wpOffsets = [
-    { x: 0, y: 1.6, z: 0.62 },   // chest (front — faces the player in chase)
-    { x: 0.55, y: 0.8, z: 0 },   // right side
-    { x: -0.55, y: 0.8, z: 0 },  // left side
+    { parent: spine, x: 0, y: 0.3, z: 0.3 },    // chest, forward of the ribcage
+    { parent: armR, x: 0.07, y: 0.02, z: 0 },  // right shoulder
+    { parent: armL, x: -0.07, y: 0.02, z: 0 },  // left shoulder
   ];
   const weakPoints = [];
   for (let i = 0; i < 3; i++) {
     const off = wpOffsets[i];
     // Dark chitin socket so the glowing node reads as physically mounted.
-    part(group, socketGeo, chitinDark, off.x * 0.86, off.y, off.z * 0.86);
+    part(off.parent, socketGeo, chitinDark, off.x * 0.86, off.y, off.z * 0.86 - 0.1);
     const wpMat = new THREE.MeshStandardMaterial({
       color: 0xff3333,
       emissive: 0xff3333,
@@ -810,7 +827,7 @@ export function createMonster() {
     wpMesh.userData.pulseType = 'weakpoint';
     wpMesh.userData.weakPointIndex = i;
     wpMesh.userData.destroyed = false;
-    group.add(wpMesh);
+    off.parent.add(wpMesh);
     weakPoints.push(wpMesh);
   }
 

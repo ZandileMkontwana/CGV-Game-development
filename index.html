@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Containment Breach — Research Lab</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <style>
       /* Reset — fills the viewport with no scrollbars */
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -569,20 +570,21 @@
       <div id="debug-keys">Keys: none</div>
       <div id="mute-indicator">[ MUTED ]</div>
       <div id="level-indicator">LEVEL 1</div>
-      <div id="objective"></div>
+      <div id="objective" role="status" aria-live="polite"></div>
+      <div id="pa-caption" role="status" aria-live="polite" hidden></div>
 
       <!-- Pulse Tool energy bar -->
       <div id="energy-bar-wrap">
-        <div id="energy-bar-label">PULSE</div>
-        <div id="energy-bar-bg">
+        <div id="energy-bar-label">PULSE <span id="energy-value">100%</span></div>
+        <div id="energy-bar-bg" role="progressbar" aria-label="Pulse energy" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
           <div id="energy-bar-fill"></div>
         </div>
       </div>
 
       <!-- Health bar -->
       <div id="health-bar-wrap">
-        <div id="health-bar-label">HEALTH</div>
-        <div id="health-bar-bg">
+        <div id="health-bar-label">HEALTH <span id="health-value">100%</span></div>
+        <div id="health-bar-bg" role="progressbar" aria-label="Health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
           <div id="health-bar-fill"></div>
         </div>
       </div>
@@ -600,6 +602,7 @@
       <div id="stealth-vignette"></div>
       <div id="stealth-warning">! DETECTED !</div>
       <div id="stealth-hidden">[ HIDDEN ]</div>
+      <div id="pickup-notice" role="status" aria-live="polite" hidden></div>
 
       <!-- Collapse timer (Level 3) -->
       <div id="collapse-timer">
@@ -609,6 +612,15 @@
 
       <!-- Boss phase indicator (Level 3) -->
       <div id="boss-phase"></div>
+      <div id="boss-status" hidden>
+        <div class="boss-title">ENTITY / THREE NODES</div>
+        <div class="boss-node-list">
+          <span data-weak-node="0">CHEST</span>
+          <span data-weak-node="1">RIGHT</span>
+          <span data-weak-node="2">LEFT</span>
+        </div>
+        <div id="boss-cue"></div>
+      </div>
     </div>
 
     <!-- Main menu -->
@@ -617,13 +629,12 @@
       <div class="subtitle">Research Lab Facility</div>
       <div class="story">
         <p>
-          A scientist&rsquo;s experiment to grow a creature in the containment tube
-          went wrong. The creature broke free and bit the scientist &mdash; mutating
-          them into a monster. The failsafe protocol has already sealed the exits.
+          Auxiliary power is down in Lab A-2. You are the engineer on shift,
+          sent to restore the relay and get the research systems running again.
         </p>
         <p>
-          You are the engineer on shift. Witness the transformation, survive the
-          hunt, and escape the collapse.
+          The maintenance order looks routine. Follow the service route, repair
+          the fault, and find out what the laboratory has been keeping alive.
         </p>
       </div>
       <div class="acts">
@@ -632,22 +643,114 @@
         <span>III &middot; THE COLLAPSE</span>
       </div>
       <button id="btn-start">Start Game</button>
+      <button id="btn-options">Options</button>
       <button id="btn-credits">Credits</button>
-      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB / F PULSE TOOL &middot; E OPEN DOORS &middot; T TORCH &middot; SHIFT SPRINT &middot; SPACE JUMP &middot; V CAMERA &middot; M MUTE</div>
+      <p id="asset-warning" role="status" hidden></p>
+      <div class="menu-controls">WASD MOVE &middot; MOUSE LOOK &middot; LMB / F PULSE TOOL &middot; E OPEN DOORS &middot; SHIFT SPRINT &middot; C CROUCH &middot; SPACE JUMP &middot; V CAMERA &middot; T / L TORCH &middot; M MUTE</div>
     </div>
 
     <!-- Pause menu -->
     <div id="pause-overlay">
       <h2>Paused</h2>
       <button id="btn-resume">Resume</button>
+      <button id="btn-pause-options">Options</button>
       <button id="btn-restart">Restart</button>
       <button id="btn-main-menu">Main Menu</button>
     </div>
 
     <!-- Level transition (hides the rebuild/warm-up stall) -->
-    <div id="transition-overlay"><span id="transition-text">ENTERING NEXT SECTOR…</span></div>
+    <div id="transition-overlay" role="status"><span id="transition-text">ENTERING NEXT SECTOR…</span><p id="transition-objective"></p></div>
 
-    <!-- Game Over / Victory overlay -->
+    <dialog id="options-dialog" aria-labelledby="options-title">
+      <h2 id="options-title">Options</h2>
+      <p class="dialog-intro">Make the facility feel right for you.</p>
+      <label for="volume-setting">Master volume <output id="volume-value" for="volume-setting">65%</output></label>
+      <input id="volume-setting" type="range" min="0" max="100" step="1" value="65" />
+      <label for="music-setting">Music &amp; ambience <output id="music-value" for="music-setting">80%</output></label>
+      <input id="music-setting" type="range" min="0" max="100" step="1" value="80" />
+      <label for="sensitivity-setting">Mouse sensitivity <output id="sensitivity-value" for="sensitivity-setting">1.00×</output></label>
+      <input id="sensitivity-setting" type="range" min="0.5" max="5" step="0.1" value="2" />
+      <p class="dialog-note">Audio levels and sensitivity are saved on this device.</p>
+      <button id="mute-setting" aria-pressed="false">Mute audio</button>
+      <button data-close-dialog autofocus>Back</button>
+    </dialog>
+
+    <dialog id="credits-dialog" aria-labelledby="credits-title">
+      <h2 id="credits-title">Credits</h2>
+      <div id="credits-details">
+      <p class="dialog-intro">Containment Breach · University of the Witwatersrand · CGV group project</p>
+      <h3>The team</h3>
+      <ul>
+        <li><span class="credit-name">Zandile</span> <span class="credit-role">— engine and controls</span></li>
+        <li><span class="credit-name">Mlungisi</span> <span class="credit-role">— levels and models</span></li>
+        <li><span class="credit-name">Kutloano</span> <span class="credit-role">— visuals and shaders</span></li>
+        <li><span class="credit-name">Ronie</span> <span class="credit-role">— UI, sound and deployment</span></li>
+      </ul>
+      <h3>Libraries and tools</h3>
+      <ul>
+        <li><a href="https://threejs.org/" target="_blank" rel="noopener noreferrer">Three.js</a>, including its loaders and post-processing tools — Three.js authors, MIT. <a href="./licenses/three.txt" target="_blank" rel="noopener noreferrer">License</a></li>
+        <li><a href="https://github.com/pmndrs/cannon-es" target="_blank" rel="noopener noreferrer">cannon-es</a> — cannon.js authors and cannon-es contributors, MIT. <a href="./licenses/cannon-es.txt" target="_blank" rel="noopener noreferrer">License</a></li>
+        <li><a href="https://vite.dev/" target="_blank" rel="noopener noreferrer">Vite</a> — Vite contributors, MIT (build tool). <a href="./licenses/vite.txt" target="_blank" rel="noopener noreferrer">License notices</a></li>
+      </ul>
+      <h3>Art and audio</h3>
+      <ul>
+        <li>Facility geometry, procedural characters, textures and soundscape — generated by the project's code.</li>
+        <li>Soldier operator — bundled Three.js example model. Original model author and asset license still need confirmation.</li>
+        <li>Menu background — added by Zandile; original source and license still need confirmation.</li>
+        <li>Temporary facility announcements — project scripts synthesized with Windows System.Speech, Microsoft Zira Desktop voice.</li>
+      </ul>
+      <p class="dialog-note">Additional asset and tutorial credits will be added as their sources are confirmed.</p>
+      </div>
+      <button data-close-dialog autofocus>Back</button>
+    </dialog>
+
+    <!-- Congratulations, followed automatically by the end credits. -->
+    <section id="victory-overlay" class="ending-overlay" aria-labelledby="victory-title" hidden>
+      <div class="ending-card">
+        <div class="escape-emblem" aria-hidden="true">✓</div>
+        <p class="ending-eyebrow">Facility cleared</p>
+        <h1 id="victory-title">Congratulations</h1>
+        <p class="ending-subtitle">You made it out.</p>
+        <p class="ending-message">You survived the containment breach.<br>The facility is behind you.</p>
+        <div class="ending-milestones" aria-label="All three levels completed">
+          <span>Experiment survived</span><span>Hunt evaded</span><span>Collapse escaped</span>
+        </div>
+        <div class="ending-actions">
+          <button id="btn-watch-credits">Watch credits</button>
+          <button id="btn-victory-menu" class="ending-secondary">Main menu</button>
+        </div>
+        <p class="ending-hint">The credits will begin shortly.</p>
+      </div>
+    </section>
+
+    <section id="end-credits-overlay" class="ending-overlay" aria-label="End credits" hidden>
+      <div id="credits-viewport" aria-label="Project credits">
+        <div id="credits-track">
+          <div class="credits-opening">
+            <p class="ending-eyebrow">A CGV group project</p>
+            <h2>Containment<br>Breach</h2>
+            <p>You made it out.</p>
+          </div>
+          <div id="credits-roll-content"></div>
+          <p class="credits-closing">Thank you for playing.</p>
+        </div>
+      </div>
+      <div id="credits-controls">
+        <button id="btn-credits-pause" aria-pressed="false">Pause credits</button>
+        <button id="btn-credits-skip" class="ending-secondary">Skip credits</button>
+      </div>
+      <div id="credits-complete" class="ending-card" hidden>
+        <p class="ending-eyebrow">Containment Breach</p>
+        <h2>Thank you<br>for playing.</h2>
+        <p class="ending-message">You survived. Will you go back in?</p>
+        <div class="ending-actions">
+          <button id="btn-credits-replay">Play again</button>
+          <button id="btn-credits-menu" class="ending-secondary">Main menu</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Game Over overlay -->
     <div id="gameover-overlay">
       <div id="gameover-title">GAME OVER</div>
       <div id="gameover-subtitle"></div>
@@ -658,9 +761,10 @@
     <!-- Loading screen -->
     <div id="loading-screen">
       <div class="loading-text">Loading</div>
-      <div id="loading-bar-container">
+      <div id="loading-bar-container" role="progressbar" aria-label="Loading assets" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div id="loading-bar"></div>
       </div>
+      <p id="loading-status" role="status" aria-live="polite">Preparing the facility…</p>
     </div>
 
     <script type="module" src="./src/main.js"></script>

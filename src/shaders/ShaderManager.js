@@ -31,6 +31,7 @@ export default class ShaderManager {
     this._activeShaders = [];
     this._flickerLights = []; // lights whose intensity pulses each frame
     this._dissolveMaterials = [];
+    this._levelShaders = new Set();
     this._autoCollapse = null; // { t, duration } while active
     this._pulseTrails = [];
   }
@@ -43,29 +44,38 @@ export default class ShaderManager {
     this._flickerLights = [];
 
     // Soft sky/ground fill so unlit surfaces are never pure black.
-    this._addLight(new THREE.HemisphereLight(0xbdd6ff, 0x1a1f26, 0.35));
+    this._addLight(new THREE.HemisphereLight(0xc7e3e5, 0x111d22, 0.28));
 
     // Cool white ambient — well-lit, no harsh shadows.
-    this._addLight(new THREE.AmbientLight(0xddeeff, 0.35));
+    this._addLight(new THREE.AmbientLight(0xe7f0e9, 0.16));
 
     // Main directional light (overhead fluorescents feel).
-    const main = new THREE.DirectionalLight(0xffffff, 1.1);
-    main.position.set(5, 15, 5);
-    this._configureShadow(main, { mapSize: 1024, area: 25, bias: -0.0005 });
+    const main = new THREE.DirectionalLight(0xf0fff8, 0.65);
+    main.position.set(-3, 9, -20);
+    main.target.position.set(0, 0, -25);
+    this._addLight(main.target);
+    this._configureShadow(main, { mapSize: 1024, area: 22, bias: -0.0005 });
     this._addLight(main);
 
     // Fill light from the opposite side — no shadow, just softens contrast.
-    const fill = new THREE.DirectionalLight(0xccddff, 0.3);
+    const fill = new THREE.DirectionalLight(0xc4e6e9, 0.22);
     fill.position.set(-8, 10, -8);
     this._addLight(fill);
 
     // Subtle rim/back light so character silhouettes read against the wall.
-    const rim = new THREE.DirectionalLight(0xffffff, 0.2);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.3);
     rim.position.set(0, 6, -12);
     this._addLight(rim);
+    this._labFill = this._lights.filter(light => light.isLight)
+      .map(light => ({ light, intensity: light.intensity }));
 
     this.scene.background = buildGradientSkybox({ top: '#274056', bottom: '#0a0e14' });
     this.scene.fog = new THREE.Fog(0x0a0e14, 25, 90);
+  }
+
+  /** Dim the normal lab fill when containment fails. */
+  setLabEmergency(active) {
+    for (const entry of this._labFill || []) entry.light.intensity = entry.intensity * (active ? 0.32 : 1);
   }
 
   /** Level 2: flickering amber — station failing, lights unstable. */
@@ -73,25 +83,25 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    this._addLight(new THREE.HemisphereLight(0x554422, 0x0a0602, 0.25));
+    this._addLight(new THREE.HemisphereLight(0x8baab7, 0x080e17, 0.3));
 
     // Dim amber ambient.
-    this._addLight(new THREE.AmbientLight(0x553311, 0.25));
+    this._addLight(new THREE.AmbientLight(0x667c89, 0.2));
 
     // Flickering point lights (simulating failing fixtures). Only one casts
     // a shadow — four shadow-casting point lights would tank frame rate.
     const positions = [
-      [6, 4, 0], [-6, 4, 0], [0, 4, 8], [0, 4, -8],
+      [-4, 2.65, -21], [4, 2.65, -27], [0, 2.65, -35], [-3, 2.65, -46],
     ];
     positions.forEach(([x, y, z], i) => {
-      const light = new THREE.PointLight(0xffaa44, 1.3, 20, 2);
+      const light = new THREE.PointLight(i === 3 ? 0x73c4dc : 0xffaa44, 3.3, 13, 2);
       light.position.set(x, y, z);
       if (i === 0) this._configureShadow(light, { mapSize: 512, bias: -0.001 });
       this._addLight(light);
       // Layered flicker: a slow base pulse plus a fast jitter plus rare
       // total "stutter" drop-outs — reads as failing wiring, not a metronome.
       this._flickerLights.push({
-        light, baseIntensity: 1.3,
+        light, baseIntensity: 3.3,
         speed: 1.5 + Math.random() * 1.5,
         jitterSpeed: 9 + Math.random() * 6,
         seed: Math.random() * 100,
@@ -99,12 +109,12 @@ export default class ShaderManager {
     });
 
     // Warm directional fill.
-    const fill = new THREE.DirectionalLight(0xff8833, 0.35);
+    const fill = new THREE.DirectionalLight(0x9fc8dc, 0.28);
     fill.position.set(3, 10, 5);
     this._addLight(fill);
 
-    this.scene.background = buildGradientSkybox({ top: '#241608', bottom: '#120a04', glow: 'rgba(255,140,40,0.35)' });
-    this.scene.fog = new THREE.Fog(0x120a04, 15, 60);
+    this.scene.background = buildGradientSkybox({ top: '#1a303d', bottom: '#090d14', glow: 'rgba(255,140,40,0.2)' });
+    this.scene.fog = new THREE.Fog(0x090d14, 15, 60);
   }
 
   /** Level 3: red emergency lighting — meltdown, pulsing, heavy fog. */
@@ -112,22 +122,22 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    this._addLight(new THREE.HemisphereLight(0x662211, 0x050000, 0.3));
+    this._addLight(new THREE.HemisphereLight(0x8cb8c8, 0x100707, 0.25));
 
     // Dark red ambient.
-    this._addLight(new THREE.AmbientLight(0x330000, 0.35));
+    this._addLight(new THREE.AmbientLight(0xadc3ca, 0.16));
 
     // Pulsing red point lights — heartbeat-like, in sync-ish but not
     // identical, so the room feels alive rather than strobing uniformly.
     const positions = [
-      [5, 5, 5], [-5, 5, -5], [5, 5, -5], [-5, 5, 5],
+      [-8, 3.4, -18], [8, 3.4, -18], [-8, 3.4, -34], [8, 3.4, -34],
     ];
     positions.forEach(([x, y, z], i) => {
-      const light = new THREE.PointLight(0xff2200, 1.6, 18, 2);
+      const light = new THREE.PointLight(i < 2 ? 0xff7959 : 0xff3828, 3.2, 17, 2);
       light.position.set(x, y, z);
       this._addLight(light);
       this._flickerLights.push({
-        light, baseIntensity: 1.6,
+        light, baseIntensity: 3.2,
         speed: 1.2 + i * 0.15,
         jitterSpeed: 0,
         seed: i * 30,
@@ -136,13 +146,15 @@ export default class ShaderManager {
 
     // Harsh directional from above (emergency spotlights). Only shadow
     // caster in this scene — collapse geometry has enough draw calls already.
-    const spot = new THREE.DirectionalLight(0xff1100, 0.85);
-    spot.position.set(0, 15, 0);
+    const spot = new THREE.DirectionalLight(0xc8dde4, 0.65);
+    spot.position.set(-8, 12, -20);
+    spot.target.position.set(0, 0, -26);
+    this._addLight(spot.target);
     this._configureShadow(spot, { mapSize: 1024, area: 22, bias: -0.0006 });
     this._addLight(spot);
 
     this.scene.background = buildGradientSkybox({ top: '#1a0000', bottom: '#0a0000', glow: 'rgba(255,60,0,0.4)' });
-    this.scene.fog = new THREE.FogExp2(0x0a0000, 0.045); // exponential — thick, claustrophobic
+    this.scene.fog = new THREE.FogExp2(0x10131a, 0.035);
   }
 
   // ── Custom shaders ─────────────────────────────────────────────────────
@@ -371,7 +383,11 @@ export default class ShaderManager {
         varying vec3 vViewDir;
         void main() {
           float pulse = 0.6 + 0.4 * sin(uTime * 4.0);
-          float fresnel = pow(1.0 - max(dot(normalize(vNormal), vViewDir), 0.0), 2.0);
+          float facing = max(dot(normalize(vNormal), normalize(vViewDir)), 0.0);
+          // A compact luminous core leaves the dark socket readable. The
+          // generous underlying raycast sphere still makes aiming forgiving.
+          if (facing < 0.82) discard;
+          float fresnel = pow(1.0 - facing, 2.0);
           vec3 color = uColor * (0.7 + pulse * 0.6 + fresnel * 0.8);
           color += uColor * uHitFlash * 2.0;
           gl_FragColor = vec4(color, 1.0);
@@ -499,10 +515,12 @@ export default class ShaderManager {
   wireLevelVisuals({ heatHazeZones = [], dissolveTargets = [], weakPoints = [] } = {}) {
     for (const zone of heatHazeZones) {
       zone.material = this.createHeatHazeMaterial();
+      this._levelShaders.add(zone.material);
       zone.material.uniforms.uIntensity.value = 0.6;
     }
     for (const wall of dissolveTargets) {
       wall.material = this.createDissolveMaterial(wall.material.color ? wall.material.color.getHex() : 0x555555);
+      this._levelShaders.add(wall.material);
     }
     for (const wp of weakPoints) {
       wp.material = this.createWeakPointGlowMaterial(0xff3333);
@@ -515,6 +533,15 @@ export default class ShaderManager {
     for (const mat of this._dissolveMaterials) {
       mat.uniforms.uDissolveAmount.value = v;
     }
+  }
+
+  /** Release level effects while preserving the tool and monster shaders. */
+  clearLevelVisuals() {
+    for (const material of this._levelShaders) material.dispose();
+    this._activeShaders = this._activeShaders.filter(material => !this._levelShaders.has(material));
+    this._dissolveMaterials = this._dissolveMaterials.filter(material => !this._levelShaders.has(material));
+    this._levelShaders.clear();
+    this.stopAutoCollapse();
   }
 
   /**
@@ -595,6 +622,7 @@ export default class ShaderManager {
       if (light.dispose) light.dispose();
     }
     this._lights = [];
+    this._labFill = [];
   }
 
   _addLight(light) {
@@ -621,6 +649,7 @@ export default class ShaderManager {
 
   /** Free GPU resources for every shader material this manager created. */
   dispose() {
+    this.clearLevelVisuals();
     for (const mat of this._activeShaders) mat.dispose();
     this._activeShaders = [];
     this._dissolveMaterials = [];

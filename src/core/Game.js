@@ -9,11 +9,16 @@ import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
 import { setMaxAnisotropy } from '../shaders/textures.js';
 import UIManager from '../ui/UIManager.js';
+import { PA_ANNOUNCEMENTS } from '../ui/content.js';
 import PulseTool from './PulseTool.js';
 import MonsterAI from './MonsterAI.js';
 import { createScientist, faceToRotY } from './CharacterFactory.js';
 import AudioManager from '../audio/AudioManager.js';
 import PostFX from './PostFX.js';
+import LabOpening from './LabOpening.js';
+import HuntAwareness from './HuntAwareness.js';
+import BossEncounter from './BossEncounter.js';
+import ServerAmbush from './ServerAmbush.js';
 import WeaponViewmodel from './WeaponViewmodel.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
@@ -39,7 +44,17 @@ export default class Game {
     // applies to every procedural texture built from here on.
     setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
     container.appendChild(this.renderer.domElement);
-    if (import.meta.env.DEV) window.__game = this; // dev-only debug handle
+    if (import.meta.env.DEV) {
+      window.__game = this; // dev-only debug handle
+      // TEMP debug level skip: N = next level, 1/2/3 = jump straight to it.
+      // Inside the DEV guard, so production builds strip this.
+      window.addEventListener('keydown', (e) => {
+        if (e.repeat || this.gameState.state !== 'playing') return;
+        if (e.code === 'KeyN') { this.completeLevel(); return; }
+        const n = { Digit1: 1, Digit2: 2, Digit3: 3 }[e.code];
+        if (n) { this.gameState._currentLevel = n - 1; this.completeLevel(); }
+      });
+    }
 
     // --- Scene --------------------------------------------------------------
     this.scene = new THREE.Scene();
@@ -55,14 +70,34 @@ export default class Game {
     pmrem.dispose();
 
     // --- Subsystems ---------------------------------------------------------
+    this.ui = new UIManager();
+    this._assetErrors = [];
+    this.loadingManager = new THREE.LoadingManager();
+    this._assetsReady = new Promise(resolve => { this.loadingManager.onLoad = resolve; });
+    this.loadingManager.onProgress = (_url, loaded, total) => {
+      this.ui.setLoadingProgress(loaded / total * 100, `Loaded ${loaded} of ${total} assets`);
+    };
+    this.loadingManager.onError = url => this._assetErrors.push(url);
+    // Keep the loading batch open until all constructor work is registered.
+    this.loadingManager.itemStart('initialization');
+    this.ui.setLoadingProgress(0, 'Preparing the facility…');
+    const menuImage = new Image();
+    const menuImageUrl = './assets/textures/menu-bg.png';
+    this.loadingManager.itemStart(menuImageUrl);
+    menuImage.onload = () => this.loadingManager.itemEnd(menuImageUrl);
+    menuImage.onerror = () => {
+      this.loadingManager.itemError(menuImageUrl);
+      this.loadingManager.itemEnd(menuImageUrl);
+    };
+    menuImage.src = menuImageUrl;
+
     this.input = new InputManager(this.renderer.domElement);
     this.physics = new PhysicsWorld();
     this.camera = new CameraController(this.scene, this.input);
-    this.player = new PlayerController(this.scene, this.physics, this.input);
+    this.player = new PlayerController(this.scene, this.physics, this.input, this.loadingManager);
     this.gameState = new GameState();
     this.levels = new LevelManager(this.scene, this.physics);
     this.shaders = new ShaderManager(this.scene);
-    this.ui = new UIManager();
 
     // Pulse Tool — energy-based shooting device.
     this.pulseTool = new PulseTool(this.scene, this.camera.camera, this.input);
@@ -76,6 +111,8 @@ export default class Game {
 
     // Monster AI — enemy with PATROL/CHASE/ATTACK state machine.
     this.monster = new MonsterAI(this.scene, this.physics);
+    this.serverMonster = new MonsterAI(this.scene, this.physics);
+    this._parkServerMonster();
 
     this.shaders.wireLevelVisuals({ weakPoints: this.monster.weakPoints });
 
@@ -95,9 +132,6 @@ export default class Game {
     this._l1Reveal = null;
 
     // Level 1 tutorial — controls walkthrough (see _updateTutorial).
-    this._tutorialEl = document.getElementById('tutorial');
-    this._tutorialTextEl = document.getElementById('tutorial-text');
-    this._tutorialSubEl = document.getElementById('tutorial-sub');
     this._tutorialSteps = [
       {
         text: 'WASD — MOVE   ·   SHIFT — SPRINT   ·   SPACE — JUMP',
@@ -108,8 +142,8 @@ export default class Game {
         sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
       },
       {
-        text: 'E — OPEN DOORS AT THE GLOWING PANEL',
-        sub: 'SHOOT GLOWING CONDUITS & VALVES TO SHUT DOWN HAZARDS',
+        text: 'LAB A-2 — PULSE THE AMBER RELAY BESIDE THE CHAMBER',
+        sub: 'YOUR SERVICE CALL: RESTORE AUXILIARY POWER',
       },
       {
         text: 'LISTEN — GROWLS AND YOUR HEARTBEAT MEAN IT IS NEAR',
@@ -136,12 +170,15 @@ export default class Game {
     // --- Resize handler for renderer ----------------------------------------
     window.addEventListener('resize', () => {
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      if (this.gameState.state === 'paused') this._pausedNeedsRender = true;
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.gameState.isPlaying) this.gameState.pause();
     });
 
     // --- Player health ------------------------------------------------------
     this.playerHealth = 100;
     this.playerMaxHealth = 100;
-    this._healthFillEl = document.getElementById('health-bar-fill');
 
     // --- FPS counter --------------------------------------------------------
     this._fpsEl = document.getElementById('fps');
@@ -159,10 +196,14 @@ export default class Game {
     this._hitMarkerEl = document.getElementById('hit-marker');
     this._interactPromptEl = document.getElementById('interact-prompt');
 
+    // Prod builds drop the fps / key debug readouts (main-branch behaviour).
+    if (!import.meta.env.DEV) {
+      this._fpsEl?.remove();
+      this._debugKeysEl?.remove();
+      this._fpsEl = this._debugKeysEl = null;
+    }
+
     // --- Collapse timer (Level 3 escape sequence) -------------------------
-    this._collapseTimerEl = document.getElementById('collapse-timer');
-    this._collapseTimerValueEl = document.getElementById('collapse-timer-value');
-    this._bossPhaseEl = document.getElementById('boss-phase');
     this._collapseTime = 0;          // seconds remaining (0 = not active)
     this._collapseActive = false;    // is the failsafe countdown running?
     this._escapeDoorOpen = false;    // has the exit door been opened?
@@ -172,17 +213,24 @@ export default class Game {
     this._fpsTime = 0;
 
     // --- Audio ---------------------------------------------------------------
-    // Fully procedural horror soundscape (Web Audio) — no asset files.
+    // Procedural horror score/effects plus bundled PA voice clips.
     this.audio = new AudioManager();
+    this.ui.connect(this.audio, this.camera, this.gameState);
+    this.audio.loadAnnouncements(PA_ANNOUNCEMENTS, this.loadingManager);
     this._monsterSeen = false; // one first-sighting sting per level
     this._camPosVec = new THREE.Vector3(); // reused in the sight check
     this._fwdVec = new THREE.Vector3();
+    this._viewRay = new THREE.Raycaster();
+    this._viewDirection = new THREE.Vector3();
+    this._viewHits = [];
+    this._aimPoint = new THREE.Vector3();
 
     // --- Clock --------------------------------------------------------------
     this._clock = new THREE.Clock();
 
     // --- Monster AI events --------------------------------------------------
-    this.monster.on('attack', (damage) => {
+    const receiveAttack = damage => {
+      if (!this.gameState.isPlaying) return;
       this.playerHealth = Math.max(0, this.playerHealth - damage);
       this.camera.shake(0.2); // screen shake on hit
       this.audio.play('attack');
@@ -190,12 +238,14 @@ export default class Game {
       if (this.playerHealth <= 0) {
         this.gameState.gameOver();
       }
-    });
+    };
+    this.monster.on('attack', receiveAttack);
+    this.serverMonster.on('attack', receiveAttack);
 
     this.monster.on('stateChange', (newState, oldState) => {
       // A sharp screech the moment the hunt begins — the classic "it saw me".
       if (newState === 'chase' && oldState !== 'chase') {
-        this.audio.play('spotted');
+        this.audio.play(this.monster.awareness?.searching ? 'growl' : 'spotted');
         this.audio.duck(0.45);
       }
     });
@@ -207,9 +257,10 @@ export default class Game {
       this._flashHitMarker();
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
+      if (target.userData.storyAction === 'restore-lab-power') this._repairLabPower(target);
       // Level 1's creature is a scripted cameo — never killable there.
       if (target.userData.pulseType === 'weakpoint' && this.monster.isActive
-          && this.gameState.currentLevel !== 1) {
+          && this.gameState.currentLevel === 3) {
         // Find the matching weak point mesh on the monster.
         for (const wp of this.monster.weakPoints) {
           if (wp === target) {
@@ -228,16 +279,28 @@ export default class Game {
         this.audio.play('doorOpen');
       }
       if (target.userData.ventId) {
-        this.levels.disableVent(target.userData.ventId);
-        this.audio.play('ventHiss');
+        if (this.levels.disableVent(target.userData.ventId)) {
+          target.material.color.setHex(0x8be6bc);
+          target.material.emissive.setHex(0x47cfa0);
+          this.audio.play('ventHiss');
+        }
       }
     });
 
     // Tutorial: track the first pulse the player fires.
     this.pulseTool.on('fire', () => {
       if (this._tut) this._tut.fired = true;
+      if (this.gameState.currentLevel === 2 && this.monster.isActive
+          && this.monster.position.distanceTo(this.player.position) < 14) {
+        this.monster.awareness.hear(this.player.position.x, this.player.position.z);
+      }
+      if (this.gameState.currentLevel === 2 && this._serverAmbush?.stage === 'chasing'
+          && this.serverMonster.position.distanceTo(this.player.position) < 14) {
+        this.serverMonster.awareness.hear(this.player.position.x, this.player.position.z);
+      }
       this.audio.play('pulseShot');
-      this.weapon.fire();
+      if (this.camera.isFirstPerson) this.weapon.fire();
+      else this.player.heldWeapon.fire();
       this.camera.recoil();
     });
 
@@ -247,6 +310,7 @@ export default class Game {
     });
 
     this.monster.on('death', () => {
+      this.monster.setActive(false);
       // Monster defeated → clear the stealth HUD (frozen vignette otherwise).
       this._clearStealthHUD();
 
@@ -274,17 +338,26 @@ export default class Game {
       this.audio.play('roar');
       this.audio.duck(0.5);
       // Update boss phase HUD.
-      if (this._bossPhaseEl) {
-        const labels = ['', 'PHASE 2 — ENRAGED', 'PHASE 3 — CRITICAL'];
-        this._bossPhaseEl.textContent = labels[phase] || '';
-        this._bossPhaseEl.style.opacity = phase > 0 ? 1 : 0;
-        this.camera.shake(0.3); // screen shake on phase transition
+      this.ui.setBossPhase(0);
+      this.camera.shake(0.3);
+    });
+    this.monster.on('bossCue', stage => {
+      if (this.gameState.currentLevel !== 3) return;
+      if (stage === 'windup') this.audio.play('bossWindup');
+      if (stage === 'pursuit' && !this._bossIntroAnnounced) {
+        this._bossIntroAnnounced = true;
+        this.audio.play('roar');
+        this.ui.showAnnouncement('Entity signature holds the surface seal. Destroy its three exposed nodes to release evacuation.');
+        this.ui.showTutorial(null);
       }
     });
 
     // --- Game state hooks ---------------------------------------------------
-    this.gameState.onChange((newState, oldState) => {
-      if (newState === 'playing' && oldState === 'menu') {
+    this.gameState.onChange((newState, oldState, reason) => {
+      this.ui.setState(newState);
+      if (newState === 'playing') this.postfx.resetFrameTiming();
+      if (newState === 'playing' && (oldState === 'menu' || oldState === 'gameover'
+          || oldState === 'victory' || reason === 'restart')) {
         // Fresh start — load level 1 geometry, lighting, and spawn player.
         this._loadLevel(1);
       }
@@ -292,11 +365,7 @@ export default class Game {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
         this._loadLevel(this.gameState.currentLevel);
-      }
-      if (newState === 'playing' && (oldState === 'gameover' || oldState === 'victory')) {
-        // Retry from the end screen — the level was torn down on game over,
-        // so rebuild it from level 1.
-        this._loadLevel(1);
+        this._transitionNeedsRender = true;
       }
       if (newState === 'gameover') {
         this.audio.play('gameover');
@@ -304,25 +373,35 @@ export default class Game {
         this.audio.stopRumble();
       }
       if (newState === 'victory' || newState === 'menu') {
+        if (newState === 'victory') this.audio.play('win');
         this.audio.stopAmbient();
         this.audio.stopRumble();
       }
-      if (newState === 'menu' || newState === 'gameover') {
-        // Tear down level content when returning to menu.
+      if (newState === 'menu' || newState === 'gameover' || newState === 'victory') {
+        // Release the level while a menu or the ending covers the canvas.
         this.levels._teardown();
+        this.shaders.clearLevelVisuals();
         this.monster.setActive(false);
+        this._parkServerMonster();
         this._scientist.group.visible = false;
         this._l1Reveal = null;
+        this._collapseActive = false;
       }
+      this.audio.setGameState(newState);
     });
   }
 
   /** Kick off the game. */
   start() {
-    // Simulate a brief load (replace with real asset loading later).
-    this.gameState.setLoadingProgress(100);
-    this.gameState.onLoaded();
     this._loop();
+    this.loadingManager.itemEnd('initialization');
+    this._assetsReady.then(() => {
+      this.ui.setLoadingProgress(100, 'Ready');
+      if (this._assetErrors.length) {
+        this.ui.showAssetWarning('Some assets could not load. The game will use available fallbacks; check your connection and reload.');
+      }
+      this.gameState.onLoaded();
+    });
   }
 
   // --- Main loop ------------------------------------------------------------
@@ -344,6 +423,24 @@ export default class Game {
 
   _tick = () => {
     const dt = Math.min(this._clock.getDelta(), 0.2); // cap to avoid spiral
+
+    // Menus/ending use DOM, and pause retains the last rendered gameplay frame.
+    // Prepare a new level once behind its transition screen, rather than
+    // drawing it continuously while the player waits for the next briefing.
+    if (!this.gameState.isPlaying) {
+      if (this.gameState.state === 'levelTransition' && this._transitionNeedsRender) {
+        this.camera.update(0, this.player.position);
+        this.player.syncModel();
+        this.player.setViewMode(this.camera.isFirstPerson);
+        this.postfx.render(0);
+        this._transitionNeedsRender = false;
+      } else if (this.gameState.state === 'paused' && this._pausedNeedsRender) {
+        this.postfx.render(0);
+        this._pausedNeedsRender = false;
+      }
+      this.input.endFrame();
+      return;
+    }
 
     // FPS counter.
     this._frameCount++;
@@ -372,6 +469,8 @@ export default class Game {
       const crouching = this.input.keys['KeyC'] === true;
       this.player.setStance(crouching, aiming);
       this.player.update(dt);
+      this.physics.step(dt);
+      this.player.refreshMovementState();
       this.camera.update(dt, this.player.position, {
         aiming,
         crouching,
@@ -379,10 +478,11 @@ export default class Game {
         sprinting: this.player._charState.sprinting,
         grounded: this.player._charState.grounded,
       });
-      this.physics.step(dt);
       this.shaders.update(dt);
       this.ui.update(dt);
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
+      if (this.gameState.currentLevel === 2) this._updateServerAmbush(dt);
+      this._updateHealthPacks(dt);
 
       // Level 1 scripted beats: mutation reveal, tutorial, scientist NPC.
       this._updateL1Reveal(dt);
@@ -402,7 +502,7 @@ export default class Game {
 
       // Procedural soundscape: footsteps, heartbeat, growls, distant creaks,
       // the creature's own heavy footfalls, and muffled breath while hiding.
-      const mon = this.monster;
+      const mon = this._selectThreatMonster();
       const cs = this.player._charState;
       const mdx = mon.position.x - this.player.position.x;
       const mdz = mon.position.z - this.player.position.z;
@@ -421,7 +521,8 @@ export default class Game {
         mon.isActive,
         this.playerHealth / this.playerMaxHealth,
         mDist,
-        hidingNow
+        hidingNow,
+        mon.body.velocity.x ** 2 + mon.body.velocity.z ** 2 > 0.1
       );
 
       // First time the creature crosses your view — one hard sting per level.
@@ -435,10 +536,17 @@ export default class Game {
         const vlen = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
         const facing = (vx * this._fwdVec.x + vy * this._fwdVec.y + vz * this._fwdVec.z) / vlen;
         if (facing > 0.35) {
-          this._monsterSeen = true;
-          this.audio.play('jumpscare');
-          this.audio.duck(0.85);
-          this.camera.shake(0.9);
+          this._viewDirection.set(vx, vy, vz).normalize();
+          this._viewRay.set(this._camPosVec, this._viewDirection);
+          this._viewRay.far = vlen;
+          this._viewHits.length = 0;
+          this._viewRay.intersectObjects(this.levels.occluders, false, this._viewHits);
+          if (this._viewHits.length === 0) {
+            this._monsterSeen = true;
+            this.audio.play('jumpscare');
+            this.audio.duck(0.85);
+            this.camera.shake(this.gameState.currentLevel === 2 ? 0.35 : 0.9);
+          }
         }
       }
 
@@ -446,26 +554,41 @@ export default class Game {
       // tests against the monster's CURRENT position (MonsterAI.update
       // refreshes its world matrices at the end for exactly this reason).
       if (this.monster.isActive) {
-        this.monster.update(dt, this.player.position);
-        this._updateStealthHUD();
+        if (this.gameState.currentLevel === 2 && this._huntNavVersion !== this.levels.navigationVersion) this._refreshHuntNavigation();
+        this.monster.update(dt, this.player.position, this.player);
       }
+      if (this.gameState.isPlaying && this.serverMonster.isActive) {
+        this.serverMonster.update(dt, this.player.position, this.player);
+      }
+      // An attack can end the game and release the level during this update.
+      if (!this.gameState.isPlaying) {
+        this.input.endFrame();
+        return;
+      }
+      this._updateStealthHUD();
+
+      // Update the animated body and both weapon muzzles before firing.
+      this.player.syncModel();
+      this.player.setViewMode(this.camera.isFirstPerson);
+      if (!this.camera.isFirstPerson) {
+        this.pulseTool.getAimPoint(this._shootables, this._aimPoint);
+        this.player.heldWeapon.update(dt, this.player, this._aimPoint);
+      }
+      this.pulseTool.setMuzzle(this.camera.isFirstPerson ? this.weapon.muzzle : this.player.heldWeapon.muzzle);
 
       // Pulse Tool — fire, raycast, animate bolt/flash, recharge energy.
       // Raycast list includes the monster's body + weak points (see _loadLevel).
       this.pulseTool.update(dt, this._shootables);
+      if (this.gameState.currentLevel === 3 && !this._collapseActive) this.ui.setBossStatus(this.monster.weakPoints, this.monster.boss?.stage);
+      this.audio.setRecharge(this.pulseTool.energy < this.pulseTool.maxEnergy && this.gameState.isPlaying);
+      if (this.gameState.currentLevel === 2) this._updateHunt();
       // Feed the bolt's current position into its fading trail (Kutloano).
       if (this.pulseTool._boltActive) {
         this._pulseTrail.emit(this.pulseTool._bolt.position);
       }
 
       // Update energy bar HUD.
-      if (this._energyFillEl) {
-        const pct = (this.pulseTool.energy / this.pulseTool.maxEnergy) * 100;
-        this._energyFillEl.style.width = pct + '%';
-      }
-      if (this._energyWrapEl) {
-        this._energyWrapEl.classList.toggle('cooldown', this.pulseTool._cooldownTimer > 0);
-      }
+      this.ui.setEnergy(this.pulseTool.energy, this.pulseTool.maxEnergy, this.pulseTool._cooldownTimer > 0);
 
       // Collapse timer countdown (Level 3 escape sequence).
       // (The level-3 win trigger itself is handled by _checkWinTriggers below.)
@@ -474,22 +597,14 @@ export default class Game {
       }
 
       // Check win triggers (player reached objective for this level).
-      this._checkWinTriggers();
+      if (this.gameState.isPlaying) this._checkWinTriggers();
 
       // Door interaction: show the E-prompt near closed doors, open on E.
       this._updateDoorInteraction();
 
       // Update health bar HUD.
-      if (this._healthFillEl) {
-        const pct = (this.playerHealth / this.playerMaxHealth) * 100;
-        this._healthFillEl.style.width = pct + '%';
-      }
+      this.ui.setHealth(this.playerHealth, this.playerMaxHealth);
 
-      // Sync the character model every frame, then apply the view mode:
-      // first-person hides the upper body (legs stay visible looking down),
-      // third-person renders the full operator.
-      this.player.syncModel();
-      this.player.setViewMode(this.camera.isFirstPerson);
     } else {
       // Still update camera so the menu background isn't frozen.
       this.camera.update(dt, this.player.position);
@@ -504,6 +619,7 @@ export default class Game {
 
     this.input.endFrame();
     this.postfx.render(dt);
+    this._transitionNeedsRender = false;
   };
 
   // --- Level loading --------------------------------------------------------
@@ -514,6 +630,12 @@ export default class Game {
    * @param {number} levelNum 1, 2, or 3
    */
   _loadLevel(levelNum) {
+    this.ui.reset();
+    this.ui.setLevel(levelNum);
+    this.audio.stopAnnouncement();
+    this.shaders.clearLevelVisuals();
+    this.postfx.resetFrameTiming();
+    this.postfx.setLevel(levelNum);
     // 1. Build level geometry and physics (Person B's LevelManager).
     this.levels.load(levelNum);
 
@@ -580,30 +702,32 @@ export default class Game {
     // 7. Reset collapse / escape state.
     this._collapseActive = false;
     this._collapseTime = 0;
+    this._collapseVisualProgress = 0;
     this._escapeDoorOpen = false;
-    if (this._collapseTimerEl) {
-      this._collapseTimerEl.classList.remove('active');
-    }
-    if (this._bossPhaseEl) {
-      this._bossPhaseEl.style.opacity = 0;
-      this._bossPhaseEl.style.color = '#ff8844';
-      this._bossPhaseEl.style.textShadow = '0 0 10px #f80';
-    }
+    this.ui.setHealth(this.playerHealth, this.playerMaxHealth);
+    this.ui.setEnergy(this.pulseTool.energy, this.pulseTool.maxEnergy);
 
     // 8. Build the combined PulseTool raycast list: level targets plus the
     //    monster's body meshes (impact feedback on torso shots) and weak
     //    points (damage).
-    this._shootables = this.levels.shootables
-      .concat(this.monster.hitMeshes, this.monster.weakPoints);
+    for (const wp of this.monster.weakPoints) {
+      wp.visible = levelNum === 3;
+      wp.material.uniforms.uColor.value.setHex(levelNum === 3 ? 0x65e7f4 : 0xff3333);
+      if (levelNum === 3) wp.material.uniforms.uColor.value.multiplyScalar(0.45);
+    }
+    this._shootables = this.levels.shootables.concat(this.monster.hitMeshes,
+      levelNum === 3 ? this.monster.weakPoints : []);
 
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
-      1: 'OBJECTIVE: REACH THE CONTROL ROOM — PRESS E AT SEALED DOORS TO OPEN',
-      2: 'OBJECTIVE: SNEAK PAST THE MONSTER — REACH THE EMERGENCY EXIT (HIDE BEHIND COVER)',
-      3: 'OBJECTIVE: DESTROY THE MONSTER\u2019S 3 GLOWING WEAK POINTS',
+      1: 'ENGINEERING CALL: RESTORE AUXILIARY POWER IN LAB A-2 — PULSE THE AMBER RELAY',
+      2: 'SECTOR B / PULSE THE BLUE DOOR RELAY TO ENTER THE EVACUATION ROUTE',
+      3: 'SURFACE SEAL / DESTROY THREE CYAN NODES: CHEST AND BOTH SHOULDERS',
     };
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
+    if (levelNum === 1) this._announce('dispatch');
+    if (levelNum === 2) this._announce('failsafe');
 
     // 10. Level 1 runs the controls tutorial (hints only — no gating).
     if (levelNum === 1) {
@@ -615,7 +739,7 @@ export default class Game {
       this._showTutorialStep(0);
     } else {
       this._tut = null;
-      if (this._tutorialEl) this._tutorialEl.classList.remove('visible');
+      if (levelNum !== 3) this.ui.showTutorial(null);
     }
   }
 
@@ -624,15 +748,18 @@ export default class Game {
    * @param {string} text
    */
   _setObjective(text) {
-    if (this._objectiveEl) this._objectiveEl.textContent = text;
+    this.ui.setObjective(text);
+  }
+
+  _announce(name) {
+    const announcement = PA_ANNOUNCEMENTS[name];
+    this.ui.showAnnouncement(announcement.text);
+    this.audio.playAnnouncement(name);
   }
 
   /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
   _flashHitMarker() {
-    if (!this._hitMarkerEl) return;
-    this._hitMarkerEl.classList.remove('flash');
-    void this._hitMarkerEl.offsetWidth; // force reflow so the animation restarts
-    this._hitMarkerEl.classList.add('flash');
+    this.ui.flashHit();
   }
 
   /**
@@ -672,21 +799,34 @@ export default class Game {
    * @param {number} levelNum
    */
   _setupMonster(levelNum) {
+    this._parkServerMonster();
     const waypoints = this.levels.monsterWaypoints;
+    this.monster.awareness = null;
+    this.monster.boss = null;
+    this.monster._chargeGuide.visible = false;
+    this.monster._aura.color.setHex(0xff2a14);
+    this.monster._aura.intensity = 7;
+    this.monster.patrolSpeed = 2;
+    this.monster.attackCooldown = 1.5;
+    this.monster.model.scale.setScalar(this.monster._modelScale);
+    this.monster.setNavigationObstacles([], null);
     switch (levelNum) {
       case 1:
-        // Scripted cameo only: the bitten scientist mutates into the
+        // Scripted cameo only: the exposed scientist mutates into the
         // creature, which flees into the ducts (see _updateL1Reveal).
         this.monster.spawn(0, -50, 0);      // parked out of play
         this.monster.setPatrolWaypoints([]);
         this.monster.setOccluders(this.levels.occluders);
         this.monster.detectionRange = 0;    // can never detect the player
         this.monster.setActive(false);
-        this._l1Reveal = { phase: 'idle', timer: 0 };
+        this._l1Reveal = new LabOpening(phase => this._onLabPhase(phase));
         return;
       case 2:
+        this.monster.awareness = new HuntAwareness(1.0, 2.75);
+        this._huntBeat = '';
+        this._huntPressureWasReleased = false;
         // Stealth: sweeps the damaged facility between the rebuilt waypoints.
-        this.monster.spawn(-4, 2, -21);
+        this.monster.spawn(-4.8, 0.65, -21);
         if (waypoints.length > 0) {
           this.monster.setPatrolWaypoints(
             waypoints.map(wp => ({ x: wp.x, y: 0, z: wp.z }))
@@ -696,11 +836,16 @@ export default class Game {
         this.monster.setOccluders(this.levels.occluders);
         // Tuning: harder to spot player, gives time to hide.
         this.monster.detectionRange = 10;  // narrower than L1
-        this.monster.escapeTimeout = 6;    // gives up chase faster
-        this.monster.chaseSpeed = 5.5;
-        this.monster.attackDamage = 20;
+        this.monster.escapeTimeout = 2.75;
+        this.monster.patrolSpeed = 1.65;
+        this.monster.chaseSpeed = 4.3;
+        this.monster.attackDamage = 15;
+        this.monster.attackCooldown = 1.8;
+        this._refreshHuntNavigation();
         break;
       case 3:
+        this._bossIntroAnnounced = false;
+        this.monster.boss = new BossEncounter(stage => this.monster._emit('bossCue', stage));
         // Boss fight — arena-wide detection, never gives up the chase.
         this.monster.spawn(0, 2, -25);
         if (waypoints.length > 0) {
@@ -709,143 +854,117 @@ export default class Game {
           );
         }
         this.monster.setOccluders(this.levels.occluders);
+        this.monster.setNavigationObstacles(
+          this.levels._disposables.map(entry => entry.body).filter(Boolean),
+          this.levels.navigationBounds
+        );
         this.monster.detectionRange = 25;  // arena-wide detection
         this.monster.escapeTimeout = 999;  // never gives up chase in boss fight
-        this.monster.chaseSpeed = 5.0;
-        this.monster.attackDamage = 25;
+        this.monster.chaseSpeed = 4.6;
+        this.monster.attackDamage = 22;
+        this.ui.showTutorial({ text: 'CHEST + BOTH SHOULDERS / SHOOT THE CYAN NODES', sub: 'An amber line warns of a charge. Sidestep it, then aim during recovery.' });
         break;
     }
     this.monster.setActive(true);
   }
 
-  /**
-   * Level 1 scripted mutation reveal — a cameo, not a fight.
-   * Timeline when the player reaches the lab:
-   *   1. 'alarm'  — the scientist stops typing and turns toward the player;
-   *                 red glow ramps up with an alarm shake,
-   *   2. 'mutate' — violent convulsions bathed in strobing red light — the
-   *                 body rears up and swells as the change takes hold,
-   *   3. 'burst'  — the scientist is gone: the creature appears in his place
-   *                 at a fraction of its size, facing the player, and
-   *                 visibly swells to full size in the strobe light,
-   *   4. 'flee'   — it lurches along the escape path into the ducts, then
-   *                 deactivates once it reaches the end (body parked).
-   * detectionRange stays 0 the whole time, so it can never chase or attack.
-   * @param {number} dt
-   */
+  /** The player's successful repair starts the containment failure. */
+  _repairLabPower(target) {
+    const opening = this._l1Reveal;
+    if (this.gameState.currentLevel !== 1 || !opening || opening.repaired) return;
+    if (!opening.entered) {
+      this._setObjective('ENTER LAB A-2 FIRST / THEN PULSE THE AMBER RELAY');
+      return;
+    }
+    if (opening.repair()) {
+      target.material.color.setHex(0x87efc5);
+      target.material.emissive.setHex(0x46dfaa);
+    }
+  }
+
+  _onLabPhase(phase) {
+    const reveal = this.levels.scriptedReveal;
+    this.levels.labChamber?.setPhase(phase);
+    if (phase === 'powering') {
+      this.ui.showTutorial(null);
+      this._tut = null;
+      this.audio.play('beep');
+      this._announce('power');
+      this._setObjective('POWER RESTORED / CONTAINMENT SYSTEM RESTARTING');
+    } else if (phase === 'alarm') {
+      this.levels.labEmergency = true;
+      this.shaders.setLabEmergency(true);
+      this._scientistState.mode = 'cower';
+      this._mutateLight.position.set(reveal.spawn.x, 1.3, reveal.spawn.z);
+      this._mutateLight.intensity = 2;
+      this.camera.shake(0.25);
+      this.audio.play('alarm');
+      // The alarm empties the station: staff walkers bolt for the entrance.
+      this.levels.evacuateWalkers();
+      this._announce('breach');
+      this._setObjective('CONTAINMENT FAILURE / STAY CLEAR OF THE CHAMBER');
+    } else if (phase === 'mutate') {
+      this._scientistState.mode = 'mutate';
+      this.audio.play('glassBreak');
+      this.audio.play('transform');
+      this.audio.duck(0.6);
+      this.camera.shake(0.45);
+      this._setObjective('BIOLOGICAL EXPOSURE / GET AWAY FROM THE SCIENTIST');
+    } else if (phase === 'burst') {
+      this._scientist.group.visible = false;
+      this.monster.spawn(reveal.spawn.x, reveal.spawn.y, reveal.spawn.z);
+      for (const wp of this.monster.weakPoints) wp.visible = false;
+      this.monster.setPatrolWaypoints([]);
+      this.monster.setActive(true);
+      this.monster.model.scale.setScalar(0.6 * this.monster._modelScale);
+      this.monster.model.rotation.y = Math.atan2(this.player.position.x - reveal.spawn.x, this.player.position.z - reveal.spawn.z);
+      this.audio.play('roar');
+      this.audio.duck(0.65);
+      this.camera.shake(0.45);
+    } else if (phase === 'flee') {
+      this.monster.model.scale.setScalar(this.monster._modelScale);
+      this.monster.patrolSpeed = 3.2;
+      this.monster.setPatrolWaypoints(reveal.escape.map(point => ({ x: point.x, y: 0, z: point.z })));
+      this.levels.openDoor('l1-lab');
+      for (const guide of this.levels.labRoute) guide.visible = true;
+      this._baseObjective = 'REACH THE CONTROL ROOM / FOLLOW THE GREEN ROUTE AND KEEP LEFT OF THE REACTOR';
+      this._setObjective(this._baseObjective);
+      this._announce('bypass');
+    } else if (phase === 'done') {
+      this.monster.setActive(false);
+      this.monster.model.scale.setScalar(this.monster._modelScale);
+      this.monster.body.position.set(0, -50, 0);
+      this.monster.patrolSpeed = 2;
+      this._mutateLight.intensity = 0;
+      this._setObjective(this._baseObjective);
+    }
+  }
+
+  /** Play the opening while leaving movement/camera control with the player. */
   _updateL1Reveal(dt) {
     const reveal = this.levels.scriptedReveal;
-    const r = this._l1Reveal;
-    if (!reveal || !r || r.phase === 'done') return;
-
-    if (r.phase === 'idle') {
-      // Trigger: player steps into the lab, near the console.
+    const opening = this._l1Reveal;
+    if (!reveal || !opening) return;
+    if (!opening.entered) {
       const dx = this.player.position.x - reveal.trigger.x;
       const dz = this.player.position.z - reveal.trigger.z;
-      if (dx * dx + dz * dz < reveal.trigger.radius * reveal.trigger.radius) {
-        r.phase = 'alarm';
-        r.timer = 0;
-        this._scientistState.mode = 'cower';
-        const anchor = this.levels.npcAnchors && this.levels.npcAnchors.scientist;
-        if (anchor) this._mutateLight.position.set(anchor.x, 1.2, anchor.z);
-        this._mutateLight.intensity = 0.8;
-        this.camera.shake(0.45);
-        this.audio.play('alarm');
-        // The alarm empties the station: every staff walker bolts for the
-        // entrance while the player is locked into the mutation beat.
-        this.levels.evacuateWalkers();
-        this._setObjective('ALARM — SOMETHING IS WRONG WITH THE SCIENTIST');
+      if (dx * dx + dz * dz < reveal.trigger.radius * reveal.trigger.radius && opening.enter()) {
+        this._setObjective('RESTORE AUXILIARY POWER / PULSE THE AMBER RELAY BESIDE THE CHAMBER');
       }
-      return;
     }
-
-    r.timer += dt;
-
-    // The scientist turns to face the player as the change takes hold — the
-    // movement pulls the eye to the console wherever the player is standing.
-    if (r.phase === 'alarm' || r.phase === 'mutate') {
-      const sg = this._scientist.group;
-      const targetYaw = Math.atan2(
-        this.player.position.x - sg.position.x,
-        this.player.position.z - sg.position.z
-      );
-      let d = targetYaw - sg.rotation.y;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      sg.rotation.y += d * Math.min(1, dt * 5);
+    opening.update(dt);
+    this.levels.labChamber?.update(dt);
+    if (['alarm', 'mutate', 'burst'].includes(opening.phase)) {
+      this._mutateLight.intensity = 3 + Math.sin(opening.timer * 4) * 0.8;
+      const scientist = this._scientist.group;
+      const target = Math.atan2(this.player.position.x - scientist.position.x, this.player.position.z - scientist.position.z);
+      scientist.rotation.y += Math.atan2(Math.sin(target - scientist.rotation.y), Math.cos(target - scientist.rotation.y)) * Math.min(1, dt * 4);
     }
-
-    if (r.phase === 'alarm') {
-      // The scientist doubles over — the mutation is taking hold.
-      if (r.timer >= 1.5) {
-        r.phase = 'mutate';
-        r.timer = 0;
-        this._scientistState.mode = 'mutate';
-        this._mutateLight.intensity = 2.0;
-        this.camera.shake(0.6);
-        this.audio.play('transform');
-        this.audio.duck(0.6);
-      }
-      return;
-    }
-
-    if (r.phase === 'mutate') {
-      // Strobing red glow, escalating as the transformation convulses.
-      const k = Math.min(1, r.timer / 2.6);
-      this._mutateLight.intensity = 1.8 + k * 2.2 + Math.sin(r.timer * 28) * (1.2 + k * 0.9);
-      if (r.timer >= 2.6) {
-        r.phase = 'burst';
-        r.timer = 0;
-        // The scientist is gone — the creature appears in his place at a
-        // fraction of its size, facing the player, and swells to full size.
-        this._scientist.group.visible = false;
-        this.monster.spawn(reveal.spawn.x, reveal.spawn.y, reveal.spawn.z);
-        this.monster.setPatrolWaypoints([]); // held in place during the burst
-        this.monster.setActive(true);
-        this.monster.model.scale.setScalar(0.3);
-        this.monster.model.rotation.y = Math.atan2(
-          this.player.position.x - reveal.spawn.x,
-          this.player.position.z - reveal.spawn.z
-        );
-        this.camera.shake(1.0);
-        this.audio.play('roar');
-        this.audio.duck(0.7);
-      }
-      return;
-    }
-
-    if (r.phase === 'burst') {
-      // Grow the creature in front of the player over 0.45 s.
-      const k = Math.min(1, r.timer / 0.45);
-      this.monster.model.scale.setScalar(0.3 + 0.7 * k);
-      this._mutateLight.intensity = 3.2 + Math.sin(r.timer * 46) * 1.6;
-      if (k >= 1) {
-        r.phase = 'flee';
-        r.timer = 0;
-        this.monster.model.scale.setScalar(1); // full size — rest of the game
-        this._mutateLight.intensity = 0;
-        this.monster.patrolSpeed = 3.2;        // panic-lurch, faster than patrol
-        this.monster.setPatrolWaypoints(
-          reveal.escape.map(p => ({ x: p.x, y: 0, z: p.z }))
-        );
-        this._setObjective('THE SCIENTIST IS GONE — PRESS E AT THE DOOR TO CONTINUE');
-      }
-      return;
-    }
-
-    if (r.phase === 'flee') {
-      // Deactivate once it has vanished into the ducts (or as a safety cap).
+    if (opening.phase === 'burst') this.monster.model.scale.setScalar(this.monster._modelScale * (0.6 + 0.4 * Math.min(1, opening.timer / 0.7)));
+    if (opening.phase === 'flee') {
+      this._mutateLight.intensity = Math.max(0, 2 - opening.timer);
       const end = reveal.escape[reveal.escape.length - 1];
-      const edx = this.monster.position.x - end.x;
-      const edz = this.monster.position.z - end.z;
-      if (r.timer > 1.2 && (edx * edx + edz * edz < 2.25 || r.timer > 7)) {
-        r.phase = 'done';
-        this.monster.setActive(false);
-        this.monster.model.scale.setScalar(1);     // safety — never stay small
-        this.monster.body.position.set(0, -50, 0); // park out of play
-        this.monster.patrolSpeed = 2.0;            // restore default tuning
-        this._setObjective(this._baseObjective);   // back to the level goal
-      }
+      if (opening.timer > 1.2 && Math.hypot(this.monster.position.x - end.x, this.monster.position.z - end.z) < 1.5) opening.finishEscape();
     }
   }
 
@@ -855,10 +974,7 @@ export default class Game {
    */
   _showTutorialStep(i) {
     const step = this._tutorialSteps[i];
-    if (!step || !this._tutorialEl) return;
-    this._tutorialTextEl.textContent = step.text;
-    this._tutorialSubEl.textContent = step.sub;
-    this._tutorialEl.classList.add('visible');
+    if (step) this.ui.showTutorial(step);
   }
 
   /**
@@ -869,7 +985,7 @@ export default class Game {
    */
   _updateTutorial(dt) {
     const tut = this._tut;
-    if (!tut || !this._tutorialEl) return;
+    if (!tut) return;
     tut.timer += dt;
 
     // Step 0 goal: player has walked a few metres from the spawn point.
@@ -891,7 +1007,7 @@ export default class Game {
       if (tut.step < this._tutorialSteps.length) {
         this._showTutorialStep(tut.step);
       } else {
-        this._tutorialEl.classList.remove('visible'); // tutorial done
+        this.ui.showTutorial(null);
         this._tut = null;
       }
     }
@@ -903,57 +1019,146 @@ export default class Game {
    * monster getters and sets CSS properties directly.
    */
   _updateStealthHUD() {
-    const m = this.monster;
+    const m = this._selectThreatMonster();
     const threat = m.threatLevel;      // 0..1 proximity
     const seeing = m.canSeePlayer;     // LOS to player
     const chasing = m.state === 'chase' || m.state === 'attack';
 
-    // --- Vignette: red border pulses when monster is near ----------------
-    if (this._stealthVignetteEl) {
-      if (threat > 0.1) {
-        const base = Math.min(threat * 0.7, 0.6);
-        this._stealthVignetteEl.style.setProperty('--vignette-base', base);
-        this._stealthVignetteEl.style.opacity = base;
-        this._stealthVignetteEl.classList.add('pulse');
-      } else {
-        this._stealthVignetteEl.style.opacity = 0;
-        this._stealthVignetteEl.classList.remove('pulse');
-      }
-    }
+    const awareness = m.awareness;
+    const mode = awareness ? (chasing ? awareness.searching ? 'searching' : 'detected'
+      : awareness.exposure > 0 ? 'exposed' : !seeing && threat > 0.1 ? 'hidden' : '') : '';
+    this.ui.setStealth(threat, seeing, this.gameState.currentLevel === 3 ? false : chasing, mode, awareness?.exposure || 0);
+  }
 
-    // --- Warning: "! DETECTED !" flashes when monster sees + chases ------
-    if (this._stealthWarningEl) {
-      if (seeing && chasing) {
-        this._stealthWarningEl.classList.add('active');
-      } else {
-        this._stealthWarningEl.classList.remove('active');
-        this._stealthWarningEl.style.opacity = 0;
-      }
-    }
+  _refreshHuntNavigation() {
+    this.monster.setNavigationObstacles(
+      this.levels._disposables.map(entry => entry.body).filter(body => body && this.physics.world.bodies.includes(body)),
+      this.levels.navigationBounds
+    );
+    this.serverMonster.setNavigationGrid(this.monster.navigationGrid);
+    this._huntNavVersion = this.levels.navigationVersion;
+  }
 
-    // --- Hidden indicator: "[ HIDDEN ]" when behind cover while near ----
-    if (this._stealthHiddenEl) {
-      if (!seeing && threat > 0.2) {
-        this._stealthHiddenEl.style.opacity = 1;
-      } else {
-        this._stealthHiddenEl.style.opacity = 0;
+  _parkServerMonster() {
+    this._serverAmbush = null;
+    this._serverAwareness = null;
+    this.serverMonster.awareness = null;
+    this.serverMonster.setActive(false);
+    this.serverMonster.spawn(0, -50, 0);
+    this.serverMonster.body.aabbNeedsUpdate = true;
+    this.physics.world.broadphase.dirty = true;
+    this.serverMonster.setNavigationGrid(null);
+  }
+
+  _prepareServerMonster() {
+    const spawn = this.levels.serverAmbush;
+    this._serverAmbush = new ServerAmbush(spawn.triggerZ);
+    const monster = this.serverMonster;
+    this._serverAwareness = new HuntAwareness(0.25, 5);
+    monster.awareness = null;
+    monster.spawn(spawn.x, spawn.y, spawn.z);
+    monster.model.rotation.y = 0;
+    monster.setPatrolWaypoints([]);
+    monster.setOccluders(this.levels.occluders);
+    monster.detectionRange = 0;
+    monster.patrolSpeed = 2.2;
+    monster.chaseSpeed = 5.6;
+    monster.attackDamage = 16;
+    monster.attackCooldown = 1.8;
+    monster._aura.color.setHex(0xff984f);
+    monster._aura.intensity = 4;
+    for (const wp of monster.weakPoints) wp.visible = false;
+    monster.setActive(true);
+    this._shootables.push(...monster.hitMeshes);
+  }
+
+  _updateServerAmbush(dt) {
+    const ambush = this._serverAmbush;
+    if (!ambush) return;
+    const door = this.levels._doors.find(entry => entry.id === 'l2-pressure');
+    const before = ambush.stage;
+    ambush.update(dt, door.progress, this.player.position.z);
+    // Until the reveal, both perception and movement stay quiet.
+    this.serverMonster.awareness = ambush.stage === 'chasing' ? this._serverAwareness : null;
+    if (ambush.stage === 'warning' && before !== 'warning') {
+      this.audio.play('roar');
+      this.camera.shake(0.25);
+      this.ui.showAnnouncement('Second entity detected in the archive. Evacuate to core access.');
+      this.ui.showTutorial({ text: 'SECOND CREATURE / RELEASE C AND HOLD SHIFT TO RUN', sub: 'Follow the green signs through the server room to the escape beacon.' });
+    }
+    if (ambush.stage === 'chasing' && before !== 'chasing') {
+      this.serverMonster.awareness = this._serverAwareness;
+      this.serverMonster.awareness.hear(this.player.position.x, this.player.position.z);
+      this.serverMonster.detectionRange = 14;
+    }
+  }
+
+  _selectThreatMonster() {
+    const primary = this.monster;
+    const second = this.serverMonster;
+    if (!second.isActive || this._serverAmbush?.stage !== 'chasing') return primary;
+    const primaryScore = (primary.isActive ? primary.threatLevel : -1)
+      + (primary.canSeePlayer && (primary.state === 'chase' || primary.state === 'attack') ? 2 : 0);
+    const secondScore = second.threatLevel
+      + (second.canSeePlayer && (second.state === 'chase' || second.state === 'attack') ? 2 : 0);
+    return secondScore > primaryScore ? second : primary;
+  }
+
+  _updateHealthPacks(dt) {
+    this.camera.camera.getWorldPosition(this._camPosVec);
+    for (const pack of this.levels.healthPacks) {
+      pack.update(dt, this._camPosVec);
+      const restored = pack.collect(this.player.position, this.playerHealth, this.playerMaxHealth);
+      if (restored > 0) {
+        this.playerHealth += restored;
+        this.audio.play('heal');
+        this.ui.showPickup(`FIRST AID +${restored} / HEALTH ${this.playerHealth}%`);
       }
     }
   }
 
+  /** Local goals and breathing spaces keep the hunt readable. */
+  _updateHunt() {
+    const z = this.player.position.z;
+    const released = this.levels.pressureReleased;
+    if (released && !this._huntPressureWasReleased) {
+      this._huntPressureWasReleased = true;
+      this.audio.play('doorOpen');
+      this.ui.showAnnouncement('Pressure isolated. Server-room bypass released. Follow green evacuation signs.');
+      this._prepareServerMonster();
+    }
+    let isolated = 0;
+    for (const vent of this.levels._steamVents) {
+      if ((vent.id === 'l2-vent-2' || vent.id === 'l2-vent-3') && !vent.active) isolated++;
+    }
+    const entryOpen = this.levels._doors.find(door => door.id === 'l2-entry').opening;
+    const ambushStarted = this._serverAmbush && this._serverAmbush.stage !== 'waiting';
+    const beat = ambushStarted ? z > -52 ? 'ambush' : 'transfer'
+      : !entryOpen ? 'entry' : z > -18 ? 'approach' : z > -30 ? 'quarters'
+      : !released ? `pressure-${isolated}` : z > -40 ? 'bypass' : z > -52 ? 'servers' : 'transfer';
+    if (beat === this._huntBeat) return;
+    const goals = {
+      entry: 'SECTOR B / PULSE THE BLUE DOOR RELAY',
+      approach: 'CREW QUARTERS AHEAD / CROUCH WITH C AND WATCH THE PATROL',
+      quarters: 'CROSS THE CREW QUARTERS / USE LOCKERS TO BREAK LINE OF SIGHT',
+      'pressure-0': 'PRESSURE LOCK / ISOLATE BOTH AMBER VALVES (0/2)',
+      'pressure-1': 'PRESSURE LOCK / ISOLATE THE REMAINING AMBER VALVE (1/2)',
+      bypass: 'PRESSURE ISOLATED / CONTINUE THROUGH THE SERVER-ROOM BYPASS',
+      servers: 'SERVER ROOM / USE THE RACKS AS COVER AND FOLLOW GREEN EXIT SIGNS',
+      ambush: 'SECOND ENTITY / HOLD SHIFT AND FOLLOW THE GREEN ROUTE TO CORE ACCESS',
+      transfer: 'EVACUATION TRANSFER / REACH CORE ACCESS AT THE GREEN BEACON',
+    };
+    this._huntBeat = beat;
+    this._baseObjective = goals[beat];
+    this._setObjective(this._baseObjective);
+    if (beat !== 'ambush') this.ui.showTutorial(['approach', 'quarters'].includes(beat)
+      ? { text: 'C: CROUCH / BREAK SIGHT BEHIND SOLID COVER', sub: 'Walk near green first-aid cases to heal. Shots attract the creature.' } : null);
+    if (beat === 'servers') this.ui.showAnnouncement('Surface lift offline. Evacuation rerouted through containment. Culture archive retained.');
+  }
+
   /** Reset all stealth HUD elements to their hidden/inactive state. */
   _clearStealthHUD() {
-    if (this._stealthVignetteEl) {
-      this._stealthVignetteEl.style.opacity = 0;
-      this._stealthVignetteEl.classList.remove('pulse');
-    }
-    if (this._stealthWarningEl) {
-      this._stealthWarningEl.classList.remove('active');
-      this._stealthWarningEl.style.opacity = 0;
-    }
-    if (this._stealthHiddenEl) {
-      this._stealthHiddenEl.style.opacity = 0;
-    }
+    this.ui.setStealth(0, false, false);
   }
 
   // --- Collapse / Escape sequence (Level 3) ───────────────────────────────
@@ -967,24 +1172,29 @@ export default class Game {
     this._collapseActive = true;
     this._collapseTime = this._collapseDuration;
     this._escapeDoorOpen = true;
+    this._collapseVisualProgress = 0.15;
+    this.shaders.setDissolveAmount(this._collapseVisualProgress);
+    this.levels.revealEscapeRoute();
+    this.ui.setBossStatus(null);
 
     // Open the exit door (remove physics body + hide mesh).
     if (this.levels._exitDoor) {
       this.levels._exitDoor.visible = false;
+      const occluderIndex = this.levels.occluders.indexOf(this.levels._exitDoor);
+      if (occluderIndex >= 0) this.levels.occluders.splice(occluderIndex, 1);
       // Remove the door's physics body so player can walk through.
       const idx = this.levels._disposables.findIndex(
         d => d.mesh === this.levels._exitDoor
       );
       if (idx >= 0 && this.levels._disposables[idx].body) {
-        this.physics.world.removeBody(this.levels._disposables[idx].body);
+        this.physics.removeBody(this.levels._disposables[idx].body);
         this.levels._disposables[idx].body = null;
       }
     }
 
     // Show the collapse timer HUD.
-    if (this._collapseTimerEl) {
-      this._collapseTimerEl.classList.add('active');
-    }
+    this.ui.setCountdown(this._collapseTime, true);
+    this._announce('demolition');
 
     // Screen shake for dramatic effect.
     this.camera.shake(0.5);
@@ -996,12 +1206,7 @@ export default class Game {
     this._lastBeepSec = -1;
 
     // Hide boss phase indicator.
-    if (this._bossPhaseEl) {
-      this._bossPhaseEl.textContent = 'ESCAPE — RUN!';
-      this._bossPhaseEl.style.opacity = 1;
-      this._bossPhaseEl.style.color = '#0f0';
-      this._bossPhaseEl.style.textShadow = '0 0 10px #0f0';
-    }
+    this.ui.setBossPhase(0, true);
 
     // Clear stealth HUD (monster is dead).
     this._clearStealthHUD();
@@ -1020,15 +1225,12 @@ export default class Game {
     // Drive Kutloano's dissolve shader from the real countdown:
     // 0 = intact at the start, 1 = fully dissolved when the timer hits 0.
     const progress = 1 - Math.max(0, this._collapseTime) / this._collapseDuration;
-    this.shaders.setDissolveAmount(progress);
+    const escapeProgress = THREE.MathUtils.clamp((-this.player.position.z - 40) / 17, 0, 1) * 0.85;
+    this._collapseVisualProgress = Math.max(this._collapseVisualProgress, progress, escapeProgress);
+    this.shaders.setDissolveAmount(this._collapseVisualProgress);
 
     // Update HUD.
-    if (this._collapseTimerValueEl) {
-      const secs = Math.max(0, Math.ceil(this._collapseTime));
-      const m = Math.floor(secs / 60);
-      const s = secs % 60;
-      this._collapseTimerValueEl.textContent = m + ':' + String(s).padStart(2, '0');
-    }
+    this.ui.setCountdown(this._collapseTime, true);
 
     // Intensify screen shake as time runs out.
     if (this._collapseTime < 30 && this._collapseTime > 0) {

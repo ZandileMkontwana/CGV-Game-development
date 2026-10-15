@@ -29,11 +29,29 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import LevelKit from './LevelKit.js';
+import StaticBatch from './StaticBatch.js';
+import LabChamber from './LabChamber.js';
+import HealthPack from './HealthPack.js';
 import { getThemeMaterials } from './LevelMaterials.js';
 import { createWorker } from '../core/CharacterFactory.js';
 
 // ── Shared scorch decal texture (created once, kept for the session) ────────
 let _scorchTex = null;
+let _steamTex = null;
+function steamTexture() {
+  if (_steamTex) return _steamTex;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const context = canvas.getContext('2d');
+  const gradient = context.createRadialGradient(32, 32, 2, 32, 32, 31);
+  gradient.addColorStop(0, 'rgba(255,255,255,0.8)');
+  gradient.addColorStop(0.4, 'rgba(255,255,255,0.42)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 64, 64);
+  _steamTex = new THREE.CanvasTexture(canvas);
+  return _steamTex;
+}
 function scorchTexture() {
   if (_scorchTex) return _scorchTex;
   const c = document.createElement('canvas');
@@ -75,6 +93,11 @@ export default class LevelManager {
 
     /** Monster patrol waypoints {x, z} (rebuilt each load). */
     this._monsterWaypoints = [];
+    this.navigationBounds = null;
+    this.navigationVersion = 0;
+    this.healthPacks = [];
+    this.escapeRoute = [];
+    this.serverAmbush = null;
 
     /** Heat-haze zone meshes — ShaderManager swaps in the haze material. */
     this.heatHazeZones = [];
@@ -154,6 +177,18 @@ export default class LevelManager {
       default: throw new Error(`Unknown level: ${levelNum}`);
     }
 
+    const excluded = new Set([
+      ...this._rotatingHazards.map(entry => entry.mesh),
+      ...this._doors.map(entry => entry.mesh),
+      ...this._dissolveWalls,
+      ...this.heatHazeZones,
+      ...this.shootables,
+    ]);
+    const roots = this._disposables.map(entry => entry.mesh)
+      .filter(mesh => mesh?.userData.staticScenery);
+    this._staticBatch = new StaticBatch(this.scene, roots, excluded);
+    this.batchStats = this._staticBatch.stats;
+
     // Collect flicker-capable fixtures (marked in LevelKit's lamp builders)
     // for the horror-lighting driver in update(). Built once per load, so
     // the per-frame driver stays allocation-free.
@@ -176,8 +211,18 @@ export default class LevelManager {
   /** Remove the active level; keep shared kit/material caches alive. */
   _teardown() {
     ++this._levelGeneration;
+    for (const pack of this.healthPacks) pack.dispose();
+    this.healthPacks = [];
+    this.escapeRoute = [];
+    this.serverAmbush = null;
+    this.labChamber?.dispose();
+    this.labChamber = null;
+    this.labEmergency = false;
+    this.labRoute = [];
+    this._staticBatch?.dispose();
+    this._staticBatch = null;
     for (const entry of this._disposables) {
-      if (entry.body) this.physics.world.removeBody(entry.body);
+      if (entry.body) this.physics.removeBody(entry.body);
       const mesh = entry.mesh;
       if (!mesh) continue;
       this.scene.remove(mesh);
@@ -193,6 +238,7 @@ export default class LevelManager {
     this.occluders = [];
     this._winTriggers = [];
     this._monsterWaypoints = [];
+    this.navigationBounds = null;
     this.heatHazeZones = [];
     this._doors = [];
     this._steamVents = [];
@@ -394,6 +440,7 @@ export default class LevelManager {
     for (let i = 0; i < n; i++) {
       const mat = new THREE.SpriteMaterial({
         color: o.color ?? 0xc9d2da, transparent: true, opacity: 0, depthWrite: false,
+        map: steamTexture(), blending: o.rise < 0 ? THREE.AdditiveBlending : THREE.NormalBlending,
       });
       const s = new THREE.Sprite(mat);
       s.scale.set(0.25, 0.25, 1);
@@ -420,7 +467,22 @@ export default class LevelManager {
   /** Disable a steam vent by id (stops particle spawning). */
   disableVent(id) {
     const vent = this._steamVents.find(v => v.id === id);
-    if (vent) vent.active = false;
+    if (!vent || !vent.active) return false;
+    vent.active = false;
+    if (this.currentLevel === 2 && this.pressureReleased) this.openDoor('l2-pressure');
+    return true;
+  }
+
+  get pressureReleased() {
+    let count = 0;
+    for (const vent of this._steamVents) {
+      if ((vent.id === 'l2-vent-2' || vent.id === 'l2-vent-3') && !vent.active) count++;
+    }
+    return count === 2;
+  }
+
+  revealEscapeRoute() {
+    for (const guide of this.escapeRoute) guide.visible = true;
   }
 
   /** Add a rotating hazard mesh (fan blades, spinning debris). */
@@ -559,7 +621,12 @@ export default class LevelManager {
         const y = door.closedY + (door.openY - door.closedY) * door.progress;
         door.mesh.position.y = y;
         door.body.position.y = y;
-        if (door.progress >= 1) this.physics.world.removeBody(door.body);
+        door.body.aabbNeedsUpdate = true;
+        this.physics.world.broadphase.dirty = true;
+        if (door.progress >= 1) {
+          this.physics.removeBody(door.body);
+          this.navigationVersion++;
+        }
       }
     }
 
@@ -588,7 +655,7 @@ export default class LevelManager {
         s.position.y += v.vy[i] * dt;
         const t = v.life[i] / v.lifeSpan;
         s.material.opacity = t * v.alpha;
-        const sc = 0.25 + (1 - t) * 0.55;
+        const sc = v.rise < 0 ? 0.06 + (1 - t) * 0.06 : 0.25 + (1 - t) * 0.55;
         s.scale.set(sc, sc, 1);
       }
     }
@@ -611,6 +678,10 @@ export default class LevelManager {
     // (collapseMode) bursts come thick and fast.
     const haste = this.collapseMode ? 0.22 : 1;
     for (const f of this._flickerLights) {
+      if (this.currentLevel === 1 && !this.labEmergency) {
+        f.light.intensity = f.base;
+        continue;
+      }
       f.timer += dt;
       if (f.burst > 0) {
         f.burst -= dt;
@@ -743,18 +814,20 @@ export default class LevelManager {
     this._monsterWaypoints = []; // L1 monster is a scripted cameo (see below)
 
     // Scripted reveal data (Game.js runs the beat; level just supplies it).
-    // Story beat: the bitten scientist convulses and mutates into the
-    // creature, which then flees into the ducts — the player witnesses it.
+    // Repair restores power, ruptures containment and exposes the scientist.
+    // Game runs the transformation and emergency bypass sequence.
     this.scriptedReveal = {
-      trigger: { x: 0, z: -22.0, radius: 2.8 },   // fires as the player enters the lab
-      spawn: { x: -2.45, y: 1.4, z: -25.25 },      // the scientist's console seat
+      trigger: { x: 0, z: -22.0, radius: 2.8 },   // entering reveals the repair objective
+      spawn: { x: -5.6, y: 0.65, z: -25.2 },
       escape: [                                     // flees toward the SE duct
-        { x: 2.5, z: -27.5 },
+        { x: -5.6, z: -23.4 },
+        { x: -1.5, z: -23.4 },
+        { x: 3.4, z: -27.5 },
         { x: 6.5, z: -30.8 },
       ],
     };
     this.npcAnchors = {
-      scientist: { x: -2.45, z: -25.25, face: 'w' }, // seated, typing at the console
+      scientist: { x: -5.6, z: -25.2, face: 'w' },
     };
 
     // ── Reception (x -5..5, z 0..-10) ─────────────────────────────────────
@@ -772,7 +845,8 @@ export default class LevelManager {
     kit.wallRun(4.0, H, 0.3, -3.3, H / 2, -10.15);
     kit.wallRun(4.0, H, 0.3, 3.3, H / 2, -10.15);
     kit.doorway(2.6, 2.6, 0, 1.3, -10.15, 's');
-    kit.sign(0, 2.4, -0.02, 'n', 'SECTOR A — RECEPTION', { sub: 'CONTAINMENT BREACH PROTOCOL', fg: '#7fe7ff' });
+    kit.sign(0, 2.4, -0.02, 'n', 'SECTOR A / ENGINEERING', { sub: 'SERVICE CALL 09 — LAB A-2', fg: '#bde9e7', w: 3.4 });
+    kit.sign(0, 2.45, -9.97, 's', 'LAB A-2 / AUXILIARY POWER', { sub: 'MAINTENANCE REQUEST — FOLLOW BLUE LINE', fg: '#ffc57c', w: 3.0 });
     kit.consoleDesk(-3.6, -5.0, 'e', { w: 1.8, monitors: 1 });
     kit.crateStack(4.0, -3.2, { w: 1.2, h: 1.2, d: 0.8, rotY: 0.3 });
     kit.crate(4.3, -6.0, { s: 0.7, rotY: 0.4 });
@@ -792,7 +866,7 @@ export default class LevelManager {
     kit.wallRun(0.3, H, 10.3, 2.15, H / 2, -15.15);
     kit.pipeRun('z', 9.5, -1.95, 2.55, -15.15, { count: 2, r: 0.06 });
     kit.cableTray('z', 9.5, 1.95, 2.6, -15.15);
-    kit.sign(0, 2.3, -19.97, 's', 'LAB A-2 ▸', { sub: 'BIOHAZARD LEVEL 2', fg: '#7fe7ff' });
+    kit.sign(0, 2.3, -19.97, 's', 'A-2 / CULTURE RESEARCH', { sub: 'AUXILIARY POWER OFFLINE', fg: '#ffc57c', w: 2.4 });
     kit.fuseBox(-1.94, 1.6, -12.5, 'e');
     kit.ventGrille(-1.95, 2.2, -17.5, 'e', { w: 0.8, h: 0.5 });
     kit.gaugeCluster(-1.96, 1.6, -14.2, 'e');
@@ -820,14 +894,22 @@ export default class LevelManager {
     // The tutorial door: shoot the conduit beside it.
     kit.doorway(2.6, 2.6, 0, 1.3, -32.15, 's');
     this._createDoor('l1-lab', 2.6, 2.6, 0, 1.3, -32.15, 0, m.metalDark);
-    const l1Conduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, -31.96, 'conduit', 0);
-    l1Conduit.userData.doorId = 'l1-lab';
-    kit.sign(0, 2.55, -31.97, 's', 'MAINTENANCE ▸', { sub: 'PRESS E TO OPEN', fg: '#ffd27f' });
+    const l1Conduit = this._shootableTarget(0.65, 0.45, -1.1, 1.3, -24.7, 'conduit', 0);
+    l1Conduit.material.color.setHex(0xffb65b);
+    l1Conduit.material.emissive.setHex(0xff9839);
+    l1Conduit.userData.storyAction = 'restore-lab-power';
+    kit.box(m.metalDark, 0.85, 1.6, 0.38, -1.1, 0.8, -24.88, { physics: true });
+    kit.sign(-1.1, 1.92, -24.67, 's', 'AMBER RELAY', { sub: 'PULSE TO RESTORE POWER', fg: '#ffc57c', w: 1.45, h: 0.45 });
+    kit.sign(0, 2.55, -31.97, 's', 'CONTROL ROOM ▸', { sub: 'EMERGENCY BYPASS — SEALED', fg: '#a9e9c4', w: 2.4 });
 
     // Focal props: containment tube + scientist console + benches.
-    kit.containmentTube(-5.0, -26.0);
-    kit.consoleDesk(-3.4, -25.2, 'e', { w: 1.8, monitors: 2 });
-    kit.chair(-1.55, -25.05, 'w');
+    this.labChamber = new LabChamber(this.scene, -3.6, -26.2);
+    const chamberBody = this.physics.createBox(0, 1.15, 1.4, 1.15, new CANNON.Vec3(-3.6, 1.4, -26.2));
+    this._track(null, chamberBody);
+    kit.consoleDesk(-6.8, -25.2, 'e', { w: 1.8, monitors: 2 });
+    kit.chair(-5.6, -25.2, 'w');
+    kit.sign(-3.6, 2.7, -31.94, 's', '09 / CONTAINMENT BAY', { sub: 'AUTOMATIC CULTURE RESUMPTION ENABLED', fg: '#bde9e7', w: 3.8, h: 0.5 });
+    kit.floorDecal(-3.6, -26.2, 'stripes', { size: 3.5, color: '#d5a04f' });
     kit.labBench(5.6, -23.5, 'w', { len: 2.6 });
     kit.labBench(5.6, -27.5, 'w', { len: 2.6 });
     kit.shelfUnit(-8.2, -22.0, 'e', { w: 1.5 });
@@ -840,14 +922,12 @@ export default class LevelManager {
     kit.crateStack(-7.8, -21.2, { w: 1.4, h: 1.4, d: 0.9 });
     kit.barrel(8.2, -30.5);
     kit.barrel(7.6, -30.8);
-    kit.debrisPile(-8.0, -27.6, { s: 0.8, seed: 11 });
     kit.floorDecal(3.0, -25.0, 'dashes', { size: 2.0 });
     // Ventilation duct along the south wall — the creature escapes here.
     kit.duct('x', 18.3, 0, 2.8, -31.7, { grilles: [-6.5, 6.5] });
     kit.ventGrille(6.5, 2.6, -31.94, 's', { w: 0.9, h: 0.6 });
     // Alarm beacon near containment (the scripted beat's visual anchor).
     kit.lamp(-7.6, -27.5, { y: 2.6, color: 'red', light: false });
-    this._scorchDecal(-5.0, 0, -28.4, 1.6, 0.4);
     // Dust hanging in the lab's overhead light.
     this._dustMotes(70, 0, -26, 6.5, 0.3, 2.7);
 
@@ -983,6 +1063,23 @@ export default class LevelManager {
       { x: -2.2, z: -59.5 }, { x: -2.2, z: -56.5 },
     ]);
 
+    // Green evacuation-route guides, revealed once the creature flees.
+    const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x80edb5, toneMapped: false });
+    this.labRoute = [];
+    for (const [x, z, length, horizontal] of [[0.5, -28.3, 5.8], [0.5, -36.2, 7],
+      [-1.85, -40.5, 4.7, true], [-4.2, -46.5, 12], [-2.1, -52.4, 4.2, true], [0, -53.8, 3], [0, -59.3, 8]]) {
+      const guide = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? length : 0.09, 0.025, horizontal ? 0.09 : length), routeMaterial);
+      guide.position.set(x, 0.035, z);
+      guide.visible = false;
+      guide.userData.ownsGeometry = true;
+      guide.userData.ownsMaterial = this.labRoute.length === 0;
+      this.scene.add(guide);
+      this._track(guide);
+      this.labRoute.push(guide);
+    }
+    kit.sign(-3.8, 2.0, -40.34, 's', 'CONTROL ROOM ◂', { sub: 'KEEP LEFT OF REACTOR', fg: '#9cebc1', w: 2.2 });
+    kit.sign(0, 2.35, -53.97, 's', 'CONTROL / EVACUATION', { sub: 'EMERGENCY EXIT RELEASE', fg: '#9cebc1', w: 2.6 });
+
     // ── Fog ───────────────────────────────────────────────────────────────
     this.fogColor = 0x070b12;
     this.fogNear = 18;
@@ -1002,6 +1099,8 @@ export default class LevelManager {
     const H = 3;
     const kit = this._kit;
     const m = this._mats;
+    this.serverAmbush = { x: 2.6, y: 0.65, z: -43, triggerZ: -39.3 };
+    this.navigationBounds = { minX: -7.5, maxX: 7.5, minZ: -63, maxZ: -1 };
 
     this._winTriggers = [
       { x: 0, z: -62.4, radius: 1.6 }, // emergency exit vestibule
@@ -1010,10 +1109,8 @@ export default class LevelManager {
     // Monster patrol: quarters → maintenance → server room (Game.js reads
     // these and maps them to {x, y: 0, z} patrol points).
     this._monsterWaypoints = [
-      { x: -4, z: -21 }, { x: 4, z: -22 }, { x: 0, z: -26 },
-      { x: 0, z: -31 }, { x: 0, z: -34.5 }, { x: 0, z: -38 },
-      { x: 0, z: -42 }, { x: -4, z: -45.5 }, { x: 4, z: -48 },
-      { x: 0, z: -49.5 },
+      { x: -4.8, z: -21 }, { x: 4.8, z: -23.6 },
+      { x: 0, z: -28 }, { x: -4.8, z: -27.4 },
     ];
 
     // ── Staging bay (x -4..4, z 0..-8) ───────────────────────────────────
@@ -1033,6 +1130,8 @@ export default class LevelManager {
     this._createDoor('l2-entry', 2.6, 2.6, 0, 1.3, -8.15, 0, m.metalDark);
     const l2Conduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, -7.96, 'conduit', 0);
     l2Conduit.userData.doorId = 'l2-entry';
+    kit.sign(1.7, 2.35, -7.88, 's', 'DOOR OVERRIDE', { sub: 'PULSE BLUE RELAY', fg: '#8ce7eb', w: 1.5, h: 0.4 });
+    kit.sign(-4.0, 1.75, -4.2, 'e', 'EVACUATION / SECTOR B', { sub: 'CREW > PRESSURE LOCK > CORE ACCESS', fg: '#b2ebcf', w: 3.0, h: 0.65 });
     kit.sign(0, 2.5, -7.97, 's', 'SECTOR B ▸', { sub: 'STRUCTURAL DAMAGE DETECTED', fg: '#ffb04a' });
     kit.sign(0, 2.3, -0.01, 'n', 'STAGING BAY', { fg: '#ffb04a' });
     kit.crateStack(-2.6, -2.2, { w: 1.6, h: 1.6, d: 1.0, rotY: 0.15 });
@@ -1062,6 +1161,7 @@ export default class LevelManager {
     kit.fallenPanel(1.5, 0.28, -15.5, { rx: 0.4, ry: -0.6 });
     // Big ceiling fan — rotating hazard (visual, atmosphere).
     this._addRotatingHazard(kit.fanBlade(0, 2.45, -13.0, { r: 0.95 }), 5.0);
+    kit.sign(0, 2.45, -17.9, 's', 'KEEP LOW / USE COVER', { sub: 'C: CROUCH   /   SHOTS ATTRACT THE CREATURE', fg: '#a5e5dc', w: 2.5, h: 0.6 });
 
     // ── Crew quarters (x -8..8, z -18..-30) — hiding cover ───────────────
     kit.floorSlab(16.6, 12.0, 0, -24.15, { lines: [{ axis: 'z', len: 9, color: 'warn' }] });
@@ -1088,6 +1188,11 @@ export default class LevelManager {
     kit.lockerBank(-7.4, -27.2, 'e');
     kit.lockerBank(-2.4, -29.4, 'n');
     kit.lockerBank(2.6, -19.2, 'n');
+    kit.lockerBank(-2.7, -22.5, 'n', { count: 5, h: 2.35 });
+    kit.lockerBank(2.7, -26.7, 'n', { count: 5, h: 2.35 });
+    kit.lockerBank(-5.2, -24.4, 'e', { count: 3, h: 2.35 });
+    kit.sign(-2.7, 2.1, -22.18, 's', 'CREW STORAGE / 01', { sub: 'SOLID COVER', fg: '#80cdd2', w: 1.9, h: 0.4 });
+    kit.sign(2.7, 2.1, -26.38, 's', 'CREW STORAGE / 02', { sub: 'SOLID COVER', fg: '#80cdd2', w: 1.9, h: 0.4 });
     kit.bunk(7.0, -21.0, 'w');
     kit.bunk(7.0, -24.5, 'w');
     kit.bunk(7.0, -28.0, 'w');
@@ -1097,8 +1202,8 @@ export default class LevelManager {
     kit.fallenPanel(1.8, 0.3, -26.4, { rx: 0.35, ry: 0.5 });
     kit.cabinet(-6.2, -29.5, 'n');
     kit.shelfUnit(6.8, -29.6, 'n', { w: 1.4, h: 1.8 });
-    kit.canister(0.4, -20.6);
-    kit.canister(0.8, -20.3);
+    kit.canister(6.4, -20.6);
+    kit.canister(6.8, -20.3);
     kit.barrel(5.8, -19.6);
     kit.floorDecal(-3.0, -22.0, 'dashes', { size: 1.6 });
     this._scorchDecal(0.5, 0, -24.0, 1.6);
@@ -1112,7 +1217,7 @@ export default class LevelManager {
     this._flickerLight(0, 2.55, -25.5, 0xffaa66, 1.1, 7);
     this._flickerLight(-6.4, 2.55, -20.5, 0xffaa66, 0.8, 6);
     // Dusty beam through the ceiling gap the fallen panel dropped from.
-    this._lightShaft(1.8, 0.45, -26.4, 2.6, 0xffd9a0, 0.9);
+    // Dust catches the practical lighting without a solid-looking cone.
     this._dustMotes(80, 0, -24, 7, 0.3, 2.8);
 
     // ── Maintenance C2 (x -2..2, z -30..-40) — hazards ───────────────────
@@ -1139,10 +1244,15 @@ export default class LevelManager {
     kit.valveWheel(1.9, 1.2, -33.0, 'w');
     const v2 = this._shootableTarget(0.4, 0.3, 1.94, 1.2, -33.0, 'hazard', -Math.PI / 2);
     v2.userData.ventId = 'l2-vent-2';
+    kit.sign(1.92, 1.9, -33.0, 'w', 'PRESSURE / 01', { sub: 'PULSE AMBER VALVE', fg: '#ffd199', w: 1.3, h: 0.5 });
     this._createSteamVent('l2-vent-3', -1.4, 0.35, -36.6);
     kit.valveWheel(-1.9, 1.2, -36.6, 'e');
     const v3 = this._shootableTarget(0.4, 0.3, -1.94, 1.2, -36.6, 'hazard', Math.PI / 2);
     v3.userData.ventId = 'l2-vent-3';
+    kit.sign(-1.92, 1.9, -36.6, 'e', 'PRESSURE / 02', { sub: 'PULSE AMBER VALVE', fg: '#ffd199', w: 1.3, h: 0.5 });
+    kit.doorway(2.6, 2.6, 0, 1.3, -40.15, 's');
+    this._createDoor('l2-pressure', 2.6, 2.6, 0, 1.3, -40.15, 0, m.metalDark);
+    kit.sign(0, 2.45, -39.96, 's', 'PRESSURE INTERLOCK', { sub: 'ISOLATE BOTH AMBER VALVES TO RELEASE', fg: '#ffc179', w: 2.5, h: 0.55 });
     // Sparking conduit (falling sparks) + heat-haze zones (Kutloano's shader).
     this._createSteamVent('l2-sparks-1', 1.55, 1.9, -34.4, {
       color: 0xffcc66, rate: 0.25, rise: -0.5, lifeSpan: 0.5, count: 8, drift: 0.05, alpha: 0.8,
@@ -1167,18 +1277,25 @@ export default class LevelManager {
     kit.wallRun(0.3, H, 12.3, 8.15, H / 2, -46.15);            // east
     kit.doorway(2.6, 2.6, 0, 1.3, -40.15, 's');
     kit.sign(0, 2.4, -39.98, 's', 'SERVER ROOM ▸', { fg: '#ffb04a' });
+    kit.sign(0, 2.4, -51.97, 's', 'CORE ACCESS >', { sub: 'EVACUATION TRANSFER', fg: '#a4eac1', w: 2.2, h: 0.55 });
     // Two rows of racks facing each other (all occluders → stealth cover).
     for (const rz of [-42.4, -44.6, -46.8, -49.0]) {
       kit.serverRack(-5.6, rz, 'e');
       kit.serverRack(5.6, rz, 'w');
     }
+    for (const x of [-3.1, -2.1]) kit.serverRack(x, -44.0, 'n', { h: 2.35 });
+    for (const x of [2.1, 3.1]) kit.serverRack(x, -48.0, 'n', { h: 2.35 });
+    kit.sign(-2.6, 2.05, -43.45, 's', 'ARCHIVE / 09', { sub: 'CULTURE RETENTION ACTIVE', fg: '#82d2dc', w: 1.6, h: 0.45 });
+    kit.sign(2.6, 2.05, -47.45, 's', 'CORE ACCESS', { sub: 'FOLLOW EVACUATION SIGNS', fg: '#b2ebcf', w: 1.6, h: 0.45 });
+    kit.floorLine(-1.5, -44.5, 3.6, { color: 'exit' });
+    kit.floorLine(1.5, -49.5, 3.4, { color: 'exit' });
     kit.pipeRun('z', 12, 0, 2.65, -46.15, { count: 2, r: 0.07 });
     kit.wallScreen(-7.93, 2.1, -43.5, 'e', { w: 3.0, h: 1.5, alt: true });
     kit.wallScreen(7.93, 2.1, -48.5, 'w', { w: 3.0, h: 1.5 });
     kit.cabinet(-7.6, -41.2, 'e');
     kit.shelfUnit(7.6, -50.8, 'w', { w: 1.4, h: 1.8 });
-    kit.debrisPile(0.8, -51.0, { s: 1.2, seed: 36 });
-    kit.debrisPile(-0.6, -41.2, { s: 0.9, seed: 37 });
+    kit.debrisPile(6.8, -51.0, { s: 0.8, seed: 36 });
+    kit.debrisPile(-6.8, -41.2, { s: 0.7, seed: 37 });
     kit.fallenPanel(-1.5, 0.32, -47.5, { rx: 0.5, ry: 0.9 });
     kit.canister(3.9, -51.4);
     kit.barrel(-7.2, -51.0);
@@ -1215,7 +1332,7 @@ export default class LevelManager {
     kit.wallRun(0.3, H, 6.3, 4.15, H / 2, -61.15);             // east
     kit.doorway(2.6, 2.6, 0, 1.3, -58.15, 's');
     this._exitBeacon(0, -62.5, { radius: 1.7 });
-    kit.sign(0, 2.4, -63.98, 's', 'EMERGENCY EXIT', { sub: 'LIFT TO SURFACE', fg: '#5cff8a' });
+    kit.sign(0, 2.4, -63.98, 's', 'EVACUATION / CORE ACCESS', { sub: 'SURFACE LIFT OFFLINE / USE CONTAINMENT TRANSFER', fg: '#8bebbd', w: 3.4 });
     kit.floorLine(0, -60.0, 6, { color: 'exit' });
     kit.crateStack(3.2, -63.0, { w: 1.2, h: 1.2, d: 0.8, rotY: -0.3 });
     kit.extinguisher(-3.94, 1.2, -59.0);
@@ -1228,6 +1345,12 @@ export default class LevelManager {
     kit.gaugeCluster(2.5, 1.7, -29.96, 's');        // quarters south wall
     kit.radiationMonitor(-3.0, -41.6);              // server room threshold
     kit.gaugeCluster(7.96, 1.7, -45.5, 'w');        // server room east wall
+
+    // Med-kits tucked along the evacuation route (restore 35 health).
+    for (const [x, z] of [[-4.3, -23.8], [1.2, -38.8], [-2.6, -45.5], [1.2, -55.5]]) {
+      this.healthPacks.push(new HealthPack(this.scene, x, z));
+    }
+    kit.sign(-5.2, 2.05, -24.03, 's', 'FIRST AID / COVER', { sub: 'GREEN CASE RESTORES 35 HEALTH', fg: '#9feac0', w: 1.9, h: 0.45 });
 
     // ── Fog ──────────────────────────────────────────────────────────────
     this.fogColor = 0x140a04;
@@ -1247,6 +1370,7 @@ export default class LevelManager {
     const H = 4;
     const kit = this._kit;
     const m = this._mats;
+    for (const x of [-10, 10]) this.healthPacks.push(new HealthPack(this.scene, x, -18.5));
 
     this._winTriggers = [
       { x: 0, z: -56.6, radius: 1.5, needMonsterDead: true },
@@ -1254,9 +1378,10 @@ export default class LevelManager {
 
     // Boss patrol loop around the arena cover.
     this._monsterWaypoints = [
-      { x: -9, z: -17 }, { x: 9, z: -17 }, { x: 9, z: -37 },
-      { x: -9, z: -37 }, { x: 0, z: -27 },
+      { x: -8.5, z: -16 }, { x: 8.5, z: -16 },
+      { x: 8.5, z: -35 }, { x: -8.5, z: -35 },
     ];
+    this.navigationBounds = { minX: -14.5, maxX: 14.5, minZ: -58.5, maxZ: 0.5 };
 
     // ── Entry corridor (x -2..2, z 0..-10) ──────────────────────────────
     kit.floorSlab(4.3, 10.0, 0, -5.15, { lines: [{ axis: 'z', len: 8, color: 'emer' }] });
@@ -1269,7 +1394,8 @@ export default class LevelManager {
     kit.wallRun(4.6, H, 0.3, 0, H / 2, 0.15);                 // north end
     kit.wallRun(0.3, H, 10.3, -2.15, H / 2, -5.15);
     kit.wallRun(0.3, H, 10.3, 2.15, H / 2, -5.15);
-    kit.doorway(2.6, 3.4, 0, 1.7, -10.15, 's');
+    kit.doorway(4.0, 3.4, 0, 1.7, -10.15, 's');
+    kit.sign(0, 2.95, -9.96, 's', 'SURFACE SEAL / ENTITY LOCK', { sub: 'CHEST + SHOULDERS / PULSE CYAN NODES', fg: '#92e1e8', w: 3.6, h: 0.6 });
     kit.sign(0, 3.0, -0.01, 'n', 'CONTAINMENT ARENA ▸', { sub: 'FAILSAFE ARMED', fg: '#ff8f7f' });
     kit.hangingPipe(-1.6, 3.4, -4.0, { tilt: 0.7 });
     kit.debrisPile(1.3, -7.5, { s: 0.8, seed: 41 });
@@ -1286,31 +1412,32 @@ export default class LevelManager {
         { x: 0, z: 0, color: 'red' },
       ],
     });
-    kit.wallRun(13.0, H, 0.3, -7.8, H / 2, -10.15);           // north (entry gap)
-    kit.wallRun(13.0, H, 0.3, 7.8, H / 2, -10.15);
-    kit.wallRun(13.0, H, 0.3, -7.8, H / 2, -42.15);           // south (exit gap)
-    kit.wallRun(13.0, H, 0.3, 7.8, H / 2, -42.15);
+    kit.wallRun(12.3, H, 0.3, -8.15, H / 2, -10.15);          // north (4 m entry gap)
+    kit.wallRun(12.3, H, 0.3, 8.15, H / 2, -10.15);
+    kit.wallRun(12.3, H, 0.3, -8.15, H / 2, -42.15);          // south (4 m exit gap)
+    kit.wallRun(12.3, H, 0.3, 8.15, H / 2, -42.15);
     kit.wallRun(0.3, H, 32.3, -14.15, H / 2, -26.15);         // west
     kit.wallRun(0.3, H, 32.3, 14.15, H / 2, -26.15);          // east
     kit.sign(0, 3.4, -10.32, 'n', 'CONTAINMENT ARENA', { sub: 'CLASS-4 ENTITY — EXTREME CAUTION', fg: '#ff8f7f' });
     // Cover pillars (full height → occluders + colliders).
     for (const [cx, cz] of [
-      [-7, -14], [7, -14], [0, -20], [-11, -22], [11, -22],
+      [-7, -14], [7, -14], [-12, -18], [-11, -22], [11, -22],
       [-7, -31], [7, -31], [-11, -36], [11, -36],
     ]) {
       kit.column(cx, cz, { h: H, r: 0.3 });
     }
     // Machinery + focal props.
     kit.generator(-11.5, -30.0, 'e');
+    kit.sign(-13.94, 2.7, -33, 'e', 'PROTOCOL 09 / CULTURE RETAINED', { sub: 'ENTITY SIGNATURE CONTROLS SURFACE SEAL', fg: '#e5ad87', w: 3.2, h: 0.75 });
     kit.generator(11.5, -16.0, 'w');
     kit.reactorCore(-5, -25.5, { r: 0.8, h: 2.2, light: false });
     kit.reactorCore(5, -25.5, { r: 0.8, h: 2.2, light: false });
-    kit.containmentTube(-3, -38.5, { r: 0.8, h: 2.4, light: false });
+    kit.containmentTube(-3, -39.3, { r: 0.8, h: 2.4, light: false });
     kit.crateStack(-6, -27.0, { w: 1.6, h: 1.6, d: 1.0, rotY: 0.25 });
     kit.crateStack(6, -27.0, { w: 1.6, h: 1.6, d: 1.0, rotY: -0.2 });
-    kit.barrel(-9.5, -27.2);
-    kit.barrel(-9.0, -26.6);
-    kit.barrel(9.5, -27.2);
+    kit.barrel(-10.5, -27.2);
+    kit.barrel(-10.0, -26.6);
+    kit.barrel(10.5, -27.2);
     kit.debrisPile(3.5, -40.5, { s: 1.2, seed: 42 });
     kit.debrisPile(-4.0, -12.5, { s: 1.2, seed: 43 });
     kit.fallenPanel(2.0, 0.4, -33.0, { rx: 0.55, ry: 1.1 });
@@ -1349,20 +1476,20 @@ export default class LevelManager {
     kit.gaugeCluster(13.96, 2.0, -32.0, 'w');       // east wall
 
     // ── Sealed failsafe door 'l3-exit' (opened by Game.js on boss death) ──
-    kit.doorway(2.6, 3.4, 0, 1.7, -42.15, 's');
-    this._exitDoor = this._createDoor('l3-exit', 2.6, 3.4, 0, 1.7, -42.15, 0, m.hazard, { locked: true });
-    kit.sign(0, 3.5, -41.97, 's', 'FAILSAFE SEAL', { sub: 'OPENS ON ENTITY DEATH', fg: '#ff5a3c' });
+    kit.doorway(4.0, 3.4, 0, 1.7, -42.15, 's');
+    this._exitDoor = this._createDoor('l3-exit', 4.0, 3.4, 0, 1.7, -42.15, 0, m.hazard);
+    kit.sign(0, 3.5, -41.97, 's', 'SURFACE EXIT / BIOLOGICAL LOCK', { sub: 'NEUTRALIZE ENTITY TO RELEASE EVACUATION', fg: '#ffad87', w: 3.6, h: 0.6 });
 
-    // ── Escape corridor (x -2..2, z -42..-52) — dissolving ──────────────
-    kit.floorSlab(4.3, 10.0, 0, -47.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
-    kit.ceilingSlab(4.3, 10.0, 0, H, -47.15, { lamps: [{ x: 0, z: 0, color: 'red' }] });
-    kit.wallRun(0.3, H, 10.3, -2.15, H / 2, -47.15);
-    kit.wallRun(0.3, H, 10.3, 2.15, H / 2, -47.15);
-    kit.pipeRun('z', 9.5, -1.95, 2.6, -47.15, { count: 2, r: 0.06 });
-    kit.debrisPile(-1.4, -46.2, { s: 0.9, seed: 44 });
-    kit.debrisPile(1.4, -50.4, { s: 0.8, seed: 45 });
-    kit.fallenPanel(-1.2, 0.35, -48.5, { rx: 0.5, ry: -0.4 });
-    kit.hangingPipe(1.7, 3.3, -50.0, { tilt: 0.7 });
+    // ── Escape corridor (x -3..3, z -42..-52) — clear sprint lane ───────
+    kit.floorSlab(6.3, 10.0, 0, -47.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
+    kit.ceilingSlab(6.3, 10.0, 0, H, -47.15, { lamps: [{ x: 0, z: 0, color: 'red' }] });
+    kit.wallRun(0.3, H, 10.3, -3.15, H / 2, -47.15);
+    kit.wallRun(0.3, H, 10.3, 3.15, H / 2, -47.15);
+    kit.pipeRun('z', 9.5, -2.95, 2.6, -47.15, { count: 2, r: 0.06 });
+    kit.debrisPile(-2.4, -46.2, { s: 0.9, seed: 44 });
+    kit.debrisPile(2.4, -50.4, { s: 0.8, seed: 45 });
+    kit.fallenPanel(-2.2, 0.35, -48.5, { rx: 0.5, ry: -0.4 });
+    kit.hangingPipe(2.7, 3.3, -50.0, { tilt: 0.7 });
     this._scorchDecal(0.5, 0, -44.0, 1.3);
 
     // ── Exit room (x -4..4, z -52..-58) — WIN ────────────────────────────
@@ -1370,12 +1497,12 @@ export default class LevelManager {
     kit.ceilingSlab(8.6, 6.0, 0, H, -55.15, {
       lamps: [{ x: 0, z: 0, color: 'red', light: true, intensity: 0.7 }],
     });
-    kit.wallRun(3.0, H, 0.3, -2.8, H / 2, -52.15);
-    kit.wallRun(3.0, H, 0.3, 2.8, H / 2, -52.15);
+    kit.wallRun(2.3, H, 0.3, -3.15, H / 2, -52.15);
+    kit.wallRun(2.3, H, 0.3, 3.15, H / 2, -52.15);
     kit.wallRun(8.6, H, 0.3, 0, H / 2, -58.15);               // south end
     kit.wallRun(0.3, H, 6.3, -4.15, H / 2, -55.15);           // west
     kit.wallRun(0.3, H, 6.3, 4.15, H / 2, -55.15);            // east
-    kit.doorway(2.6, 3.4, 0, 1.7, -52.15, 's');
+    kit.doorway(4.0, 3.4, 0, 1.7, -52.15, 's');
     this._exitBeacon(0, -57.0, { radius: 1.7 });
     kit.sign(0, 3.2, -57.98, 's', 'EMERGENCY EXIT', { sub: 'SURFACE ACCESS', fg: '#5cff8a' });
     kit.wallScreen(3.93, 2.2, -55.0, 'w', { w: 2.4, h: 1.2 });
@@ -1383,6 +1510,17 @@ export default class LevelManager {
     kit.fallenPanel(-2.0, 0.4, -53.5, { rx: 0.5, ry: 0.6 });
     kit.hangingPipe(-1.8, 3.3, -55.0, { tilt: 0.6 });
     kit.extinguisher(-3.94, 1.2, -53.0);
+    const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x8af0bd, toneMapped: false });
+    for (const [z, length] of [[-26, 30], [-49, 16]]) {
+      const guide = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.02, length), routeMaterial);
+      guide.position.set(0, 0.04, z);
+      guide.visible = false;
+      guide.userData.ownsGeometry = true;
+      guide.userData.ownsMaterial = this.escapeRoute.length === 0;
+      this.scene.add(guide);
+      this._track(guide);
+      this.escapeRoute.push(guide);
+    }
 
     // ── Dissolve targets (Kutloano's shader fades these during collapse) ──
     this._dissolveWalls = [];
@@ -1392,21 +1530,21 @@ export default class LevelManager {
     };
     // Sagging ceiling slabs along the escape corridor.
     for (const dz of [-43.5, -45.5, -47.5, -49.5, -51.5]) {
-      dissolveChunk(4.0, 0.4, 1.8, 0, 3.8, dz);
+      dissolveChunk(6.0, 0.4, 1.8, 0, 3.8, dz);
     }
     // Bulging wall panels (flush with the walls).
     for (const dz of [-44.5, -49.5]) {
-      dissolveChunk(0.35, 3.0, 3.0, -2.15, 1.7, dz);
-      dissolveChunk(0.35, 3.0, 3.0, 2.15, 1.7, dz);
+      dissolveChunk(0.35, 3.0, 3.0, -3.15, 1.7, dz);
+      dissolveChunk(0.35, 3.0, 3.0, 3.15, 1.7, dz);
     }
     // Exit-room ceiling about to come down.
     dissolveChunk(4.0, 0.4, 2.4, 0, 3.8, -54.6);
     dissolveChunk(4.0, 0.4, 2.4, 0, 3.8, -57.0);
 
     // ── Fog ──────────────────────────────────────────────────────────────
-    this.fogColor = 0x100202;
-    this.fogNear = 8;
-    this.fogFar = 42;
+    this.fogColor = 0x10131a;
+    this.fogNear = 12;
+    this.fogFar = 58;
   }
 
   // ── Game.js accessors ─────────────────────────────────────────────────────

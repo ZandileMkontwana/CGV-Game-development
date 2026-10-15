@@ -60,6 +60,8 @@ export default class PulseTool {
     this._raycaster = new THREE.Raycaster();
     this._origin = new THREE.Vector3();
     this._direction = new THREE.Vector3();
+    this._hits = [];
+    this._muzzle = null;
 
     // --- Pulse bolt visual (reusable mesh) ----------------------------------
     // A small emissive sphere that travels from camera to hit point.
@@ -101,9 +103,9 @@ export default class PulseTool {
     this._impactTimer = 0;
     this._impactDuration = 0.3; // seconds the flash/ring stays visible
 
-    // --- Muzzle flash (brief point light at camera) -------------------------
+    // --- Muzzle flash (brief point light at the active weapon's muzzle) -----
     this._muzzleLight = new THREE.PointLight(0x00ddff, 0, 4, 2);
-    camera.add(this._muzzleLight);
+    scene.add(this._muzzleLight);
     this._muzzleTimer = 0;
     this._muzzleDuration = 0.1;
   }
@@ -131,6 +133,26 @@ export default class PulseTool {
     // Reset energy on level load so the player starts full.
     this.energy = this.maxEnergy;
     this._cooldownTimer = 0;
+    this._boltActive = false;
+    this._bolt.visible = false;
+    this._impactTimer = this._muzzleTimer = 0;
+    this._impactRing.visible = false;
+    this._impactLight.intensity = this._muzzleLight.intensity = 0;
+  }
+
+  setMuzzle(muzzle) { this._muzzle = muzzle; }
+
+  /** Keep crosshair targeting consistent while the rifle aims from the body. */
+  getAimPoint(shootables, target) {
+    this.camera.getWorldPosition(this._origin);
+    this.camera.getWorldDirection(this._direction);
+    this._raycaster.set(this._origin, this._direction);
+    this._raycaster.far = 100;
+    this._hits.length = 0;
+    this._raycaster.intersectObjects(shootables, false, this._hits);
+    if (this._hits.length) target.copy(this._hits[0].point);
+    else target.copy(this._origin).addScaledVector(this._direction, 80);
+    return target;
   }
 
   /**
@@ -208,26 +230,24 @@ export default class PulseTool {
     this.energy -= this.shotCost;
     this._cooldownTimer = this.cooldown;
 
-    // Build ray from camera centre.
-    this.camera.getWorldPosition(this._origin);
-    this.camera.getWorldDirection(this._direction);
-    this._raycaster.set(this._origin, this._direction);
-    this._raycaster.far = 100; // max range: 100 m
+    this.getAimPoint(shootables, this._boltEnd);
+    if (this._muzzle) this._muzzle.getWorldPosition(this._boltStart);
+    else this._boltStart.copy(this._origin);
+    this._bolt.position.copy(this._boltStart);
 
     // --- Muzzle flash -------------------------------------------------------
     this._muzzleLight.intensity = 4;
+    this._muzzleLight.position.copy(this._boltStart);
     this._muzzleTimer = this._muzzleDuration;
 
     // --- Raycast against shootable targets ----------------------------------
-    const hits = this._raycaster.intersectObjects(shootables, false);
+    const hits = this._hits;
 
     if (hits.length > 0) {
       const hit = hits[0];
       const target = hit.object;
 
-      // Animate bolt from camera to hit point.
-      this._boltStart.copy(this._origin);
-      this._boltEnd.copy(hit.point);
+      // Animate bolt from the visible weapon to the crosshair's hit point.
       this._boltT = 0;
       this._boltActive = true;
       this._bolt.visible = true;
@@ -250,8 +270,6 @@ export default class PulseTool {
       this._emit('hit', target);
     } else {
       // Miss — bolt travels to max range in the shot direction.
-      this._boltStart.copy(this._origin);
-      this._boltEnd.copy(this._origin).addScaledVector(this._direction, 80);
       this._boltT = 0;
       this._boltActive = true;
       this._bolt.visible = true;
@@ -284,6 +302,6 @@ export default class PulseTool {
     this.scene.remove(this._bolt);
     this.scene.remove(this._impactLight);
     this.scene.remove(this._impactRing);
-    this.camera.remove(this._muzzleLight);
+    this.scene.remove(this._muzzleLight);
   }
 }
