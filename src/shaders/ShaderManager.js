@@ -43,14 +43,17 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    // Soft sky/ground fill so unlit surfaces are never pure black.
-    this._addLight(new THREE.HemisphereLight(0xc7e3e5, 0x111d22, 0.28));
+    // Soft sky/ground fill so unlit surfaces are never pure black. Kept
+    // deliberately low: the room's ceiling practicals (LevelKit.lamp) must
+    // read as the dominant sources, leaving genuine dark corners between them.
+    this._addLight(new THREE.HemisphereLight(0xc7e3e5, 0x111d22, 0.16));
 
-    // Cool white ambient — well-lit, no harsh shadows.
-    this._addLight(new THREE.AmbientLight(0xe7f0e9, 0.16));
+    // Cool white ambient — just enough to lift the deepest shadow without
+    // washing the scene flat (was 0.16, which erased all contrast).
+    this._addLight(new THREE.AmbientLight(0xe7f0e9, 0.06));
 
     // Main directional light (overhead fluorescents feel).
-    const main = new THREE.DirectionalLight(0xf0fff8, 0.65);
+    const main = new THREE.DirectionalLight(0xf0fff8, 0.72);
     main.position.set(-3, 9, -20);
     main.target.position.set(0, 0, -25);
     this._addLight(main.target);
@@ -58,12 +61,12 @@ export default class ShaderManager {
     this._addLight(main);
 
     // Fill light from the opposite side — no shadow, just softens contrast.
-    const fill = new THREE.DirectionalLight(0xc4e6e9, 0.22);
+    const fill = new THREE.DirectionalLight(0xc4e6e9, 0.12);
     fill.position.set(-8, 10, -8);
     this._addLight(fill);
 
     // Subtle rim/back light so character silhouettes read against the wall.
-    const rim = new THREE.DirectionalLight(0xffffff, 0.3);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.2);
     rim.position.set(0, 6, -12);
     this._addLight(rim);
     this._labFill = this._lights.filter(light => light.isLight)
@@ -83,10 +86,10 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    this._addLight(new THREE.HemisphereLight(0x8baab7, 0x080e17, 0.3));
+    this._addLight(new THREE.HemisphereLight(0x8baab7, 0x080e17, 0.22));
 
     // Dim amber ambient.
-    this._addLight(new THREE.AmbientLight(0x667c89, 0.2));
+    this._addLight(new THREE.AmbientLight(0x667c89, 0.13));
 
     // Flickering point lights (simulating failing fixtures). Only one casts
     // a shadow — four shadow-casting point lights would tank frame rate.
@@ -122,10 +125,10 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    this._addLight(new THREE.HemisphereLight(0x8cb8c8, 0x100707, 0.25));
+    this._addLight(new THREE.HemisphereLight(0x8cb8c8, 0x100707, 0.17));
 
     // Dark red ambient.
-    this._addLight(new THREE.AmbientLight(0xadc3ca, 0.16));
+    this._addLight(new THREE.AmbientLight(0xadc3ca, 0.1));
 
     // Pulsing red point lights — heartbeat-like, in sync-ish but not
     // identical, so the room feels alive rather than strobing uniformly.

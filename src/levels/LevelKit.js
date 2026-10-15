@@ -239,7 +239,11 @@ export default class LevelKit {
     if (o.light !== false) {
       const c = colorName === 'amber' ? this.mats.colors.warn
         : colorName === 'red' ? this.mats.colors.emer : this.mats.colors.lampLight;
-      const light = new THREE.PointLight(c, o.intensity || 0.9, 11, 2);
+      // Physical light units (three r155+): the authored 0.7–0.9 values only
+      // read as decorative once ambient is present. A gain lifts each fixture
+      // into a real warm pool that spills down the walls, with dark between.
+      const gain = o.gain || 2.8;
+      const light = new THREE.PointLight(c, (o.intensity || 0.9) * gain, o.distance || 12, 2);
             light.userData.flicker = true;
       light.position.set(x, y - 0.35, z);
       this.scene.add(light);

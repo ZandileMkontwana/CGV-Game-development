@@ -61,7 +61,7 @@ const GradeShader = {
       float luma = dot(col, vec3(0.299, 0.587, 0.114));
       col = mix(col, vec3(luma), 0.12);
       col *= vec3(0.96, 1.0, 1.05);
-      col = pow(max(col, 0.0), vec3(1.05));
+      col = pow(max(col, 0.0), vec3(1.09));
 
       // Danger: red pulse creeping in from the screen edges.
       float pulse = 0.5 + 0.5 * sin(uTime * 6.0);
@@ -135,9 +135,12 @@ export default class PostFX {
 
   setLevel(level) {
     const uniforms = this.grade.uniforms;
-    uniforms.uGrain.value = level === 1 ? 0.012 : level === 2 ? 0.025 : 0.03;
+    uniforms.uGrain.value = level === 1 ? 0.016 : level === 2 ? 0.025 : 0.03;
     uniforms.uAberration.value = level === 1 ? 0.0004 : 0.0008;
-    uniforms.uVignette.value = level === 1 ? 0.34 : 0.55;
+    // Level 1 gets a stronger vignette now that its lighting has real
+    // falloff — the frame edge closing in sells the industrial, oppressive
+    // tone without simply darkening the whole image.
+    uniforms.uVignette.value = level === 1 ? 0.44 : 0.55;
   }
 
   /** Do not treat level construction, shader warm-up or resume as GPU load. */

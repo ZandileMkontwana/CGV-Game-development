@@ -689,8 +689,11 @@ export function getThemeMaterials(themeName) {
   const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5, kinds: t.screenKinds });
   const screenTex2 = screenTexture({ ...t.screen, seed: t.seed + 6, kinds: t.screenKinds });
 
-  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.45 : 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
-  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 0.6 : 1.8, roughnessBase: themeName === 'lab' ? 0.85 : 0.7, roughnessVariance: themeName === 'lab' ? 0.12 : 0.4 });
+  // Surface relief: stronger bump + more roughness variance makes the panel
+  // seams, rivets and floor grout catch the practical lights (Alien: Isolation
+  // style depth) instead of reading as smooth, flat grey boxes.
+  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.95 : 1.3, roughnessBase: 0.55, roughnessVariance: themeName === 'lab' ? 0.42 : 0.3 });
+  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 1.05 : 1.8, roughnessBase: themeName === 'lab' ? 0.82 : 0.7, roughnessVariance: themeName === 'lab' ? 0.22 : 0.4 });
   const propPBR = buildPBRMaps({ seed: t.seed + 30, repeat: [2, 2], bumpStrength: 1.2, roughnessBase: 0.65, roughnessVariance: 0.3 });
 
   const std = (opts) => new THREE.MeshStandardMaterial(opts);

@@ -39,7 +39,9 @@ export default class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    // Filmic curve slightly lifted so the localized practical lamps read as
+    // real bright sources instead of being flattened by the global fill.
+    this.renderer.toneMappingExposure = 1.06;
     // Sharpen floor/wall detail at grazing angles (long-corridor views) —
     // applies to every procedural texture built from here on.
     setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
@@ -63,10 +65,12 @@ export default class Game {
     this.scene.fog = new THREE.Fog(0x0a0a0a, 20, 80);
 
     // Image-based lighting: metals (rifle) and PBR characters render black
-    // and flat without reflections. Kept dim so the horror grade survives.
+    // and flat without reflections. Raised from a barely-there level so the
+    // high-metalness facility surfaces (panels, beams, pipes) pick up real
+    // reflection sheen — the "convincing metal" look, not flat grey boxes.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.25;
+    this.scene.environmentIntensity = 0.45;
     pmrem.dispose();
 
     // --- Subsystems ---------------------------------------------------------
