@@ -263,12 +263,13 @@ export default class Game {
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       if (target.userData.storyAction === 'restore-lab-power') this._repairLabPower(target);
-      // Level 1's creature is a scripted cameo — never killable there.
-      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive
-          && this.gameState.currentLevel === 3) {
-        // Find the matching weak point mesh on the monster.
+      // The creature is killable from the hunt (L2) onward. Level 1's creature
+      // is a scripted cameo — shots there must not cut the reveal short.
+      const monsterHit = this.gameState.currentLevel >= 2 && this.monster.isActive;
+      if (monsterHit && target.userData.pulseType === 'weakpoint') {
+        // A shot into an exposed culture sac ruptures it outright.
         for (const wp of this.monster.weakPoints) {
-          if (wp === target) {
+          if (wp === target && !wp.userData.destroyed) {
             this.monster.damageWeakPoint(wp);
             this.shaders.flashWeakPoint(wp); // reactive glow flash on hit
             // Remove the destroyed weak point from the raycast list so
@@ -277,6 +278,16 @@ export default class Game {
             if (idx >= 0) this._shootables.splice(idx, 1);
             break;
           }
+        }
+      } else if (monsterHit && target.userData.pulseType === 'monsterBody') {
+        // Body shots wound it — enough of them rupture the next live node, so
+        // the creature always dies even when the player can't hit a growth.
+        this.audio.play('growl', 0.55);
+        const ruptured = this.monster.damageBody(1);
+        if (ruptured) {
+          this.shaders.flashWeakPoint(ruptured);
+          const idx = this._shootables.indexOf(ruptured);
+          if (idx >= 0) this._shootables.splice(idx, 1);
         }
       }
       if (target.userData.doorId) {
@@ -331,6 +342,7 @@ export default class Game {
         this._setObjective('THREAT NEUTRALIZED — REACH THE CONTROL ROOM');
       } else if (this.gameState.currentLevel === 2) {
         this._setObjective('THREAT NEUTRALIZED — REACH THE EMERGENCY EXIT');
+        this.ui.showAnnouncement('Entity down. Sector B reads clear — continue to core access.');
       }
 
       // Monster defeated → start the failsafe collapse countdown.
@@ -725,12 +737,14 @@ export default class Game {
     //    monster's body meshes (impact feedback on torso shots) and weak
     //    points (damage).
     for (const wp of this.monster.weakPoints) {
-      wp.visible = levelNum === 3;
+      // Exposed culture sacs are the efficient kill, so they are visible AND
+      // shootable from the hunt (L2) onward. Level 1's cameo keeps them hidden.
+      wp.visible = levelNum >= 2;
       wp.material.uniforms.uColor.value.setHex(levelNum === 3 ? 0x65e7f4 : 0xff3333);
       if (levelNum === 3) wp.material.uniforms.uColor.value.multiplyScalar(0.45);
     }
     this._shootables = this.levels.shootables.concat(this.monster.hitMeshes,
-      levelNum === 3 ? this.monster.weakPoints : []);
+      levelNum >= 2 ? this.monster.weakPoints : []);
 
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
@@ -921,6 +935,8 @@ export default class Game {
         this.monster.chaseSpeed = 4.3;
         this.monster.attackDamage = 15;
         this.monster.attackCooldown = 1.8;
+        // It dies to aimed sac shots or a slower stream of body shots.
+        this.monster.bodyShotsPerNode = 2;
         this._refreshHuntNavigation();
         break;
       case 3:
@@ -942,6 +958,7 @@ export default class Game {
         this.monster.escapeTimeout = 999;  // never gives up chase in boss fight
         this.monster.chaseSpeed = 4.6;
         this.monster.attackDamage = 22;
+        this.monster.bodyShotsPerNode = 3; // the boss absorbs more punishment
         this.ui.showTutorial({ text: 'CHEST + BOTH SHOULDERS / SHOOT THE CYAN NODES', sub: 'An amber line warns of a charge. Sidestep it, then aim during recovery.' });
         break;
     }
