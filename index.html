@@ -357,6 +357,102 @@
         transition: width 0.2s ease;
       }
 
+      /* Pre-level briefing overlay */
+      #briefing-overlay {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.88);
+        z-index: 20;
+        font-family: 'Courier New', monospace;
+      }
+      #briefing-level {
+        font-size: 12px;
+        letter-spacing: 6px;
+        color: #6f8ba1;
+        margin-bottom: 6px;
+      }
+      #briefing-title {
+        font-size: 42px;
+        font-weight: bold;
+        letter-spacing: 8px;
+        color: #e4f2ff;
+        text-shadow: 0 0 24px rgba(0, 170, 255, 0.35);
+        margin-bottom: 24px;
+      }
+      #briefing-narrative {
+        max-width: 520px;
+        text-align: center;
+        margin-bottom: 28px;
+      }
+      #briefing-narrative p {
+        font-size: 12px;
+        line-height: 1.8;
+        letter-spacing: 1.5px;
+        color: #8aa4b8;
+        margin: 0 0 8px 0;
+      }
+      #briefing-objectives {
+        background: rgba(5, 10, 20, 0.7);
+        border: 1px solid rgba(100, 180, 255, 0.15);
+        border-radius: 4px;
+        padding: 16px 24px;
+        width: 80%;
+        max-width: 460px;
+        margin-bottom: 32px;
+      }
+      .briefing-obj-header {
+        font-size: 10px;
+        letter-spacing: 4px;
+        color: #ffb066;
+        margin-bottom: 10px;
+      }
+      #briefing-obj-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      #briefing-obj-list li {
+        font-size: 11px;
+        letter-spacing: 1.5px;
+        color: #6f8ba1;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(100, 180, 255, 0.06);
+      }
+      #briefing-obj-list li:last-child {
+        border-bottom: none;
+      }
+      #briefing-obj-list li::before {
+        content: '\25B8 ';
+        color: #4af;
+      }
+      #btn-briefing-begin {
+        background: none;
+        border: 1px solid rgba(100, 180, 255, 0.35);
+        color: #bfe8ff;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        padding: 10px 36px;
+        cursor: pointer;
+        letter-spacing: 3px;
+        transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
+        margin-bottom: 12px;
+      }
+      #btn-briefing-begin:hover {
+        border-color: #4af;
+        color: #fff;
+        box-shadow: 0 0 16px rgba(0, 170, 255, 0.2);
+      }
+      .briefing-hint {
+        font-size: 9px;
+        letter-spacing: 3px;
+        color: #4a5a6a;
+      }
+
       /* Tutorial hint — bottom centre, fades in/out (Level 1) */
       #tutorial {
         position: absolute;
@@ -367,6 +463,11 @@
         opacity: 0;
         pointer-events: none;
         transition: opacity 0.4s ease;
+        padding: 12px 24px;
+        background: rgba(5, 10, 20, 0.75);
+        border: 1px solid rgba(100, 180, 255, 0.12);
+        border-radius: 3px;
+        box-shadow: 0 0 20px rgba(0, 100, 200, 0.1);
       }
       #tutorial.visible { opacity: 1; }
       #tutorial-text {
@@ -738,6 +839,19 @@
       <div id="gameover-subtitle"></div>
       <button id="btn-retry">Retry</button>
       <button id="btn-gameover-menu">Main Menu</button>
+    </div>
+
+    <!-- Pre-level briefing -->
+    <div id="briefing-overlay">
+      <div id="briefing-level"></div>
+      <div id="briefing-title"></div>
+      <div id="briefing-narrative"></div>
+      <div id="briefing-objectives">
+        <div class="briefing-obj-header">OBJECTIVES</div>
+        <ul id="briefing-obj-list"></ul>
+      </div>
+      <button id="btn-briefing-begin">BEGIN</button>
+      <div class="briefing-hint">PRESS ANY KEY TO CONTINUE</div>
     </div>
 
     <!-- Loading screen -->

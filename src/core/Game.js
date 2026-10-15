@@ -117,27 +117,144 @@ export default class Game {
     // Level 1 scripted creature reveal state (rebuilt on each level load).
     this._l1Reveal = null;
 
-    // Level 1 tutorial — controls walkthrough (see _updateTutorial).
-    this._tutorialSteps = [
+    // Level 1 tutorial — contextual walkthrough (see _updateTutorial).
+    this._tutorialEl = document.getElementById('tutorial');
+    this._tutorialTextEl = document.getElementById('tutorial-text');
+    this._tutorialSubEl = document.getElementById('tutorial-sub');
+    // Zone/event-gated hints that guide the player through Level 1.
+    // trigger: 'spawn' | 'zone' | 'event' | 'reveal' | 'door'
+    // dismiss: 'walk' | 'event' | 'door' | 'zone' | 'reveal'
+    this._l1Tutorial = [
       {
         text: 'WASD — MOVE   ·   SHIFT — SPRINT   ·   SPACE — JUMP',
         sub: 'MOUSE — LOOK   ·   V — TOGGLE FIRST/THIRD PERSON',
+        trigger: 'spawn', dismiss: 'walk', dismissDist: 4,
       },
       {
-        text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
-        sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
+        text: 'SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR',
+        sub: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
+        trigger: 'zone', triggerZ: -3, dismiss: 'event', dismissEvent: 'fired',
       },
       {
-        text: 'LAB A-2 — PULSE THE AMBER RELAY BESIDE THE CHAMBER',
-        sub: 'YOUR SERVICE CALL: RESTORE AUXILIARY POWER',
+        text: 'GOOD — MOVE THROUGH THE DOOR',
+        sub: 'FOLLOW THE CORRIDOR TO THE TRAINING HUB',
+        trigger: 'door', triggerDoor: 'tr-a', dismiss: 'zone', dismissZ: -9,
       },
       {
-        text: 'LISTEN — GROWLS AND YOUR HEARTBEAT MEAN IT IS NEAR',
-        sub: 'HIDE BEHIND COVER TO BREAK LINE OF SIGHT · M — MUTE',
+        text: 'FINISH BOTH ROOMS TO OPEN THE GATE',
+        sub: 'WEST — JUMP ROOM   ·   EAST — SHOOT ROOM',
+        trigger: 'zone', triggerZ: -13, dismiss: 'zone', dismissXOut: 5,
+      },
+      {
+        text: 'SPACE — JUMP OVER THE HURDLES',
+        sub: 'SHOOT THE PANEL IN THE CHAMBER',
+        trigger: 'zone', triggerXLess: -9, triggerZRange: [-16, -22],
+        dismiss: 'event', dismissEvent: 'relayJump',
+      },
+      {
+        text: 'SHOOT ALL 3 GLOWING PANELS',
+        sub: 'LOOK UP AND DOWN — THEY ARE AT DIFFERENT HEIGHTS',
+        trigger: 'zone', triggerXMore: 9, triggerZRange: [-14, -24],
+        dismiss: 'event', dismissEvent: 'relayShoot',
+      },
+      {
+        text: 'THE GATE IS OPEN — MOVE THROUGH',
+        sub: 'FOLLOW THE MARKERS TO RECEPTION',
+        trigger: 'event', triggerEvent: 'allTrainingDone', dismiss: 'zone',
+        dismissZ: -27,
+      },
+      {
+        text: 'LOOK FOR THE LABORATORY',
+        sub: 'SHOOT GLOWING PANELS TO INTERACT',
+        trigger: 'zone', triggerZ: -37, dismiss: 'zone', dismissZ: -44,
+      },
+      {
+        text: 'APPROACH THE CONSOLE — SOMETHING IS WRONG',
+        sub: 'IT IS TOO LATE — THE CONTAINMENT HAS FAILED',
+        trigger: 'zone', triggerZ: -54, dismiss: 'reveal',
+        dismissRevealPhase: 'mutate',
+      },
+      {
+        text: 'THE CREATURE IS LOOSE — GET OUT OF THE LAB',
+        sub: 'HIDE BEHIND COVER IF IT GETS CLOSE',
+        trigger: 'reveal', triggerRevealPhase: 'burst', dismiss: 'zone',
+        dismissZ: -66,
+      },
+      {
+        text: 'MOVE THROUGH — FIND THE EXIT',
+        sub: 'LISTEN — GROWLS MEAN IT IS NEAR',
+        trigger: 'door', triggerDoor: 'l1-lab', dismiss: 'zone', dismissZ: -66,
+      },
+      {
+        text: 'REACH THE CONTROL ROOM',
+        sub: 'THE EXIT IS BEYOND THE REACTOR HALL',
+        trigger: 'zone', triggerZ: -73, dismiss: 'zone', dismissZ: -88,
+      },
+      {
+        text: 'FIND THE EXIT DOOR',
+        sub: 'COMPLETE THE LEVEL',
+        trigger: 'zone', triggerZ: -88, dismiss: 'zone', dismissZ: -98,
       },
     ];
     this._tut = null;         // built per Level-1 load
     this._baseObjective = ''; // restored after scripted beats change it
+
+    // --- Pre-level briefing overlay -----------------------------------------
+    this._briefingActive = false;
+    this._briefingOverlay = document.getElementById('briefing-overlay');
+    this._briefingLevel = document.getElementById('briefing-level');
+    this._briefingTitle = document.getElementById('briefing-title');
+    this._briefingNarrative = document.getElementById('briefing-narrative');
+    this._briefingObjList = document.getElementById('briefing-obj-list');
+    this._btnBriefingBegin = document.getElementById('btn-briefing-begin');
+    this._btnBriefingBegin?.addEventListener('click', () => this._dismissBriefing());
+    window.addEventListener('keydown', (e) => {
+      if (this._briefingActive) this._dismissBriefing();
+    });
+    this._briefings = {
+      1: {
+        title: 'WITNESS',
+        narrative: [
+          'You are the engineer on shift at the containment lab.',
+          'A scientist\u2019s experiment has gone wrong \u2014 the creature in the containment tube is changing.',
+          'Make your way through the training wing, then reach the laboratory to witness the transformation.',
+        ],
+        objectives: [
+          'Complete the training rooms to unlock the gate',
+          'Navigate through Reception to the Laboratory',
+          'Witness the scientist\u2019s mutation',
+          'Survive the creature\u2019s emergence',
+          'Find the exit through Maintenance',
+        ],
+      },
+      2: {
+        title: 'THE HUNT',
+        narrative: [
+          'The facility is in ruins. The creature is loose in the damaged corridors.',
+          'It knows these halls better than you \u2014 but you have the pulse tool.',
+          'Stay quiet, stay hidden, and find a way out.',
+        ],
+        objectives: [
+          'Navigate the damaged facility',
+          'Avoid or evade the creature',
+          'Restore power to unlock the path forward',
+          'Reach the reactor control room',
+        ],
+      },
+      3: {
+        title: 'THE COLLAPSE',
+        narrative: [
+          'The automated failsafe protocol has activated.',
+          'The facility will be destroyed \u2014 you have minutes to escape.',
+          'The creature guards the exit. Put it down and run.',
+        ],
+        objectives: [
+          'Defeat the creature before the failsafe detonation',
+          'Shoot the glowing weak points to damage it',
+          'Escape through the failsafe seal door',
+        ],
+      },
+    };
 
     // Combined PulseTool raycast list: level shootables + monster weak points.
     // Rebuilt once per level load (not per frame — zero-allocation rule).
@@ -249,12 +366,34 @@ export default class Game {
       if (target.userData.doorId) {
         this.levels.openDoor(target.userData.doorId);
         this.audio.play('doorOpen');
+        // Tutorial: track when the lab door opens after the reveal.
+        if (this._tut && target.userData.doorId === 'l1-lab') this._tut.labDoorOpen = true;
       }
       if (target.userData.ventId) {
         if (this.levels.disableVent(target.userData.ventId)) {
           target.material.color.setHex(0x8be6bc);
           target.material.emissive.setHex(0x47cfa0);
           this.audio.play('ventHiss');
+        }
+      }
+      // Power-routing nodes: light up, fade in the linked room lights, and
+      // possibly unlock a power-gated door (feedback comes back in `res`).
+      if (target.userData.powerNode) {
+        const res = this.levels._activatePowerNode(target.userData.powerNode.id);
+        if (res) {
+          this.audio.play('spark');
+          this.audio.play('beep');
+          // Tutorial: track training relay activations.
+          if (this._tut) {
+            const nodeId = target.userData.powerNode.id;
+            if (nodeId === 'tr-relay-jump') this._tut.relayJump = true;
+            if (nodeId === 'tr-relay-1' || nodeId === 'tr-relay-2' || nodeId === 'tr-relay-3') {
+              this._tut.relayShootCount = (this._tut.relayShootCount || 0) + 1;
+              if (this._tut.relayShootCount >= 3) this._tut.relayShoot = true;
+            }
+            // Check if all 4 training relays are done.
+            if (this._tut.relayJump && this._tut.relayShoot) this._tut.allTrainingDone = true;
+          }
         }
       }
     });
@@ -435,6 +574,14 @@ export default class Game {
 
     // Only update simulation while playing.
     if (this.gameState.isPlaying) {
+      // Briefing overlay blocks all gameplay input until dismissed.
+      if (this._briefingActive) {
+        // Still render the scene behind the overlay, but block all gameplay.
+        this.shaders.update(dt);
+        this.input.endFrame();
+        this.postfx.render(dt);
+        return;
+      }
       // Stance/aim from raw input — feeds both the player (move speed) and
       // the camera (FOV zoom, shoulder tighten, pivot height).
       const aiming = this.input.mouse.rightDown === true;
@@ -696,18 +843,24 @@ export default class Game {
     if (levelNum === 1) this._announce('dispatch');
     if (levelNum === 2) this._announce('failsafe');
 
-    // 10. Level 1 runs the controls tutorial (hints only — no gating).
+    // 10. Level 1 runs the contextual tutorial (zone/event-gated hints).
     if (levelNum === 1) {
       this._tut = {
         step: 0, timer: 0,
         startX: sp.x, startZ: sp.z,
-        moved: false, fired: false, hit: false,
+        shown: new Set(), // track which steps have been shown
+        fired: false, hit: false,
+        relayJump: false, relayShoot: false, relayShootCount: 0,
+        allTrainingDone: false, labDoorOpen: false,
       };
       this._showTutorialStep(0);
     } else {
       this._tut = null;
-      if (levelNum !== 3) this.ui.showTutorial(null);
+      if (this._tutorialEl) this._tutorialEl.classList.remove('visible');
     }
+
+    // 11. Show the pre-level briefing overlay (blocks input until dismissed).
+    this._showBriefing(levelNum);
   }
 
   /**
@@ -828,7 +981,7 @@ export default class Game {
       this._tut = null;
       this.audio.play('beep');
       this._announce('power');
-      this._setObjective('POWER RESTORED / CONTAINMENT SYSTEM RESTARTING');
+      this._setObjective('CONTAINMENT BREACH / GET AWAY FROM THE CHAMBER');
     } else if (phase === 'alarm') {
       this.levels.labEmergency = true;
       this.shaders.setLabEmergency(true);
@@ -867,10 +1020,12 @@ export default class Game {
       this._setObjective(this._baseObjective);
       this._announce('bypass');
     } else if (phase === 'done') {
-      this.monster.setActive(false);
+      // Monster stays active — it's now hunting the player through the facility.
       this.monster.model.scale.setScalar(this.monster._modelScale);
-      this.monster.body.position.set(0, -50, 0);
-      this.monster.patrolSpeed = 2;
+      this.monster.patrolSpeed = 2.5;
+      this.monster.detectionRange = 18;   // can now detect the player
+      this.monster.setPatrolWaypoints(this.levels.monsterWaypoints);
+      this.monster.setOccluders(this.levels.occluders);
       this._mutateLight.intensity = 0;
       this._setObjective(this._baseObjective);
     }
@@ -885,7 +1040,10 @@ export default class Game {
       const dx = this.player.position.x - reveal.trigger.x;
       const dz = this.player.position.z - reveal.trigger.z;
       if (dx * dx + dz * dz < reveal.trigger.radius * reveal.trigger.radius && opening.enter()) {
-        this._setObjective('RESTORE AUXILIARY POWER / PULSE THE AMBER RELAY BESIDE THE CHAMBER');
+        // Mutation triggers automatically on entry — no relay needed.
+        opening.repaired = true;
+        opening._setPhase('powering');
+        this._setObjective('CONTAINMENT BREACH / GET AWAY FROM THE CHAMBER');
       }
     }
     opening.update(dt);
@@ -909,44 +1067,154 @@ export default class Game {
    * @param {number} i step index
    */
   _showTutorialStep(i) {
-    const step = this._tutorialSteps[i];
-    if (step) this.ui.showTutorial(step);
+    const step = this._l1Tutorial[i];
+    if (!step || !this._tutorialEl) return;
+    this._tutorialTextEl.textContent = step.text;
+    this._tutorialSubEl.textContent = step.sub;
+    this._tutorialEl.classList.add('visible');
+    this._tut.shown.add(i);
   }
 
   /**
-   * Drive the Level-1 controls tutorial. Steps advance in order once their
-   * goal is met (walked 6 m → fired the pulse tool → hit a glowing panel),
-   * with a minimum display time so hints never cascade in a single frame.
+   * Drive the Level-1 contextual tutorial. Each step has a trigger condition
+   * (zone entry, event, door state, reveal phase) and a dismiss condition.
+   * Steps advance in order — the next hint only appears once the current one
+   * is dismissed and the minimum display time has elapsed.
    * @param {number} dt
    */
   _updateTutorial(dt) {
     const tut = this._tut;
-    if (!tut) return;
+    if (!tut || !this._tutorialEl) return;
     tut.timer += dt;
 
-    // Step 0 goal: player has walked a few metres from the spawn point.
-    if (!tut.moved) {
-      const dx = this.player.position.x - tut.startX;
-      const dz = this.player.position.z - tut.startZ;
-      if (dx * dx + dz * dz > 36) tut.moved = true;
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+
+    // Skip already-completed relay steps (player may have done rooms
+    // out of order). This handles the case where the player visits the shoot
+    // room before the jump room or vice versa.
+    while (tut.step < this._l1Tutorial.length) {
+      const s = this._l1Tutorial[tut.step];
+      // Skip jump room hint if already completed.
+      if (s.dismissEvent === 'relayJump' && tut.relayJump) { tut.step++; tut.timer = 0; continue; }
+      // Skip shoot room hint if already completed.
+      if (s.dismissEvent === 'relayShoot' && tut.relayShoot) { tut.step++; tut.timer = 0; continue; }
+      // Skip gate hint if all training is done.
+      if (s.triggerEvent === 'allTrainingDone' && tut.allTrainingDone) { tut.step++; tut.timer = 0; continue; }
+      break;
     }
 
-    const complete =
-      (tut.step === 0 && tut.moved) ||
-      (tut.step === 1 && tut.fired) ||
-      (tut.step === 2 && tut.hit) ||
-      (tut.step === 3 && tut.timer > 6); // listen-hint lingers, then fades
+    const step = this._l1Tutorial[tut.step];
+    if (!step) {
+      // All steps done — hide the tutorial.
+      this._tutorialEl.classList.remove('visible');
+      this._tut = null;
+      return;
+    }
 
-    if (complete && tut.timer > 1.6) {
+    // Check trigger condition.
+    let triggerMet = false;
+    if (step.trigger === 'spawn') {
+      triggerMet = true;
+    } else if (step.trigger === 'zone') {
+      if (step.triggerZ !== undefined) {
+        triggerMet = pz < step.triggerZ;
+      } else if (step.triggerXLess !== undefined && step.triggerZRange) {
+        triggerMet = px < step.triggerXLess && pz >= step.triggerZRange[1] && pz <= step.triggerZRange[0];
+      } else if (step.triggerXMore !== undefined && step.triggerZRange) {
+        triggerMet = px > step.triggerXMore && pz >= step.triggerZRange[1] && pz <= step.triggerZRange[0];
+      }
+    } else if (step.trigger === 'door') {
+      const door = this.levels._doors.find(d => d.id === step.triggerDoor);
+      triggerMet = door && door.opening;
+    } else if (step.trigger === 'event') {
+      triggerMet = !!tut[step.triggerEvent];
+    } else if (step.trigger === 'reveal') {
+      triggerMet = this._l1Reveal && this._l1Reveal.phase === step.triggerRevealPhase;
+    }
+
+    // If trigger not met yet, don't show this step (and don't advance).
+    if (!triggerMet && !tut.shown.has(tut.step)) return;
+
+    // Show the step if it hasn't been shown yet.
+    if (!tut.shown.has(tut.step)) {
+      this._showTutorialStep(tut.step);
+    }
+
+    // Check dismiss condition.
+    let dismissed = false;
+    if (step.dismiss === 'walk') {
+      const dx = px - tut.startX;
+      const dz = pz - tut.startZ;
+      dismissed = (dx * dx + dz * dz) >= (step.dismissDist * step.dismissDist);
+    } else if (step.dismiss === 'event') {
+      dismissed = !!tut[step.dismissEvent];
+    } else if (step.dismiss === 'zone') {
+      if (step.dismissZ !== undefined) {
+        dismissed = pz < step.dismissZ;
+      } else if (step.dismissXOut !== undefined) {
+        dismissed = Math.abs(px) > step.dismissXOut;
+      }
+    } else if (step.dismiss === 'door') {
+      const door = this.levels._doors.find(d => d.id === step.dismissDoor);
+      dismissed = door && door.opening;
+    } else if (step.dismiss === 'reveal') {
+      dismissed = this._l1Reveal && this._l1Reveal.phase === step.dismissRevealPhase;
+    }
+
+    // Advance to next step once dismissed and minimum display time elapsed.
+    if (dismissed && tut.timer > 1.6) {
       tut.step++;
       tut.timer = 0;
-      if (tut.step < this._tutorialSteps.length) {
+      if (tut.step < this._l1Tutorial.length) {
         this._showTutorialStep(tut.step);
       } else {
-        this.ui.showTutorial(null);
+        this._tutorialEl.classList.remove('visible');
         this._tut = null;
       }
     }
+  }
+
+  /**
+   * Show the pre-level briefing overlay for the given level number.
+   * Populates the title, narrative paragraphs, and objective list from
+   * the _briefings data. Blocks player input until dismissed.
+   * @param {number} levelNum
+   */
+  _showBriefing(levelNum) {
+    const data = this._briefings[levelNum];
+    if (!data || !this._briefingOverlay) return;
+    this._briefingActive = true;
+    if (this._briefingLevel) this._briefingLevel.textContent = `LEVEL ${levelNum}`;
+    if (this._briefingTitle) this._briefingTitle.textContent = data.title;
+    if (this._briefingNarrative) {
+      this._briefingNarrative.innerHTML = '';
+      for (const line of data.narrative) {
+        const p = document.createElement('p');
+        p.textContent = line;
+        this._briefingNarrative.appendChild(p);
+      }
+    }
+    if (this._briefingObjList) {
+      this._briefingObjList.innerHTML = '';
+      for (const obj of data.objectives) {
+        const li = document.createElement('li');
+        li.textContent = obj;
+        this._briefingObjList.appendChild(li);
+      }
+    }
+    this._briefingOverlay.style.display = 'flex';
+  }
+
+  /**
+   * Dismiss the briefing overlay and resume player input.
+   * Requests pointer lock so the player can immediately look around.
+   */
+  _dismissBriefing() {
+    if (!this._briefingActive) return;
+    this._briefingActive = false;
+    if (this._briefingOverlay) this._briefingOverlay.style.display = 'none';
+    this.renderer.domElement.requestPointerLock?.();
   }
 
   /**

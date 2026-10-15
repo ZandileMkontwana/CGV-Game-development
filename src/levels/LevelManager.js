@@ -203,11 +203,13 @@ export default class LevelManager {
     /** L3 sealed failsafe door Mesh — Game.js hides it when the boss dies. */
     this._exitDoor = null;
 
-    /**
-     * L1 scripted monster reveal (read by Game.js):
+    /** L1 scripted monster reveal (read by Game.js):
      * {trigger:{x,z,radius}, spawn:{x,y,z}, escape:[{x,z}...]}
      */
     this.scriptedReveal = null;
+
+    /** L1 LabChamber instance (containment tube + effects). */
+    this.labChamber = null;
 
     /** NPC placement anchors for Game.js, e.g. {scientist:{x,z,face}}. */
     this.npcAnchors = {};
@@ -1274,14 +1276,22 @@ export default class LevelManager {
     // The tutorial door: shoot the conduit beside it.
     kit.doorway(2.6, 2.6, 0, 1.3, -66.15, 's');
     this._createDoor('l1-lab', 2.6, 2.6, 0, 1.3, -66.15, 0, m.metalDark);
-    const l1Conduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, -65.96, 'conduit', 0);
-    l1Conduit.userData.doorId = 'l1-lab';
-    kit.sign(0, 2.55, -65.97, 's', 'MAINTENANCE ▸', { sub: 'PULSE TOOL REQUIRED', fg: '#ffd27f' });
+    const l1Conduit = this._shootableTarget(0.65, 0.45, -1.1, 1.3, -58.7, 'conduit', 0);
+    l1Conduit.material.color.setHex(0xffb65b);
+    l1Conduit.material.emissive.setHex(0xff9839);
+    l1Conduit.userData.storyAction = 'restore-lab-power';
+    kit.box(m.metalDark, 0.85, 1.6, 0.38, -1.1, 0.8, -58.88, { physics: true });
+    kit.sign(-1.1, 1.92, -58.67, 's', 'AMBER RELAY', { sub: 'PULSE TO RESTORE POWER', fg: '#ffc57c', w: 1.45, h: 0.45 });
+    kit.sign(0, 2.55, -65.97, 's', 'CONTROL ROOM ▸', { sub: 'EMERGENCY BYPASS — SEALED', fg: '#a9e9c4', w: 2.4 });
 
     // Focal props: containment tube + scientist console + benches.
-    kit.containmentTube(-5.0, -60);
-    kit.consoleDesk(-3.4, -59.2, 'e', { w: 1.8, monitors: 2 });
-    kit.chair(-1.55, -59.05, 'w');
+    this.labChamber = new LabChamber(this.scene, -3.6, -60.2);
+    const chamberBody = this.physics.createBox(0, 1.15, 1.4, 1.15, new CANNON.Vec3(-3.6, 1.4, -60.2));
+    this._track(null, chamberBody);
+    kit.consoleDesk(-6.8, -59.2, 'e', { w: 1.8, monitors: 2 });
+    kit.chair(-5.6, -59.2, 'w');
+    kit.sign(-3.6, 2.7, -65.94, 's', '09 / CONTAINMENT BAY', { sub: 'AUTOMATIC CULTURE RESUMPTION ENABLED', fg: '#bde9e7', w: 3.8, h: 0.5 });
+    kit.floorDecal(-3.6, -60.2, 'stripes', { size: 3.5, color: '#d5a04f' });
     kit.labBench(5.6, -57.5, 'w', { len: 2.6 });
     kit.labBench(5.6, -61.5, 'w', { len: 2.6 });
     kit.shelfUnit(-8.2, -56, 'e', { w: 1.5 });
