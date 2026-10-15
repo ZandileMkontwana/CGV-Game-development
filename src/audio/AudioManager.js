@@ -58,8 +58,10 @@ export default class AudioManager {
     this._dist = null;      // cached waveshaper curve
     this._footstep = null;  // { buffer, segments[] } recorded step sample
     this._doorSample = null; // { buffer, range } recorded door-open sample
-    this._suspense = null;   // { buffer } level-start suspense track
+    this._suspense = null;   // { buffer } level-start / menu suspense track
     this._suspenseSrc = null;
+    this._suspenseWanted = false; // requested before the sample finished decoding
+    this._suspenseFailed = false; // sample unavailable → use the synth fallback
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -128,7 +130,7 @@ export default class AudioManager {
     this._loadSuspenseSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
-    else if (this._menuActive) this._startMenuBed();
+    else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
   }
 
   setVolume(value) {
@@ -176,8 +178,12 @@ export default class AudioManager {
     this._syncContextState();
     // Swap the title theme in for the menu and the level score for gameplay.
     if (this._unlocked) {
-      if (this._menuActive) this._startMenuBed();
-      else if (this._playing && this._mode !== this._level) this._startBed(this._level);
+      if (this._menuActive) {
+        this._startMenuBed();
+        this.playSuspense();      // the home screen shares the same cue
+      } else if (this._playing && this._mode !== this._level) {
+        this._startBed(this._level);
+      }
     }
   }
 
@@ -1119,13 +1125,18 @@ export default class AudioManager {
 
   /** Fetch + decode the level-start / stage-switch suspense track. */
   async _loadSuspenseSample() {
-    if (!this.ctx || this._suspense) return;
+    if (!this.ctx || this._suspense || this._suspenseFailed) return;
     try {
       const res = await fetch('/assets/audio/music/suspense_intro.mp3');
-      if (!res.ok) return;
+      if (!res.ok) { this._suspenseFailed = true; return; }
       const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
       this._suspense = { buffer: audio };
-    } catch (e) { /* keep the synthesized fallback */ }
+      // A cue requested while the sample was still decoding starts now.
+      if (this._suspenseWanted && (this._menuActive || this._playing)) {
+        this._suspenseWanted = false;
+        this.playSuspense();
+      }
+    } catch (e) { this._suspenseFailed = true; }
   }
 
   /**
@@ -1134,9 +1145,15 @@ export default class AudioManager {
    */
   playSuspense() {
     if (!this._unlocked || this.muted) return;
+    if (!this._suspense) {
+      // Still decoding — remember the intent, or fall back if it failed.
+      if (this._suspenseFailed) this._playSuspenseFallback();
+      else this._suspenseWanted = true;
+      return;
+    }
+    this._suspenseWanted = false;
     this.stopSuspense(0.05);
     const sample = this._suspense;
-    if (!sample) { this._playSuspenseFallback(); return; }
     const ctx = this.ctx;
     const src = ctx.createBufferSource();
     src.buffer = sample.buffer;
