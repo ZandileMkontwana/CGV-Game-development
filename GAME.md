@@ -35,19 +35,23 @@ collapse.
 | Shift | Sprint (~11 m/s vs 6 m/s walk) |
 | Space | Jump |
 | V | Toggle first-person / third-person camera |
-| M | Mute audio |
+| M | Expand / close the facility map |
+| U | Mute audio |
 | Esc | Pause / resume |
 
-The HUD shows health, Pulse Tool energy, the current objective (top centre),
-the level indicator, and an FPS counter. In third person you can see the
+The HUD shows health, Pulse Tool energy, the current objective at the upper left,
+prominent instructions above the crosshair, and a live minimap at the lower right.
+Press M for the complete floor plan; blue marks the player, amber marks tasks and
+doors, and green marks the exit. Movement stays active with the map open.
+In third person you can see the
 engineer character model (V key).
 
 ---
 
 ## Level 1 — The Experiment (I · WITNESS)
 
-**Theme:** clean research lab, cool white lighting. Everything still looks
-normal — that is the point.
+**Theme:** a clean research facility with cool white lighting, except for
+Lab A-2, where a failed circuit leaves only amber backup guidance.
 
 **What happens:**
 
@@ -55,9 +59,11 @@ normal — that is the point.
    north end. Guided hints teach movement, sprinting, jumping, the camera
    toggle and the Pulse Tool as you head deeper into the lab.
 2. **The lab.** You reach the experiment room: a containment tube, benches,
-   consoles — and a **scientist** seated at a console, typing.
-3. **The reveal (scripted beat).** As you approach, an alarm sounds: the
-   scientist stops typing and turns toward you, then doubles over. Under a
+   consoles — and a **scientist** waiting at an unpowered console. Ceiling
+   lights, monitors and the containment glow are off. Pulse the **amber relay**
+   to restore them; entering the room alone does not start the experiment.
+3. **The reveal (scripted beat).** Power returns and the scientist resumes
+   work. The equipment overloads, an alarm sounds, and he doubles over. Under a
    strobing red light he convulses violently — and bursts into the
    **creature** itself, swelling to full size right in front of you.
 4. **The escape.** The creature lurches away toward the ceiling ducts — but it
@@ -69,6 +75,10 @@ normal — that is the point.
    (marked by a green exit beacon).
 
 **How you win:** reach the control room.
+
+Facility staff wear white lab coats with department badges, pockets and safety
+glasses. They patrol and look around, react to the alarm, then run to refuge
+when the creature is released. The third-person player also wears a lab coat.
 **How you lose:** run out of health (nothing here attacks you — this level is
 about exploration and witnessing the breach).
 
@@ -76,80 +86,57 @@ about exploration and witnessing the breach).
 
 ## Level 2 — The Hunt (II · THE HUNT)
 
-**Theme:** the damaged facility — flickering amber lights, rust, sparking
-conduits, steam vents, and heat-haze shimmer (custom shader) over hot
-machinery.
+Your pulse tool stays equipped from training, including after a retry. Left click
+or F fires. All mission relays use pulses; E cannot bypass their locked doors.
 
-**What happens:**
+1. Shoot the blue entry relay and cross the damaged corridor into crew quarters.
+2. Follow the medical distress signal west. Pulse the amber rescue relay beside
+   the medical doorway to release two scientists. Stay within six metres and
+   escort them north through medical into the green refuge. They wait if you
+   leave them behind, and navigate around walls and closed doors.
+3. Shoot both amber pressure valves in maintenance. The server-room interlock
+   releases once both scientists are safe and both valves are isolated.
+4. Enter the archive east of the server room. Pulse its power relay, then pulse
+   the evidence terminal. Stay inside the glowing floor outline around the archive
+   tables during the 12-second transfer, until the HUD confirms 100%.
+   Leaving pauses the transfer and preserves progress. Powered machinery makes
+   noise that attracts the creatures, so use the room and racks as cover.
+5. With the scientists safe and the records secured, the core-access transfer
+   door opens. Evade the second creature and enter the green core-access beacon.
 
-1. **The hunt begins.** The monster — the mutated scientist — is now loose and
-   actively **hunting you** through the damaged corridors, quarters
-   (locker banks, bunks), maintenance decks and a server-room rack maze.
-2. **Stealth AI.** The creature is no longer omniscient:
-   - it sees a **forward vision cone** (~120°), with a short peripheral
-     radius behind which you are safe;
-   - **spotting takes time** — an awareness meter fills while you are in view
-     (faster the closer you are), then the chase begins;
-   - it **hears** you — sprinting is loud, walking is quiet, shots and hard
-     landings are one-off noises it will investigate;
-   - when it loses sight of you it runs to where it **last saw you**, sweeps
-     its head, then gives up and returns to its patrol.
-3. **Your tools.** Break line of sight behind tall cover (lockers, racks,
-   crates, pillars). The HUD warns you when you are seen or hidden. Your
-   Pulse Tool can **disable hazards** — shoot sparking conduits to stop the
-   sparks, valves to shut off steam vents (they also stop making noise that
-   draws attention).
-4. **Your objective.** Sneak the length of the facility from cover to cover
-   and reach the **emergency exit vestibule** at the south end (green exit
-   beacon).
-
-**How you win:** reach the emergency exit — the monster does **not** have to
-be killed. Sneaking past it is the intended (and safest) solution.
-**How you lose:** the monster catches you and depletes your health — it hits
-hard and does not stop while it can see you.
+The map marks medical, refuge, archive and mission relays. White dots mark the
+scientists; rescued staff and completed targets turn green. Killing the creatures
+is optional. Losing all health ends the run; retry resets this level's objectives.
 
 ---
 
 ## Level 3 — The Collapse (III · THE COLLAPSE)
 
-**Theme:** red emergency lighting, alarms, ash and dust in the air. The
-failsafe demolition is now executing — and the only thing between you and the
-exit is the creature itself.
+1. Restore emergency power in both side rooms: the west pump gallery and east
+   observation booth. Pulse each amber generator panel from nearby. The west
+   gallery has a rotating pump arm with a matching collider; the east booth has
+   an electrical floor with an amber warning, a red live interval and a dark
+   safe interval. Starting a generator disables that room's hazard.
+2. The entity detects and attacks you before power is restored. Use cover while
+   starting the generators; both must be online to disable its node shields.
+   Dodge its locked amber charge
+   line, then shoot a cyan chest or shoulder node during recovery. One node can
+   rupture per recovery opening. Amber nodes are shielded; body shots also count
+   toward a node while the shield is open.
+3. Each destroyed node speeds up its attack rhythm. In the final phase it adds
+   a sweeping attack: move outside the amber ring before it strikes. The HUD
+   names each attack and indicates when nodes are vulnerable.
+4. Defeating the entity releases the surface seal and starts a 90-second escape
+   timer. Follow the green floor lights through the winding maintenance route.
+   Rubble blocks the central shortcut; take the marked eastern service bypass.
+5. Flashing amber floor zones warn for 1.8 seconds before ceiling slabs fall.
+   Keep clear of those areas; fallen slabs retain collision and leave a clear
+   side lane. Follow the transfer gallery west, then the south surface corridor
+   to the green emergency-exit beacon before the countdown expires.
 
-**What happens:**
-
-1. **The arena.** A short entry corridor opens into the containment arena —
-   a 28 × 32 m hall with cover pillars, generators, reactor cores, crate
-   stacks and debris. The monster spawns centre-arena and **never stops
-   hunting you** (arena-wide detection, it never gives up the chase).
-2. **The boss fight.** Shoot the monster's **three glowing red weak points**
-   (chest + both flanks). They pulse so you can find them in the dark. Each
-   weak point you destroy **enrages** it — faster, harder-hitting, attacking
-   more often:
-   | Phase | Weak points destroyed | Effect |
-   |---|---|---|
-   | 1 | 1 | +1.5 m/s speed, +5 damage, faster attacks |
-   | 2 | 2 | stacked on phase 1 |
-   | 3 | 3 | death — the fight ends |
-   The boss phase indicator on the HUD tracks your progress. Use the pillars
-   and cover to break line of sight between engagements.
-3. **The failsafe detonation.** The moment the creature dies, the countdown
-   starts: **90 seconds**. The **FAILSAFE SEAL** — the arena's south exit,
-   which only opens on entity death — slides open, and the escape begins.
-4. **The escape run.** Sprint through the **collapsing escape corridor** into
-   the exit room while the building comes down around you: the dissolve
-   shader eats walls and ceiling slabs, screen shake intensifies as the timer
-   runs out, countdown beeps accelerate in the final 10 seconds, and a
-   structural rumble builds underneath it all.
-5. **Your objective.** Reach the **emergency exit** at the far end of the exit
-   room (green beacon) before the timer hits zero.
-
-**How you win:** kill the monster, then reach the exit before the 90-second
-collapse timer expires — this ends the game with the **FACILITY CLEARED**
-victory screen.
-**How you lose:** the timer hits zero (the building buries everything), or
-the monster kills you during the fight — **GAME OVER**, with a Retry that
-restarts the run.
+The expanded map includes the generators, maintenance section, bypass, transfer
+and relocated surface exit. Pausing freezes mission progress, machinery and the
+escape countdown. Retry resets generators, the boss, rubble warnings and progress.
 
 ---
 
@@ -158,19 +145,19 @@ restarts the run.
 | Level | Objective | Lose condition |
 |---|---|---|
 | **1 — The Experiment** | Shoot the conduit, reach the control room | Health depleted |
-| **2 — The Hunt** | Sneak past the monster to the emergency exit | Caught by the monster |
-| **3 — The Collapse** | Destroy the 3 weak points, escape before the 90 s collapse timer | Timer expires, or killed in the arena |
+| **2 — The Hunt** | Rescue both scientists, recover the archive records, reach core access | Health depleted |
+| **3 — The Collapse** | Start both generators, destroy the 3 nodes, cross maintenance to the surface within 90 seconds | Health depleted or timer expires |
 
 ---
 
 ## Behind the scenes (one paragraph)
 
-The game ships with Blender-made models (characters, props), PBR texture sets
-and sampled sound cues, all preloaded through an asset library at boot — and
-every one of them has a **procedural fallback** built in code, so the game
-runs fully even where asset files are missing. Credits for every asset and
-library are listed in `CREDITS.md` and on the in-game credits screen. Level
-lighting, the heat-haze and dissolve effects are custom GLSL shaders; the
-monster, scientist and engineer are rigged GLB models with authored
-animation clips. For the full engineering plan, team roles and rubric
-alignment, see `PLAN.md`.
+The current game builds its characters, weapons, environment textures and
+soundscape in code. Five Blender-exported prop GLBs supplement the facility;
+custom character GLBs, baked environment texture sets and sampled sound cues
+are absent. PA alerts use synthesized chimes/sirens and on-screen captions;
+the older speech WAVs remain unused source archives. Custom GLSL drives heat
+shimmer, dissolving surfaces, energy glows and screen effects. Menu and ending
+credits list the libraries and content, with unconfirmed asset sources recorded
+in `ASSET_CREDITS.md`; see `CREDITS.md` for details. For the current engineering
+plan, team responsibilities and rubric alignment, see `PLAN.md`.

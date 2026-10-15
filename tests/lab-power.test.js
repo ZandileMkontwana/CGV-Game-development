@@ -1,0 +1,90 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import * as THREE from 'three';
+import LabPower from '../src/core/LabPower.js';
+import LabPowerLighting from '../src/shaders/LabPowerLighting.js';
+import ShaderManager from '../src/shaders/ShaderManager.js';
+import LevelKit from '../src/levels/LevelKit.js';
+
+test('ceiling fixtures stay in their own rooms instead of lighting the offline lab', () => {
+  const positions = [];
+  const kit = { mats: {}, plane() {}, box() {}, lamp(x, z) { positions.push({ x, z }); } };
+  LevelKit.prototype.ceilingSlab.call(kit, 4.85, 4.6, 11.725, 3.2, -59, { lamps: [{ x: 0, z: 0 }] });
+  LevelKit.prototype.ceilingSlab.call(kit, 9.85, 6, -14.225, 3.2, -19.15, { lamps: [{ x: -3, z: 1 }] });
+  assert.deepEqual(positions, [{ x: 11.725, z: -59 }, { x: -17.225, z: -18.15 }]);
+});
+
+test('the failed circuit keeps lights and displays off until repair, then ramps them up', () => {
+  const power = new LabPower();
+  const source = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.8 });
+  const display = power.material(source);
+  const light = new THREE.PointLight(0xffffff, 0.9);
+  power.addLight(light);
+  power.update(30);
+  assert.equal(power.state, 'offline');
+  assert.equal(power.power, 0);
+  assert.equal(light.intensity, 0);
+  assert.equal(display.emissiveIntensity, 0);
+  assert.equal(source.emissiveIntensity, 0.8, 'Other rooms keep their shared display materials');
+  power.restore();
+  power.update(0.4);
+  assert(power.power > 0 && power.power < 1);
+  assert(light.intensity > 0 && light.intensity < 0.9);
+  power.restore();
+  power.update(0.5);
+  assert.equal(power.state, 'online');
+  assert.equal(power.power, 1);
+  assert.equal(light.intensity, 0.9);
+  assert.equal(display.emissiveIntensity, 0.8);
+  power.emergency();
+  power.update(0.1);
+  assert.equal(power.state, 'emergency');
+  assert(light.intensity < 0.2, 'The overload drops normal lighting back to emergency levels');
+  assert.equal(power.power, 1, 'The supply was repaired before the containment emergency');
+  power.dispose();
+  source.dispose();
+});
+
+test('circuit cleanup releases local materials and leaves shared room resources intact', () => {
+  const power = new LabPower();
+  const source = new THREE.MeshStandardMaterial();
+  let sourceDisposed = 0, cloneDisposed = 0;
+  source.addEventListener('dispose', () => sourceDisposed++);
+  const clone = power.material(source);
+  clone.addEventListener('dispose', () => cloneDisposed++);
+  assert.equal(power.material(source), clone);
+  power.dispose();
+  assert.equal(cloneDisposed, 1);
+  assert.equal(sourceDisposed, 0);
+  source.dispose();
+});
+
+test('restoring lab power changes uniforms without recompiling materials, and level cleanup clears the circuit', () => {
+  const scene = new THREE.Scene();
+  const material = new THREE.MeshStandardMaterial();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(), material);
+  scene.add(mesh);
+  const lighting = new LabPowerLighting();
+  lighting.apply(scene);
+  const key = material.customProgramCacheKey();
+  const version = material.version;
+  lighting.power.value = 0;
+  const shader = { uniforms: {}, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader };
+  material.onBeforeCompile(shader);
+  assert.equal(shader.uniforms.uLabGridPower, lighting.power);
+  lighting.power.value = 1;
+  lighting.apply(scene);
+  assert.equal(material.version, version);
+  assert.equal(material.customProgramCacheKey(), key);
+  assert.equal(shader.uniforms.uLabGridPower.value, 1);
+  const manager = new ShaderManager(scene);
+  const circuit = new LabPower();
+  manager.configureLabPower(circuit);
+  assert.equal(manager.labPowerLighting.power.value, 0);
+  manager.clearLevelVisuals();
+  assert.equal(manager._labPowerSource, null);
+  assert.equal(manager.labPowerLighting.power.value, 1);
+  circuit.dispose();
+  mesh.geometry.dispose();
+  material.dispose();
+});

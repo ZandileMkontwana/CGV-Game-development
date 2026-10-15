@@ -1,5 +1,11 @@
 # Team Tasks — Containment Breach
 
+> Original assignment brief retained for reference. Its checkboxes and proposed
+> assets are not the current completion record. See [PLAN.md](./PLAN.md) for
+> implemented features and remaining work, and [ASSET_CREDITS.md](./ASSET_CREDITS.md)
+> for files actually present. The current PA system uses synthesized alerts
+> and captions; the proposed recorded dialogue is not active.
+
 > Read this alongside [PLAN.md](./PLAN.md) for the full project context.
 
 ---

@@ -3,6 +3,40 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import StaticBatch from '../src/levels/StaticBatch.js';
 import ShaderManager from '../src/shaders/ShaderManager.js';
+import PostFX from '../src/core/PostFX.js';
+
+test('reveal materials warm up for the compositor target and restore the previous target', () => {
+  for (const fail of [false, true]) {
+    const previous = {};
+    const buffer = {};
+    let active = previous;
+    const postfx = Object.create(PostFX.prototype);
+    postfx._scene = new THREE.Scene();
+    const hidden = new THREE.Group();
+    hidden.visible = false;
+    postfx._scene.add(hidden);
+    const camera = {};
+    postfx.composer = { readBuffer: buffer, passes: [{ camera }] };
+    postfx._renderer = {
+      getRenderTarget: () => active,
+      setRenderTarget: value => { active = value; },
+      compile(scene, view) {
+        assert.equal(active, buffer, 'Screen and compositor targets require different shader programs');
+        assert.equal(scene, postfx._scene);
+        assert.equal(view, camera);
+        assert.equal(hidden.visible, true);
+        assert.equal(hidden.frustumCulled, false);
+        if (fail) throw new Error('compile failed');
+      },
+      render() {},
+    };
+    if (fail) assert.throws(() => postfx.prepareScene(), /compile failed/);
+    else postfx.prepareScene();
+    assert.equal(active, previous);
+    assert.equal(hidden.visible, false);
+    assert.equal(hidden.frustumCulled, true);
+  }
+});
 
 test('static scenery batching preserves transformed geometry, cover raycasts and transparent children', () => {
   const scene = new THREE.Scene();

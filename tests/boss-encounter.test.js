@@ -25,7 +25,7 @@ test('charges and weak-point hits create recovery rather than uninterrupted atta
   assert.equal(boss.stage, 'recover');
   boss.update(1.3, { x: 0, z: -20 });
   assert.equal(boss.stage, 'recover');
-  boss.update(0.2, { x: 0, z: -20 });
+  boss.update(0.6, { x: 0, z: -20 });
   assert.equal(boss.stage, 'pursuit');
   boss.stagger();
   assert.equal(boss.stage, 'recover');

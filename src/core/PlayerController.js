@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import InputManager from './InputManager.js';
 import { createEngineer } from './CharacterFactory.js';
-import OperatorModel from './OperatorModel.js';
+import ResearcherOperator from './ResearcherOperator.js';
 import HeldWeapon from './HeldWeapon.js';
 import CrouchPose from './CrouchPose.js';
 
@@ -104,10 +104,8 @@ export default class PlayerController {
     }
     this.isFirstPerson = true;
 
-    // --- Realistic third-person operator (skinned soldier.glb) -------------
-    // Streams in async; until it's ready (or if it fails) the procedural
-    // engineer doubles as the third-person body.
-    this.operator = new OperatorModel(loadingManager);
+    // Third-person player wears the same lab coat as the research staff.
+    this.operator = new ResearcherOperator();
     this.operator.group.visible = false;
     scene.add(this.operator.group);
 
@@ -115,8 +113,7 @@ export default class PlayerController {
     this.playerModel.visible = false;
     scene.add(this.playerModel);
     this.heldWeapon = new HeldWeapon(scene);
-    // Level 2 opens unarmed — Game.js clears this when the player takes the
-    // pulse sidearm from the security locker (the held gun follows this flag).
+    // The pulse tool is carried between levels.
     this.weaponStowed = false;
   }
 
@@ -267,11 +264,10 @@ export default class PlayerController {
 
   /**
    * Switch between first- and third-person body rendering.
-   * FP: the soldier is hidden; the engineer's lower half stays visible so
+   * FP: the coat body is hidden; the engineer's lower half stays visible so
    * you see your legs looking down, while everything above the hips hides
    * (the camera sits where the torso would be).
-   * TP: the skinned soldier renders when loaded — otherwise the full
-   * procedural engineer falls in.
+   * TP: the coat-wearing researcher renders with the held pulse tool.
    * @param {boolean} firstPerson
    */
   setViewMode(firstPerson) {
@@ -279,7 +275,7 @@ export default class PlayerController {
     const useOperator = !firstPerson && this.operator.ready;
     this.operator.group.visible = useOperator;
     this.heldWeapon.group.visible = !firstPerson && !this.weaponStowed;
-    // TP+soldier: skinned operator only. FP / fallback: procedural engineer,
+    // TP: skinned researcher only. FP / fallback: procedural engineer,
     // upper body hidden in FP (camera sits inside the torso) but legs stay
     // visible so looking down shows the character, like CoD.
     this.playerModel.visible = !useOperator;
