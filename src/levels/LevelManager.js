@@ -582,9 +582,9 @@ export default class LevelManager {
     led.userData.ownsMaterial = true;
     this.scene.add(led);
     this._track(led);
-    // o.noBeaconLight skips the extra PointLight (the LED still changes colour).
+    // opts.noBeaconLight skips the extra PointLight (the LED still changes colour).
     let beacon = null;
-    if (!o.noBeaconLight) {
+    if (!opts.noBeaconLight) {
       beacon = new THREE.PointLight(0xff4030, 0.45, 5, 2);
       beacon.position.set(x + sideX, y + h / 2 + 0.1, z + sideZ);
       this.scene.add(beacon);
@@ -596,7 +596,7 @@ export default class LevelManager {
       openY: y + h + 0.3,
       progress: 0,
       opening: false,
-      needPower: o.needPower || null,
+      needPower: opts.needPower || null,
       led,
       beacon,
       locked: !!opts.locked,
