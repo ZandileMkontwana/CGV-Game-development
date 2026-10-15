@@ -807,9 +807,13 @@ export default class Game {
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
     if (levelNum === 1) this._announce('dispatch');
-    // Level 2 opens with the 'breach' PA inside its staged briefing
-    // (_l2Opening); the failsafe/demolition chain now starts at Level 3.
-    if (levelNum === 3) this._announce('failsafe');
+    // Level 2 opens on its recorded sector briefing (_l2Opening); Level 3 opens
+    // on the recorded emergency-intercom broadcast — the old synthesized
+    // 'failsafe' alert is removed for that level.
+    if (levelNum === 3) {
+      this.audio.playClipSequence(['emergencyIntercom']);
+      this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
+    }
 
     // 10. Level 1 runs the controls tutorial (hints only — no gating).
     if (levelNum === 1) {

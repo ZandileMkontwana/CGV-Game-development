@@ -1150,6 +1150,7 @@ export default class AudioManager {
     const clips = {
       depressurize: '/assets/audio/announcements/depressurize.mp3',
       sectorIsolated: '/assets/audio/announcements/sector_isolated.mp3',
+      emergencyIntercom: '/assets/audio/announcements/emergency_intercom.mp3',
     };
     for (const [name, url] of Object.entries(clips)) {
       if (this._paClips[name]) continue;
