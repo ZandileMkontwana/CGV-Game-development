@@ -375,8 +375,9 @@ export default class Game {
       if (newState === 'playing') this.postfx.resetFrameTiming();
       if (newState === 'playing' && (oldState === 'menu' || oldState === 'gameover'
           || oldState === 'victory' || reason === 'restart')) {
-        // Fresh start — load level 1 geometry, lighting, and spawn player.
-        this._loadLevel(1);
+        // A restart resumes the level the player was on (death retry, pause
+        // restart); entering from a menu always starts the campaign at 1.
+        this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
