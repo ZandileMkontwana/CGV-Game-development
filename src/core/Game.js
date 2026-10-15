@@ -136,6 +136,10 @@ export default class Game {
     this._weaponReady = true;
     this._l2Opening = null;
 
+    // Aim-down-sights toggle: the player can latch ADS on/off with a key
+    // (Z) so they don't have to hold right-mouse. Reset on every level load.
+    this._adsToggled = false;
+
     // Level 1 tutorial — controls walkthrough (see _updateTutorial).
     this._tutorialSteps = [
       {
@@ -144,7 +148,7 @@ export default class Game {
       },
       {
         text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
-        sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
+        sub: 'HOLD RMB OR TAP Z TO AIM · ENERGY RECHARGES ON ITS OWN',
       },
       {
         text: 'LAB A-2 — PULSE THE AMBER RELAY BESIDE THE CHAMBER',
@@ -483,7 +487,9 @@ export default class Game {
     if (this.gameState.isPlaying) {
       // Stance/aim from raw input — feeds both the player (move speed) and
       // the camera (FOV zoom, shoulder tighten, pivot height).
-      const aiming = this.input.mouse.rightDown === true;
+      // ADS can be HELD on right-mouse or LATCHED with the aim-toggle key.
+      if (this.input.justPressed('KeyZ')) this._adsToggled = !this._adsToggled;
+      const aiming = this.input.mouse.rightDown === true || this._adsToggled;
       const crouching = this.input.keys['KeyC'] === true;
       this.player.setStance(crouching, aiming);
       this.player.update(dt);
@@ -704,6 +710,9 @@ export default class Game {
     this._weaponReady = levelNum !== 2;
     this.pulseTool.enabled = this._weaponReady;
     this.player.weaponStowed = !this._weaponReady;
+
+    // Drop any latched ADS when a level (re)loads.
+    this._adsToggled = false;
 
     // 5b. Switch the procedural ambience to this level's mood.
     this.audio.setLevel(levelNum);
