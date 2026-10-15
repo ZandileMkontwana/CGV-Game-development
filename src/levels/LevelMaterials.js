@@ -17,6 +17,7 @@
  */
 import * as THREE from 'three';
 import { buildPBRMaps } from '../shaders/textures.js';
+import { applySurfaceShading } from '../shaders/SurfaceShading.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Seeded drawing helpers
@@ -743,6 +744,20 @@ export function getThemeMaterials(themeName) {
       exit: t.exit, warn: t.warn, emer: t.emer,
     },
   };
+
+  // Procedural grime / wetness / macro variation (see SurfaceShading.js).
+  // Clean lab -> grimy, wet damaged corridors -> burnt emergency level.
+  const surface = ({
+    lab:       { grime: 0.35, wet: 0.0,  contact: 0.45, macro: 0.7 },
+    damaged:   { grime: 0.85, wet: 0.55, contact: 0.6,  macro: 0.9 },
+    emergency: { grime: 0.95, wet: 0.35, contact: 0.6,  macro: 0.9 },
+  })[themeName] || { grime: 0.5, wet: 0, contact: 0.5, macro: 0.8 };
+  for (const key of ['wall', 'wallDark', 'ceil', 'floor', 'concrete']) {
+    applySurfaceShading(mats[key], surface);
+  }
+  for (const key of ['trim', 'beam', 'metal', 'metalDark', 'panel', 'pipe', 'locker', 'crate', 'debris']) {
+    applySurfaceShading(mats[key], { grime: surface.grime * 0.6, wet: 0, contact: 0, macro: 0.35 });
+  }
 
   _themeCache.set(themeName, mats);
   return mats;

@@ -15,6 +15,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 
 const GradeShader = {
   uniforms: {
@@ -96,7 +97,13 @@ export default class PostFX {
     this._shadowTime = 0;
     this._warmupFrames = 15;
 
-    this.composer = new EffectComposer(renderer);
+    // `antialias: true` on the canvas does not reach the composer's own buffer,
+    // so give that buffer 4x MSAA — otherwise pipe and door edges shimmer.
+    const msaaTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    this.composer = new EffectComposer(renderer, msaaTarget);
     // Cap the post pipeline below the canvas DPR — bloom + grade at full
     // retina resolution is the single biggest frame-time cost.
     this._maxPixelRatio = Math.min(renderer.getPixelRatio(), 1.5);
@@ -107,6 +114,28 @@ export default class PostFX {
     this.composer.setSize(window.innerWidth, window.innerHeight);
 
     this.composer.addPass(new RenderPass(scene, camera));
+
+    // Ground-truth ambient occlusion: darkens corners, wall/floor joins and the
+    // undersides of pipes and machinery, so equipment looks installed, not floating.
+    this.ao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+    this.ao.updateGtaoMaterial({
+      radius: 0.6,
+      distanceExponent: 1.5,
+      thickness: 1.5,
+      scale: 1.0,
+      samples: 12,
+      distanceFallOff: 1.0,
+    });
+    this.ao.updatePdMaterial({
+      lumaPhi: 10,
+      depthPhi: 2,
+      normalPhi: 3,
+      radius: 6,
+      rings: 2,
+      samples: 12,
+    });
+    this.ao.blendIntensity = 0.9;
+    this.composer.addPass(this.ao);
 
     // Subtle bloom — makes emissive weak points, eyes, tool tips and lamps
     // physically glow instead of looking like flat coloured pixels.
@@ -187,6 +216,7 @@ export default class PostFX {
         if (this._degradeLevel === 0) {
           this._degradeLevel = 1;
           this.composer.removePass(this.bloom);
+          this.composer.removePass(this.ao);
         } else if (this._degradeLevel === 1) {
           this._degradeLevel = 2;
           // Throttle shadow maps instead of disabling them: flipping

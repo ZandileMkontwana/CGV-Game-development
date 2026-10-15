@@ -20,7 +20,6 @@ import HuntAwareness from './HuntAwareness.js';
 import BossEncounter from './BossEncounter.js';
 import ServerAmbush from './ServerAmbush.js';
 import WeaponViewmodel from './WeaponViewmodel.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /**
  * Game — top-level orchestrator.
@@ -30,6 +29,34 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
  * Level content (Person B), shaders (Person C) and UI/sound (Person D)
  * plug into the hooks marked with TODO comments.
  */
+/**
+ * Reflection environment for the metal surfaces: a dark hall lit by rows of
+ * fluorescent strips plus one warm warning panel. (Cube-map idea from the
+ * Textures notes: PMREMGenerator bakes this scene into a prefiltered cube map
+ * that every PBR material samples for reflections.) Values above 1.0 are
+ * deliberate HDR highlights.
+ */
+function buildReactorEnvironment() {
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(
+    new THREE.BoxGeometry(24, 9, 48),
+    new THREE.MeshBasicMaterial({ color: 0x20272e, side: THREE.BackSide })
+  ));
+  const lampMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xe4f0ff).multiplyScalar(14) });
+  for (let z = -20; z <= 20; z += 5) {
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 3), lampMat);
+    lamp.position.set(0, 4.3, z);
+    env.add(lamp);
+  }
+  const warn = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 1.2, 6),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff6a2a).multiplyScalar(4) })
+  );
+  warn.position.set(11.8, 2.0, -6);
+  env.add(warn);
+  return env;
+}
+
 export default class Game {
   constructor(container) {
     // --- Renderer -----------------------------------------------------------
@@ -69,7 +96,7 @@ export default class Game {
     // high-metalness facility surfaces (panels, beams, pipes) pick up real
     // reflection sheen — the "convincing metal" look, not flat grey boxes.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environment = pmrem.fromScene(buildReactorEnvironment(), 0.02).texture;
     this.scene.environmentIntensity = 0.45;
     pmrem.dispose();
 

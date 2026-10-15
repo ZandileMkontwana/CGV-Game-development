@@ -18,13 +18,23 @@
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { signMaterial, decalMaterial } from './LevelMaterials.js';
 
 // ── Shared geometry cache ────────────────────────────────────────────────────
 const _geoCache = new Map();
 function boxGeo(w, h, d) {
   const k = `b|${w}|${h}|${d}`;
-  if (!_geoCache.has(k)) _geoCache.set(k, new THREE.BoxGeometry(w, h, d));
+  if (!_geoCache.has(k)) {
+    const minDim = Math.min(w, h, d);
+    const maxDim = Math.max(w, h, d);
+    // Bevel prop-sized boxes so their edges catch the light; big wall/floor
+    // slabs and thin panels stay sharp and cheap. Collision uses w/h/d, not this.
+    const bevel = minDim >= 0.08 && maxDim <= 4 ? Math.min(0.02, minDim * 0.25) : 0;
+    _geoCache.set(k, bevel > 0
+      ? new RoundedBoxGeometry(w, h, d, 2, bevel)
+      : new THREE.BoxGeometry(w, h, d));
+  }
   return _geoCache.get(k);
 }
 function cylGeo(rt, rb, h, seg = 14) {
