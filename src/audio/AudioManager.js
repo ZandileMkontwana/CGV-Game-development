@@ -57,6 +57,7 @@ export default class AudioManager {
     this._noise = null;
     this._dist = null;      // cached waveshaper curve
     this._footstep = null;  // { buffer, segments[] } recorded step sample
+    this._doorSample = null; // { buffer, range } recorded door-open sample
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -121,6 +122,7 @@ export default class AudioManager {
 
     this._unlocked = true;
     this._loadFootstepSample();
+    this._loadDoorSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) this._startMenuBed();
@@ -756,6 +758,7 @@ export default class AudioManager {
   }
 
   _door() {
+    if (this._doorSample) { this._playDoor(); return; }
     const t = this.ctx.currentTime;
     const o = this.ctx.createOscillator();
     o.type = 'sawtooth';
@@ -1050,6 +1053,64 @@ export default class AudioManager {
       if (segs[k].offset - segs[k - 1].offset < minSeg) segs.splice(k, 1);
     }
     return segs.length ? segs : fallback;
+  }
+
+  /** Fetch + decode the door sample, trimming silence from both ends. */
+  async _loadDoorSample() {
+    if (!this.ctx || this._doorSample) return;
+    try {
+      const res = await fetch('/assets/audio/environment/metal_door_open.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._doorSample = { buffer: audio, range: this._trimRange(audio) };
+    } catch (e) { /* keep the synthesized door */ }
+  }
+
+  /** Play the recorded door-open take, loud and pitch-jittered slightly. */
+  _playDoor() {
+    const ds = this._doorSample;
+    if (!ds) return;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = ds.buffer;
+    src.playbackRate.value = 0.97 + Math.random() * 0.06;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    // The source file is a ~31 s recording; play only the door-open event.
+    const playDur = Math.min(ds.range.duration, 4.0);
+    const dur = playDur / src.playbackRate.value;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.95, t + 0.02);
+    g.gain.setValueAtTime(0.95, t + Math.max(0.05, dur - 0.2));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.master);
+    src.start(t, ds.range.offset, playDur);
+    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+  }
+
+  /** First/last non-silent window of a recording — drops lead-in and tail. */
+  _trimRange(buffer) {
+    const data = buffer.getChannelData(0);
+    const rate = buffer.sampleRate;
+    const win = Math.max(1, Math.floor(rate * 0.01));   // 10 ms windows
+    const n = Math.floor(data.length / win);
+    const env = new Float32Array(n);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const base = i * win;
+      for (let j = 0; j < win; j++) { const s = data[base + j]; sum += s * s; }
+      const rms = Math.sqrt(sum / win);
+      env[i] = rms;
+      if (rms > peak) peak = rms;
+    }
+    if (peak <= 0) return { offset: 0, duration: buffer.duration };
+    const thr = peak * 0.05;
+    let a = 0; while (a < n && env[a] <= thr) a++;
+    let b = n - 1; while (b > a && env[b] <= thr) b--;
+    const offset = Math.max(0, ((a - 2) * win) / rate);
+    const end = Math.min(buffer.duration, ((b + 3) * win) / rate);
+    return { offset, duration: Math.max(0.05, end - offset) };
   }
 
   /** Double-thump heartbeat. */
