@@ -62,6 +62,7 @@ export default class AudioManager {
     this._suspenseSrc = null;
     this._suspenseWanted = false; // requested before the sample finished decoding
     this._suspenseFailed = false; // sample unavailable → use the synth fallback
+    this._l1Ambience = null; // { buffer } recorded Level-1 machinery ambience loop
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -128,6 +129,7 @@ export default class AudioManager {
     this._loadFootstepSample();
     this._loadDoorSample();
     this._loadSuspenseSample();
+    this._loadLevel1Ambience();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -485,6 +487,24 @@ export default class AudioManager {
     const t = ctx.currentTime;
     const isMenu = mode === 'menu';
     const level = isMenu ? 0 : mode;
+
+    // Level 1 uses the recorded industrial-machinery ambience when available —
+    // a looping bed that replaces the synthesized lab hum for that level.
+    if (level === 1 && this._l1Ambience) {
+      const src = ctx.createBufferSource();
+      src.buffer = this._l1Ambience.buffer;
+      src.loop = true;
+      const gain = this._gain(MIN_GAIN);
+      src.connect(gain).connect(this.music || this.master);
+      src.start(t);
+      const bed = { gain, filter: null, nodes: [src], base: 0.5 };
+      gain.gain.setValueAtTime(MIN_GAIN, t);
+      gain.gain.exponentialRampToValueAtTime(bed.base, t + 2.0);
+      this._mode = mode;
+      this._bed = bed;
+      return;
+    }
+
     const filter = this._filter('lowpass',
       isMenu ? 560 : level === 2 ? 720 : level === 3 ? 900 : 650, 0.6);
     const gain = this._gain(MIN_GAIN);
@@ -1121,6 +1141,19 @@ export default class AudioManager {
     const offset = Math.max(0, ((a - 2) * win) / rate);
     const end = Math.min(buffer.duration, ((b + 3) * win) / rate);
     return { offset, duration: Math.max(0.05, end - offset) };
+  }
+
+  /** Fetch + decode the recorded Level-1 machinery ambience loop. */
+  async _loadLevel1Ambience() {
+    if (!this.ctx || this._l1Ambience) return;
+    try {
+      const res = await fetch('/assets/audio/ambience/level1_machinery.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._l1Ambience = { buffer: audio };
+      // Swap it in if Level 1's procedural bed is already sounding.
+      if (this._mode === 1) this._startBed(1);
+    } catch (e) { /* keep the procedural bed */ }
   }
 
   /** Fetch + decode the level-start / stage-switch suspense track. */
