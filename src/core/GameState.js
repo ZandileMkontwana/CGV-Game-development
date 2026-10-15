@@ -100,8 +100,12 @@ export default class GameState {
     this._setState('playing');
   }
 
+  /**
+   * Retry the level the player was on. Dying in Level 2 (or using the
+   * pause-menu Restart) resumes that level — `_currentLevel` is deliberately
+   * left untouched. Only startGame() rewinds the campaign to Level 1.
+   */
   restart() {
-    this._currentLevel = 1;
     this._setState('playing', 'restart');
   }
 
@@ -127,7 +131,8 @@ export default class GameState {
 
   gameOver() {
     document.exitPointerLock?.();
-    this._showEndScreen('GAME OVER', 'The facility has claimed you.');
+    this._showEndScreen('GAME OVER',
+      `The facility has claimed you. Retry resumes Level ${this._currentLevel}.`);
     this._setState('gameover');
   }
 

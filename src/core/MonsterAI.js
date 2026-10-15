@@ -71,6 +71,13 @@ export default class MonsterAI {
     this._deathDuration = 1.6;   // seconds the monster takes to fall
     this._hitFlashTimer = 0;     // body flash on weak point hit
 
+    // --- Body damage --------------------------------------------------------
+    // Pulse bolts that land on the hide (not an exposed node) still wound it.
+    // Enough wounds rupture the next live node, so the creature can always be
+    // brought down without a perfectly aimed shot at a growth.
+    this.bodyShotsPerNode = 2;
+    this._bodyHits = 0;
+
     // --- Stealth: line-of-sight raycast ------------------------------------
     this._occluders = [];       // meshes that block line of sight (walls, props)
     this._losRaycaster = new THREE.Raycaster();
@@ -80,7 +87,7 @@ export default class MonsterAI {
     this._distToPlayer = Infinity; // horizontal distance to player
 
     // --- Event listeners ----------------------------------------------------
-    this._listeners = { damage: [], death: [], attack: [], stateChange: [], spotted: [], hidden: [], phaseChange: [], bossCue: [] };
+    this._listeners = { damage: [], wound: [], death: [], attack: [], stateChange: [], spotted: [], hidden: [], phaseChange: [], bossCue: [] };
 
     // --- Physics body -------------------------------------------------------
     this.body = new CANNON.Body({
@@ -161,6 +168,7 @@ export default class MonsterAI {
     this._dying = false;
     this._deathTimer = 0;
     this._hitFlashTimer = 0;
+    this._bodyHits = 0;
     this._path.length = 0;
     this._pathTimer = 0;
     this.model.rotation.x = 0; // reset any topple from a previous death
@@ -224,6 +232,33 @@ export default class MonsterAI {
       this._dying = true;
       this._deathTimer = this._deathDuration;
     }
+  }
+
+  /**
+   * Call when a pulse bolt hits the body rather than an exposed node.
+   * Wounds accumulate; every `bodyShotsPerNode` hits ruptures the next live
+   * node, reusing the node pipeline so death, phases and the HUD all stay in
+   * one place.
+   * @param {number} [amount] wounds dealt by this hit
+   * @returns {THREE.Mesh|null} the node ruptured by this hit, if any
+   */
+  damageBody(amount = 1) {
+    if (this.state === State.DEAD || this._dying) return null;
+
+    // Shorter, dimmer flash than a node burst — a body hit still reads.
+    this._hitFlashTimer = 0.18;
+    this._bodyMat.emissive.setHex(0x8a1a10);
+    this._bodyMat.emissiveIntensity = 0.9;
+
+    this._bodyHits += amount;
+    this._emit('wound', this._bodyHits);
+    if (this._bodyHits < this.bodyShotsPerNode) return null;
+
+    this._bodyHits = 0;
+    const wp = this.weakPoints.find(point => !point.userData.destroyed);
+    if (!wp) return null;
+    this.damageWeakPoint(wp);
+    return wp;
   }
 
   /** Set meshes that block line-of-sight (walls, props, hiding spots). */

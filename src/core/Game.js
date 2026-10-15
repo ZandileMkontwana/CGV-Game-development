@@ -7,6 +7,7 @@ import CameraController from './CameraController.js';
 import GameState from './GameState.js';
 import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
+import { setMaxAnisotropy } from '../shaders/textures.js';
 import UIManager from '../ui/UIManager.js';
 import { PA_ANNOUNCEMENTS } from '../ui/content.js';
 import PulseTool from './PulseTool.js';
@@ -39,8 +40,21 @@ export default class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
+    // Sharpen floor/wall detail at grazing angles (long-corridor views) —
+    // applies to every procedural texture built from here on.
+    setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
     container.appendChild(this.renderer.domElement);
-    if (import.meta.env.DEV) window.__game = this; // dev-only debug handle
+    if (import.meta.env.DEV) {
+      window.__game = this; // dev-only debug handle
+      // TEMP debug level skip: N = next level, 1/2/3 = jump straight to it.
+      // Inside the DEV guard, so production builds strip this.
+      window.addEventListener('keydown', (e) => {
+        if (e.repeat || this.gameState.state !== 'playing') return;
+        if (e.code === 'KeyN') { this.completeLevel(); return; }
+        const n = { Digit1: 1, Digit2: 2, Digit3: 3 }[e.code];
+        if (n) { this.gameState._currentLevel = n - 1; this.completeLevel(); }
+      });
+    }
 
     // --- Scene --------------------------------------------------------------
     this.scene = new THREE.Scene();
@@ -116,6 +130,15 @@ export default class Game {
 
     // Level 1 scripted creature reveal state (rebuilt on each level load).
     this._l1Reveal = null;
+
+    // Level 2 opens unarmed — firing unlocks at the staging-bay security
+    // locker (see _takeSidearm); the breach briefing beats live in _l2Opening.
+    this._weaponReady = true;
+    this._l2Opening = null;
+
+    // Aim-down-sights toggle: the player can latch ADS on/off with a key
+    // (Z) so they don't have to hold right-mouse. Reset on every level load.
+    this._adsToggled = false;
 
     // Level 1 tutorial — contextual walkthrough (see _updateTutorial).
     this._tutorialEl = document.getElementById('tutorial');
@@ -286,6 +309,20 @@ export default class Game {
     // --- FPS counter --------------------------------------------------------
     this._fpsEl = document.getElementById('fps');
     this._debugKeysEl = document.getElementById('debug-keys');
+    this._energyFillEl = document.getElementById('energy-bar-fill');
+    this._energyWrapEl = document.getElementById('energy-bar-wrap');
+
+    // --- Stealth HUD -------------------------------------------------------
+    this._stealthVignetteEl = document.getElementById('stealth-vignette');
+    this._stealthWarningEl = document.getElementById('stealth-warning');
+    this._stealthHiddenEl = document.getElementById('stealth-hidden');
+
+    // --- Objective HUD -----------------------------------------------------
+    this._objectiveEl = document.getElementById('objective');
+    this._hitMarkerEl = document.getElementById('hit-marker');
+    this._interactPromptEl = document.getElementById('interact-prompt');
+
+    // Prod builds drop the fps / key debug readouts (main-branch behaviour).
     if (!import.meta.env.DEV) {
       this._fpsEl?.remove();
       this._debugKeysEl?.remove();
@@ -302,10 +339,9 @@ export default class Game {
     this._fpsTime = 0;
 
     // --- Audio ---------------------------------------------------------------
-    // Procedural horror score/effects plus bundled PA voice clips.
+    // Procedural horror score/effects — no spoken dialogue (see AudioManager).
     this.audio = new AudioManager();
     this.ui.connect(this.audio, this.camera, this.gameState);
-    this.audio.loadAnnouncements(PA_ANNOUNCEMENTS, this.loadingManager);
     this._monsterSeen = false; // one first-sighting sting per level
     this._camPosVec = new THREE.Vector3(); // reused in the sight check
     this._fwdVec = new THREE.Vector3();
@@ -347,12 +383,13 @@ export default class Game {
       // Tutorial: track the first successful hit on a shootable panel.
       if (this._tut && target.userData.pulseTarget) this._tut.hit = true;
       if (target.userData.storyAction === 'restore-lab-power') this._repairLabPower(target);
-      // Level 1's creature is a scripted cameo — never killable there.
-      if (target.userData.pulseType === 'weakpoint' && this.monster.isActive
-          && this.gameState.currentLevel === 3) {
-        // Find the matching weak point mesh on the monster.
+      // The creature is killable from the hunt (L2) onward. Level 1's creature
+      // is a scripted cameo — shots there must not cut the reveal short.
+      const monsterHit = this.gameState.currentLevel >= 2 && this.monster.isActive;
+      if (monsterHit && target.userData.pulseType === 'weakpoint') {
+        // A shot into an exposed culture sac ruptures it outright.
         for (const wp of this.monster.weakPoints) {
-          if (wp === target) {
+          if (wp === target && !wp.userData.destroyed) {
             this.monster.damageWeakPoint(wp);
             this.shaders.flashWeakPoint(wp); // reactive glow flash on hit
             // Remove the destroyed weak point from the raycast list so
@@ -361,6 +398,16 @@ export default class Game {
             if (idx >= 0) this._shootables.splice(idx, 1);
             break;
           }
+        }
+      } else if (monsterHit && target.userData.pulseType === 'monsterBody') {
+        // Body shots wound it — enough of them rupture the next live node, so
+        // the creature always dies even when the player can't hit a growth.
+        this.audio.play('growl', 0.55);
+        const ruptured = this.monster.damageBody(1);
+        if (ruptured) {
+          this.shaders.flashWeakPoint(ruptured);
+          const idx = this._shootables.indexOf(ruptured);
+          if (idx >= 0) this._shootables.splice(idx, 1);
         }
       }
       if (target.userData.doorId) {
@@ -437,6 +484,7 @@ export default class Game {
         this._setObjective('THREAT NEUTRALIZED — REACH THE CONTROL ROOM');
       } else if (this.gameState.currentLevel === 2) {
         this._setObjective('THREAT NEUTRALIZED — REACH THE EMERGENCY EXIT');
+        this.ui.showAnnouncement('Entity down. Sector B reads clear — continue to core access.');
       }
 
       // Monster defeated → start the failsafe collapse countdown.
@@ -469,8 +517,9 @@ export default class Game {
       if (newState === 'playing') this.postfx.resetFrameTiming();
       if (newState === 'playing' && (oldState === 'menu' || oldState === 'gameover'
           || oldState === 'victory' || reason === 'restart')) {
-        // Fresh start — load level 1 geometry, lighting, and spawn player.
-        this._loadLevel(1);
+        // A restart resumes the level the player was on (death retry, pause
+        // restart); entering from a menu always starts the campaign at 1.
+        this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
@@ -584,7 +633,9 @@ export default class Game {
       }
       // Stance/aim from raw input — feeds both the player (move speed) and
       // the camera (FOV zoom, shoulder tighten, pivot height).
-      const aiming = this.input.mouse.rightDown === true;
+      // ADS can be HELD on right-mouse or LATCHED with the aim-toggle key.
+      if (this.input.justPressed('KeyZ')) this._adsToggled = !this._adsToggled;
+      const aiming = this.input.mouse.rightDown === true || this._adsToggled;
       const crouching = this.input.keys['KeyC'] === true;
       this.player.setStance(crouching, aiming);
       this.player.update(dt);
@@ -606,13 +657,16 @@ export default class Game {
       // Level 1 scripted beats: mutation reveal, tutorial, scientist NPC.
       this._updateL1Reveal(dt);
       this._updateTutorial(dt);
+      // Level 2 breach briefing (staged PA + instruction beats).
+      this._updateL2Opening(dt);
       if (this._scientist.group.visible) {
         this._scientist.update(dt, this._scientistState);
       }
 
       // First-person rifle: sway/bob/ADS driven by the same stance state,
-      // hidden in third person so it doesn't float beside the body.
-      this.weapon.setVisible(this.camera.isFirstPerson);
+      // hidden in third person so it doesn't float beside the body. Also
+      // hidden while unarmed (Level 2 before the security-locker pickup).
+      this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady);
       this.weapon.update(dt, {
         moving: this.player._charState.moving,
         sprinting: this.player._charState.sprinting,
@@ -718,6 +772,9 @@ export default class Game {
       // Check win triggers (player reached objective for this level).
       if (this.gameState.isPlaying) this._checkWinTriggers();
 
+      // Door interaction: show the E-prompt near closed doors, open on E.
+      this._updateDoorInteraction();
+
       // Update health bar HUD.
       this.ui.setHealth(this.playerHealth, this.playerMaxHealth);
 
@@ -729,6 +786,8 @@ export default class Game {
       this.postfx.setDanger(0);
       // Clear stealth HUD when monster isn't active.
       this._clearStealthHUD();
+      // No interact prompt outside gameplay.
+      if (this._interactPromptEl) this._interactPromptEl.classList.remove('visible');
     }
 
     this.input.endFrame();
@@ -746,7 +805,6 @@ export default class Game {
   _loadLevel(levelNum) {
     this.ui.reset();
     this.ui.setLevel(levelNum);
-    this.audio.stopAnnouncement();
     this.shaders.clearLevelVisuals();
     this.postfx.resetFrameTiming();
     this.postfx.setLevel(levelNum);
@@ -792,6 +850,15 @@ export default class Game {
     // 5. Configure the Pulse Tool for this level's targets.
     this.pulseTool.setLevel(levelNum);
 
+    // 5a. Level 2 opens unarmed: the sidearm waits in the staging-bay
+    //     security locker (see _takeSidearm) — firing stays gated till then.
+    this._weaponReady = levelNum !== 2;
+    this.pulseTool.enabled = this._weaponReady;
+    this.player.weaponStowed = !this._weaponReady;
+
+    // Drop any latched ADS when a level (re)loads.
+    this._adsToggled = false;
+
     // 5b. Switch the procedural ambience to this level's mood.
     this.audio.setLevel(levelNum);
     this.audio.stopRumble();
@@ -825,23 +892,27 @@ export default class Game {
     //    monster's body meshes (impact feedback on torso shots) and weak
     //    points (damage).
     for (const wp of this.monster.weakPoints) {
-      wp.visible = levelNum === 3;
+      // Exposed culture sacs are the efficient kill, so they are visible AND
+      // shootable from the hunt (L2) onward. Level 1's cameo keeps them hidden.
+      wp.visible = levelNum >= 2;
       wp.material.uniforms.uColor.value.setHex(levelNum === 3 ? 0x65e7f4 : 0xff3333);
       if (levelNum === 3) wp.material.uniforms.uColor.value.multiplyScalar(0.45);
     }
     this._shootables = this.levels.shootables.concat(this.monster.hitMeshes,
-      levelNum === 3 ? this.monster.weakPoints : []);
+      levelNum >= 2 ? this.monster.weakPoints : []);
 
     // 9. Show this level's objective so the player knows what to do.
     const objectives = {
       1: 'ENGINEERING CALL: RESTORE AUXILIARY POWER IN LAB A-2 — PULSE THE AMBER RELAY',
-      2: 'SECTOR B / PULSE THE BLUE DOOR RELAY TO ENTER THE EVACUATION ROUTE',
+      2: 'SECTOR B / TAKE THE PULSE SIDEARM FROM THE STAGING-BAY SECURITY LOCKER',
       3: 'SURFACE SEAL / DESTROY THREE CYAN NODES: CHEST AND BOTH SHOULDERS',
     };
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
     if (levelNum === 1) this._announce('dispatch');
-    if (levelNum === 2) this._announce('failsafe');
+    // Level 2 opens with the 'breach' PA inside its staged briefing
+    // (_l2Opening); the failsafe/demolition chain now starts at Level 3.
+    if (levelNum === 3) this._announce('failsafe');
 
     // 10. Level 1 runs the contextual tutorial (zone/event-gated hints).
     if (levelNum === 1) {
@@ -852,6 +923,7 @@ export default class Game {
         fired: false, hit: false,
         relayJump: false, relayShoot: false, relayShootCount: 0,
         allTrainingDone: false, labDoorOpen: false,
+        moved: false, doorOpened: false,
       };
       this._showTutorialStep(0);
     } else {
@@ -861,25 +933,131 @@ export default class Game {
 
     // 11. Show the pre-level briefing overlay (blocks input until dismissed).
     this._showBriefing(levelNum);
+
+    // 11. Level 2 runs the breach briefing: the PA confirms what happened in
+    //     Lab A-2, then the instructions point at the security locker. Beats
+    //     only advance during 'playing' so the black transition hides none.
+    this._l2Opening = levelNum === 2 ? {
+      t: 0, step: 0,
+      beats: [
+        { at: 1.2, run: () => this._announce('breach') },
+        { at: 7.5, run: () => this.ui.showTutorial({
+          text: 'THE LAB A-2 CULTURE WENT WRONG — SOMETHING IS LOOSE IN SECTOR B',
+          sub: 'It hunts by sight and sound. Keep your distance, stay behind solid cover.',
+        }) },
+        { at: 14.5, run: () => this.ui.showTutorial({
+          text: 'ARM YOURSELF — SECURITY LOCKER, STAGING BAY WEST WALL',
+          sub: 'Walk up to the open locker and press E to take the pulse sidearm.',
+        }) },
+        { at: 21.0, run: () => this.ui.showTutorial(null) },
+      ],
+    } : null;
   }
 
   /**
-   * Update the objective HUD text (top-left corner).
+   * Update the objective: the HUD text (top-left corner) and the in-world
+   * mission directive board mounted in the level.
    * @param {string} text
    */
   _setObjective(text) {
     this.ui.setObjective(text);
+    this.levels.goalBoard?.setObjective(text);
   }
 
   _announce(name) {
     const announcement = PA_ANNOUNCEMENTS[name];
+    if (!announcement) return;
     this.ui.showAnnouncement(announcement.text);
-    this.audio.playAnnouncement(name);
+    // No spoken dialogue — the facility "speaks" through synthesized
+    // reactor-station alert tones and sirens (see AudioManager.playAlert).
+    this.audio.playAlert(name);
+  }
+
+  /**
+   * Level 2 opening — the breach briefing. Staged text beats run while the
+   * player keeps control: the PA confirms the containment breach, then the
+   * instructions point at the security locker. Cleared once all beats fire.
+   */
+  _updateL2Opening(dt) {
+    const seq = this._l2Opening;
+    if (!seq || this.gameState.state !== 'playing') return;
+    seq.t += dt;
+    while (seq.step < seq.beats.length && seq.t >= seq.beats[seq.step].at) {
+      seq.beats[seq.step].run();
+      seq.step++;
+    }
+    if (seq.step >= seq.beats.length) this._l2Opening = null;
+  }
+
+  /**
+   * Level 2 — the player takes the pulse sidearm from the staging-bay
+   * security locker. Firing, the first-person rifle and the third-person
+   * held weapon all unlock here; the hunt beat machine retakes the HUD.
+   */
+  _takeSidearm(pickup) {
+    pickup.taken = true;
+    if (pickup.mesh) pickup.mesh.visible = false;
+    if (pickup.light) pickup.light.intensity = 0; // dim, never hide (recompile)
+    this._weaponReady = true;
+    this.pulseTool.enabled = true;
+    this.player.weaponStowed = false;
+    this.audio.play('clang');
+    this.ui.showPickup('PULSE SIDEARM ACQUIRED — LMB / F TO FIRE');
+    this._huntBeat = ''; // let the hunt beat machine retake the objective
   }
 
   /** Brief crosshair hit-marker flash on landed shots (CSS-driven). */
   _flashHitMarker() {
     this.ui.flashHit();
+  }
+
+  /**
+   * Door interaction — press E near a closed, unlocked door to open it
+   * (no shooting required). Locked doors (the L3 failsafe seal) are skipped:
+   * they open through the scripted boss-death flow only.
+   */
+  _updateDoorInteraction() {
+    // Level 2: the staging-bay weapons locker shares the E-prompt.
+    const pickup = this.levels.weaponPickup;
+    let pickupNear = false;
+    if (pickup && !pickup.taken) {
+      const pdx = this.player.position.x - pickup.x;
+      const pdz = this.player.position.z - pickup.z;
+      pickupNear = pdx * pdx + pdz * pdz < pickup.radius * pickup.radius;
+      if (pickupNear && this.input.justPressed('KeyE')) this._takeSidearm(pickup);
+    }
+
+    const doors = this.levels._doors;
+    let near = null;
+    for (const door of doors) {
+      if (door.opening || door.locked) continue;
+      const dx = this.player.position.x - door.mesh.position.x;
+      const dz = this.player.position.z - door.mesh.position.z;
+      if (dx * dx + dz * dz < 6.25) { // 2.5 m reach
+        near = door;
+        break;
+      }
+    }
+
+    if (this._interactPromptEl) {
+      this._interactPromptEl.classList.toggle('visible', !!near || pickupNear);
+      const prompt = near && near.id === 'l1-exit'
+        ? '[ E ] RELEASE BYPASS DOOR' : '[ E ] OPEN DOOR';
+      this._interactPromptEl.textContent = near || !pickupNear
+        ? prompt : '[ E ] TAKE PULSE SIDEARM';
+    }
+
+    if (near && this.input.justPressed('KeyE')) {
+      this.levels.openDoor(near.id);
+      this.audio.play('doorOpen');
+      if (this._tut) this._tut.doorOpened = true;
+      // Level 1 ends past the bypass door: releasing it opens the way into the
+      // surface-lift lobby where the win zone sits.
+      if (near.id === 'l1-exit') {
+        this._setObjective('BYPASS RELEASED / STEP THROUGH TO THE SURFACE LIFT');
+        this.ui.showAnnouncement('Bypass released. Surface lift lobby open — step through to transfer.');
+      }
+    }
   }
 
   /**
@@ -932,6 +1110,8 @@ export default class Game {
         this.monster.chaseSpeed = 4.3;
         this.monster.attackDamage = 15;
         this.monster.attackCooldown = 1.8;
+        // It dies to aimed sac shots or a slower stream of body shots.
+        this.monster.bodyShotsPerNode = 2;
         this._refreshHuntNavigation();
         break;
       case 3:
@@ -953,6 +1133,7 @@ export default class Game {
         this.monster.escapeTimeout = 999;  // never gives up chase in boss fight
         this.monster.chaseSpeed = 4.6;
         this.monster.attackDamage = 22;
+        this.monster.bodyShotsPerNode = 3; // the boss absorbs more punishment
         this.ui.showTutorial({ text: 'CHEST + BOTH SHOULDERS / SHOOT THE CYAN NODES', sub: 'An amber line warns of a charge. Sidestep it, then aim during recovery.' });
         break;
     }
@@ -990,6 +1171,8 @@ export default class Game {
       this._mutateLight.intensity = 2;
       this.camera.shake(0.25);
       this.audio.play('alarm');
+      // The alarm empties the station: staff walkers bolt for the entrance.
+      this.levels.evacuateWalkers();
       this._announce('breach');
       this._setObjective('CONTAINMENT FAILURE / STAY CLEAR OF THE CHAMBER');
     } else if (phase === 'mutate') {
@@ -1323,6 +1506,11 @@ export default class Game {
 
   /** Local goals and breathing spaces keep the hunt readable. */
   _updateHunt() {
+    // Unarmed: hold the arm-up objective until the sidearm is taken.
+    if (!this._weaponReady) {
+      this._setObjective('SECTOR B / TAKE THE PULSE SIDEARM FROM THE STAGING-BAY SECURITY LOCKER');
+      return;
+    }
     const z = this.player.position.z;
     const released = this.levels.pressureReleased;
     if (released && !this._huntPressureWasReleased) {

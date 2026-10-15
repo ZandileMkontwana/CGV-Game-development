@@ -115,6 +115,9 @@ export default class PlayerController {
     this.playerModel.visible = false;
     scene.add(this.playerModel);
     this.heldWeapon = new HeldWeapon(scene);
+    // Level 2 opens unarmed — Game.js clears this when the player takes the
+    // pulse sidearm from the security locker (the held gun follows this flag).
+    this.weaponStowed = false;
   }
 
   /** Reset to a spawn position. */
@@ -275,7 +278,7 @@ export default class PlayerController {
     this.isFirstPerson = firstPerson;
     const useOperator = !firstPerson && this.operator.ready;
     this.operator.group.visible = useOperator;
-    this.heldWeapon.group.visible = !firstPerson;
+    this.heldWeapon.group.visible = !firstPerson && !this.weaponStowed;
     // TP+soldier: skinned operator only. FP / fallback: procedural engineer,
     // upper body hidden in FP (camera sits inside the torso) but legs stay
     // visible so looking down shows the character, like CoD.

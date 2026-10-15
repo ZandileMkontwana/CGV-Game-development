@@ -21,7 +21,7 @@
  *   update(dt)                       — call every frame while playing
  */
 import * as THREE from 'three';
-import { buildPBRMaps, buildGradientSkybox } from './textures.js';
+import { buildPBRMaps, buildGradientSkybox, buildSoftSprite } from './textures.js';
 
 export default class ShaderManager {
   constructor(scene) {
@@ -191,23 +191,48 @@ export default class ShaderManager {
         uniform vec3 uColor;
         varying vec2 vUv;
 
-        void main() {
-          // Heat rises: distortion drifts upward and gets faster near the top.
-          float rise = uTime * (0.6 + uIntensity * 0.6);
-          float wave1 = sin(vUv.y * 18.0 + rise * 3.0) * 0.035;
-          float wave2 = sin(vUv.y * 7.0 - rise * 5.0 + vUv.x * 4.0) * 0.02;
-          float shimmer = (wave1 + wave2) * uIntensity;
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+        // Value noise — an organic distortion field instead of readable
+        // sine bands (pure sines instantly look synthetic).
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash(i);
+          float b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0));
+          float d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
 
-          // Fresnel-ish edge fade so the quad blends into its surroundings
-          // instead of showing a hard rectangular border.
-          float edgeX = smoothstep(0.0, 0.18, vUv.x) * smoothstep(1.0, 0.82, vUv.x);
-          float edgeY = smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.7, vUv.y);
+        void main() {
+          // Heat rises: the noise field scrolls upward, faster with intensity.
+          float rise = uTime * (0.5 + uIntensity * 0.8);
+
+          vec2 uv = vUv * vec2(6.0, 4.0);
+          float n1 = noise(uv + vec2(0.0, -rise * 1.7));
+          float n2 = noise(uv * 2.3 + vec2(uTime * 0.35, -rise * 2.8));
+          float shimmer = (n1 * 0.65 + n2 * 0.35) - 0.5; // -0.5..0.5
+
+          // Fast vertical streaks — air tearing past the hot surface.
+          float streak = 0.5 + 0.5 * sin(vUv.y * 26.0 - rise * 5.5 + n1 * 4.0);
+
+          // Soft border fade so the quad melts into the scene.
+          float edgeX = smoothstep(0.0, 0.2, vUv.x) * smoothstep(1.0, 0.8, vUv.x);
+          float edgeY = smoothstep(0.0, 0.14, vUv.y) * smoothstep(1.0, 0.82, vUv.y);
           float edge = edgeX * edgeY;
 
-          float flicker = 0.85 + 0.15 * sin(uTime * 11.0 + vUv.x * 20.0);
-          float alpha = clamp(abs(shimmer) * 6.0, 0.0, 1.0) * edge * uIntensity * flicker;
+          // Slow "breathing" so the haze never sits at a constant strength.
+          float breath = 0.8 + 0.2 * sin(uTime * 2.3);
 
-          gl_FragColor = vec4(uColor, alpha * 0.6);
+          float alpha = (abs(shimmer) * 1.7 + streak * 0.22) * edge * uIntensity * breath;
+          alpha = clamp(alpha, 0.0, 0.85);
+
+          // Hotter (whiter) core where the streaks are strongest.
+          vec3 col = mix(uColor, vec3(1.0, 0.96, 0.88), streak * 0.35);
+          gl_FragColor = vec4(col, alpha * 0.55);
         }
       `,
       transparent: true,
@@ -292,19 +317,31 @@ export default class ShaderManager {
 
           if (n < uDissolveAmount) discard;
 
-          // Soft glowing edge band just above the dissolve threshold.
-          float edge = smoothstep(uDissolveAmount, uDissolveAmount + 0.10, n);
-          float band = 1.0 - edge; // 1 right at the cut line, fading out
+          // Distance from the burn line: 0 at the cut, growing into the
+          // still-solid material around it.
+          float cut = n - uDissolveAmount;
 
-          vec3 edgeColor = mix(uEdgeColorHot, uEdgeColorCool, smoothstep(0.0, 1.0, band));
-          // Faint overall pre-heat glow as the amount climbs, even off-edge.
-          vec3 preheat = uBaseColor + uEdgeColorCool * (uDissolveAmount * 0.15);
+          // Charred zone just beyond the edge — material scorches black
+          // before the burning glow, then fades to the intact base colour.
+          float charred = 1.0 - smoothstep(0.08, 0.26, cut);
 
-          vec3 color = mix(preheat, edgeColor, band);
+          // The burning edge itself: hot, flickering like embers. The
+          // time-driven flicker trips a per-fragment phase from position so
+          // neighbouring patches pulse out of sync.
+          float band = 1.0 - smoothstep(0.0, 0.09, cut);
+          float flicker = 0.8 + 0.3 * sin(uTime * 11.0 + vPos.y * 6.0 + vPos.x * 4.0);
+
+          vec3 col = uBaseColor;
+          col = mix(col, uBaseColor * 0.12, charred);
+          col = mix(col, mix(uEdgeColorCool, uEdgeColorHot, band) * flicker, band);
+
+          // Faint all-over pre-heat glow as the collapse progresses.
+          col += uEdgeColorCool * uDissolveAmount * 0.12;
+
           float rim = pow(1.0 - abs(vNormal.z), 2.0) * 0.15;
-          color += rim;
+          col += rim;
 
-          gl_FragColor = vec4(color, 1.0);
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
       transparent: false,
@@ -410,9 +447,13 @@ export default class ShaderManager {
    * PulseTool.js: call `trail.emit(bolt.position)` once per frame while a
    * bolt is active; `update(dt)` (already called every frame below) ages
    * and fades them automatically.
+   *
+   * Sprites (not meshes) with a soft radial glow map — they always face the
+   * camera and fade to true transparent edges, so the trail reads as plasma
+   * blips instead of visible spheres at any angle.
    */
   createPulseTrail(color = 0x00ddff, poolSize = 14) {
-    const geo = new THREE.SphereGeometry(0.045, 6, 6);
+    const spriteTex = buildSoftSprite();
     const trail = {
       _pool: [],
       _next: 0,
@@ -425,14 +466,14 @@ export default class ShaderManager {
       },
     };
     for (let i = 0; i < poolSize; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0,
+      const mat = new THREE.SpriteMaterial({
+        map: spriteTex, color, transparent: true, opacity: 0,
         blending: THREE.AdditiveBlending, depthWrite: false,
       });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.visible = false;
-      this.scene.add(mesh);
-      trail._pool.push({ mesh, life: 0 });
+      const sprite = new THREE.Sprite(mat);
+      sprite.visible = false;
+      this.scene.add(sprite);
+      trail._pool.push({ mesh: sprite, life: 0 });
     }
     this._pulseTrails.push(trail);
     return trail;
@@ -565,7 +606,9 @@ export default class ShaderManager {
           seg.mesh.material.opacity = 0;
         } else {
           seg.mesh.material.opacity = seg.life * 0.8;
-          seg.mesh.scale.setScalar(0.5 + seg.life * 0.5);
+          // Sprite scale is in world units — keep the blips ~0.1 m wide,
+          // shrinking as they age.
+          seg.mesh.scale.setScalar((0.5 + seg.life * 0.5) * 0.18);
         }
       }
     }
@@ -588,7 +631,7 @@ export default class ShaderManager {
     return light;
   }
 
-  _configureShadow(light, { mapSize = 1024, near = 0.5, far = 50, area = 25, bias = -0.0005 } = {}) {
+  _configureShadow(light, { mapSize = 1024, near = 0.5, far = 50, area = 25, bias = -0.0005, normalBias = 0.02 } = {}) {
     light.castShadow = true;
     light.shadow.mapSize.set(mapSize, mapSize);
     light.shadow.camera.near = near;
@@ -598,6 +641,10 @@ export default class ShaderManager {
     light.shadow.camera.top = area;
     light.shadow.camera.bottom = -area;
     light.shadow.bias = bias;
+    // Normal bias offsets sample positions along the surface normal — kills
+    // the acne on lit walls without the peter-panning that a bigger constant
+    // bias would cause.
+    light.shadow.normalBias = normalBias;
   }
 
   /** Free GPU resources for every shader material this manager created. */
@@ -608,7 +655,7 @@ export default class ShaderManager {
     this._dissolveMaterials = [];
     for (const trail of this._pulseTrails) {
       for (const seg of trail._pool) {
-        seg.mesh.geometry.dispose();
+        // Sprites share one global geometry — only the material is ours.
         seg.mesh.material.dispose();
         this.scene.remove(seg.mesh);
       }
