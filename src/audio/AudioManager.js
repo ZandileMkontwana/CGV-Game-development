@@ -71,6 +71,8 @@ export default class AudioManager {
     this._chaosBed = null;  // { gain, nodes[] } Level-3 collapse chaos bed
     this._chaosOn = false;  // is the chaos layer running?
     this._chaosT = { boom: 3, machine: 2, scream: 5, rumble: 4 };
+    this._fireEmitters = []; // Panner-positioned crackle sources, one per Level-3 fire
+    this._crackleBuf = null; // cached looping ember-crackle buffer
     this._duckTO = 0;
 
     // Per-frame schedulers (seconds until next event).
@@ -750,6 +752,105 @@ export default class AudioManager {
   updateEnding(dt) {
     if (!this._chaosOn) return;
     this._updateChaos(dt);
+  }
+
+  /**
+   * Give every Level-3 fire its own positional crackle, so walking past one
+   * you hear it rise on your left or right and fall away behind you. Each
+   * emitter is a looping ember buffer through a band-pass into a PannerNode
+   * parked at the fire.
+   */
+  setFireEmitters(fires) {
+    this.stopFireEmitters();
+    if (!this.ctx || !fires || !fires.length) return;
+    const buf = this._crackleBuf || (this._crackleBuf = this._buildCrackleBuffer());
+    for (const f of fires) {
+      const hasFlame = f.flames && f.flames.length > 0; // smoke columns are quieter
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      src.playbackRate.value = 0.9 + Math.random() * 0.2;
+      const bp = this._filter('bandpass', hasFlame ? 1500 : 900, 0.8);
+      const g = this._gain(0);
+      const pan = ctx.createPanner();
+      pan.panningModel = 'inverse';
+      pan.distanceModel = 'inverse';
+      pan.refDistance = 2.5;
+      pan.maxDistance = 30;
+      pan.rolloffFactor = 1.5;
+      if (pan.positionX) {
+        pan.positionX.value = f.x; pan.positionY.value = f.y + 0.4; pan.positionZ.value = f.z;
+      } else {
+        pan.setPosition(f.x, f.y + 0.4, f.z);
+      }
+      src.connect(bp).connect(g).connect(pan).connect(this.master);
+      const t = ctx.currentTime;
+      const target = (hasFlame ? 0.5 : 0.16) * (0.8 + Math.random() * 0.4);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(target, t + 1.5);
+      src.start(t);
+      this._fireEmitters.push({ src, bp, g, pan });
+    }
+  }
+
+  stopFireEmitters() {
+    if (!this.ctx || !this._fireEmitters.length) { this._fireEmitters = []; return; }
+    const t = this.ctx.currentTime;
+    for (const e of this._fireEmitters) {
+      try {
+        e.g.gain.cancelScheduledValues(t);
+        e.g.gain.setValueAtTime(Math.max(e.g.gain.value, MIN_GAIN), t);
+        e.g.gain.linearRampToValueAtTime(0, t + 0.4);
+        e.src.stop(t + 0.5);
+      } catch (err) { /* noop */ }
+      const nodes = [e.src, e.bp, e.g, e.pan];
+      setTimeout(() => {
+        for (const n of nodes) { try { n.disconnect(); } catch (err) { /* noop */ } }
+      }, 650);
+    }
+    this._fireEmitters = [];
+  }
+
+  /** Park the Web Audio listener on the camera so panned fires sound correct. */
+  updateListener(pos, fwd) {
+    const L = this.ctx && this.ctx.listener;
+    if (!L) return;
+    const t = this.ctx.currentTime;
+    if (L.positionX) {
+      L.positionX.setTargetAtTime(pos.x, t, 0.03);
+      L.positionY.setTargetAtTime(pos.y, t, 0.03);
+      L.positionZ.setTargetAtTime(pos.z, t, 0.03);
+      L.forwardX.setTargetAtTime(fwd.x, t, 0.03);
+      L.forwardY.setTargetAtTime(fwd.y, t, 0.03);
+      L.forwardZ.setTargetAtTime(fwd.z, t, 0.03);
+      L.upX.setValueAtTime(0, t);
+      L.upY.setValueAtTime(1, t);
+      L.upZ.setValueAtTime(0, t);
+    } else {
+      L.setPosition(pos.x, pos.y, pos.z);
+      L.setOrientation(fwd.x, fwd.y, fwd.z, 0, 1, 0);
+    }
+  }
+
+  /** A few seconds of looping firebed: sparse crackle pops over a faint hiss. */
+  _buildCrackleBuffer(dur = 4) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.floor(rate * dur);
+    const buf = this.ctx.createBuffer(1, len, rate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * 0.015; // hiss bed
+    const pops = Math.floor(dur * 26);
+    for (let p = 0; p < pops; p++) {
+      const start = (Math.random() * len) | 0;
+      const amp = 0.25 + Math.random() * 0.7;
+      const dec = Math.max(2, Math.floor(rate * (0.004 + Math.random() * 0.03)));
+      for (let i = 0; i < dec && start + i < len; i++) {
+        const t = i / dec;
+        d[start + i] += (Math.random() * 2 - 1) * amp * Math.exp(-t * 6) * (1 - t);
+      }
+    }
+    return buf;
   }
 
   /** Distant explosion: sub-bass boom, pressure crackle, debris tail. */

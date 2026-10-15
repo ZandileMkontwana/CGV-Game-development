@@ -432,6 +432,7 @@ export default class Game {
           this.audio.playClipSequence(['emergencyIntercom']);
           this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
           this.audio.startChaos();
+          this.audio.setFireEmitters(this.levels._fires);
         }
       }
       if (newState === 'gameover') {
@@ -439,6 +440,7 @@ export default class Game {
         this.audio.stopAmbient();
         this.audio.stopRumble();
         this.audio.stopChaos();
+        this.audio.stopFireEmitters();
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
@@ -446,7 +448,10 @@ export default class Game {
         this.audio.stopRumble();
         // Victory keeps the collapse chaos running under the ending; only
         // returning to the menu finally silences it.
-        if (newState === 'menu') this.audio.stopChaos();
+        if (newState === 'menu') {
+          this.audio.stopChaos();
+          this.audio.stopFireEmitters();
+        }
       }
       if (newState === 'menu' || newState === 'gameover' || newState === 'victory') {
         // Release the level while a menu or the ending covers the canvas.
@@ -564,6 +569,11 @@ export default class Game {
       updateCrt(dt);
       this.ui.update(dt);
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
+      // Keep the Web Audio listener on the camera so each fire's PannerNode
+      // tracks the player's heading (fires rise left/right, fade behind).
+      this.camera.camera.getWorldPosition(this._camPosVec);
+      this.camera.camera.getWorldDirection(this._fwdVec);
+      this.audio.updateListener(this._camPosVec, this._fwdVec);
       if (this.gameState.currentLevel === 2) this._updateServerAmbush(dt);
       this._updateHealthPacks(dt);
 
