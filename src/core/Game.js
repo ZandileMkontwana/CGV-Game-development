@@ -794,11 +794,13 @@ export default class Game {
   }
 
   /**
-   * Update the objective HUD text (top-left corner).
+   * Update the objective: the HUD text (top-left corner) and the in-world
+   * mission directive board mounted in the level.
    * @param {string} text
    */
   _setObjective(text) {
     this.ui.setObjective(text);
+    this.levels.goalBoard?.setObjective(text);
   }
 
   _announce(name) {

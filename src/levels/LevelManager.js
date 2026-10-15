@@ -105,6 +105,13 @@ export default class LevelManager {
     this._casualties = [];
     this.serverAmbush = null;
 
+    /**
+     * Live mission-directive board (rebuilt per level): Game.js mirrors every
+     * objective change onto it so the level goal is also written in the world.
+     * It owns a canvas texture, so teardown must call its dispose().
+     */
+    this.goalBoard = null;
+
     /** Heat-haze zone meshes — ShaderManager swaps in the haze material. */
     this.heatHazeZones = [];
 
@@ -241,6 +248,8 @@ export default class LevelManager {
     this.serverAmbush = null;
     this.labChamber?.dispose();
     this.labChamber = null;
+    this.goalBoard?.dispose();
+    this.goalBoard = null;
     this.labEmergency = false;
     this.labRoute = [];
     this._staticBatch?.dispose();
@@ -908,6 +917,11 @@ export default class LevelManager {
     kit.floorDecal(3.2, -5.0, 'stripes', { size: 1.2 });
     // Station status board greeting the arriving shift engineer.
     kit.wallScreen(4.93, 1.9, -4.6, 'w', { w: 2.2, h: 1.2 });
+    // Mission directive board beside the reception's south exit: the in-world
+    // copy of the objective, so the goal is readable on the wall, not only HUD.
+    this.goalBoard = kit.goalBoard(-3.2, 1.95, -9.94, 's', {
+      tag: 'SECTOR A / LEVEL 01',
+    });
 
     // ── Corridor C1 (x -2..2, z -10..-20) ────────────────────────────────
     kit.floorSlab(4.3, 10.0, 0, -15.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
@@ -1237,6 +1251,10 @@ export default class LevelManager {
       mesh: locker.gun, light: locker.light, taken: false,
     };
     kit.sign(-3.98, 2.12, -5.8, 'e', 'SECURITY / SIDEARM LOCKER', { sub: 'SIGNED OUT UNDER LOCKDOWN ORDER 6-11', fg: '#8bebbd', w: 1.9, h: 0.45 });
+    // Mission directive board on the staging-bay east wall, facing the spawn.
+    this.goalBoard = kit.goalBoard(4.02, 1.85, -4.0, 'w', {
+      head: 'SECTOR DIRECTIVE', tag: 'SECTOR B / LEVEL 02',
+    });
     this._flickerLight(-3.4, 2.55, -7.4, 0xff3520, 0.9, 7); // red lockdown wash
     this._dustMotes(40, 0, -4, 4, 0.35, 2.6);
 
@@ -1508,6 +1526,10 @@ export default class LevelManager {
     kit.hangingPipe(-1.6, 3.4, -4.0, { tilt: 0.7 });
     kit.debrisPile(1.3, -7.5, { s: 0.8, seed: 41 });
     this._scorchDecal(0.8, 0, -3.0, 1.0);
+    // Mission directive board on the entry-corridor east wall.
+    this.goalBoard = kit.goalBoard(2.02, 2.1, -5.6, 'w', {
+      head: 'FAILSAFE DIRECTIVE', tag: 'CONTAINMENT / LEVEL 03',
+    });
 
     // ── Arena (x -14..14, z -10..-42) ───────────────────────────────────
     kit.floorSlab(28.6, 32.0, 0, -26.15, { trim: true });
