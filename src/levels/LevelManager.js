@@ -190,6 +190,11 @@ export default class LevelManager {
       ...this.heatHazeZones,
       ...this.shootables,
     ]);
+    // The sidearm pickup must stay a real, hideable mesh — once merged into
+    // a static batch it would keep rendering after the player takes it.
+    if (this.weaponPickup?.mesh) {
+      this.weaponPickup.mesh.traverse(object => excluded.add(object));
+    }
     const roots = this._disposables.map(entry => entry.mesh)
       .filter(mesh => mesh?.userData.staticScenery);
     this._staticBatch = new StaticBatch(this.scene, roots, excluded);
