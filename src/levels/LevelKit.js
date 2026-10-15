@@ -437,6 +437,193 @@ export default class LevelKit {
     return g;
   }
 
+  /**
+   * Mission directive board — a wall-mounted display that prints the current
+   * objective in the world. Game.js redraws it via setObjective() every time
+   * the HUD objective changes, so the wall always states the live goal.
+   *
+   * Deliberately NOT flagged staticScenery: the frozen StaticBatch proxies
+   * cannot carry a canvas that changes after the level is built. Only the
+   * canvas texture and its material are per-instance — the frame, bezel and
+   * screen reuse the cached kit geometries and shared theme materials, so
+   * dispose() only has to release the texture and material.
+   *
+   * @param {number} x,y,z  world position
+   * @param {string} face   'n' | 'e' | 's' | 'w' — the direction it faces
+   * @param {object} o  {w, h, head (heading band), tag (right-hand label),
+   *                     objective (initial text)}
+   * @returns {{group: THREE.Group, setObjective: Function, dispose: Function}}
+   */
+  goalBoard(x, y, z, face, o = {}) {
+    const w = o.w || 1.7;
+    const h = o.h || 1.3;
+    const head = o.head || 'MISSION DIRECTIVE';
+    let tag = o.tag || '';
+    let objective = (o.objective || 'AWAITING DIRECTIVE').toUpperCase();
+
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+    group.rotation.y = this.faceAngle(face);
+
+    const frame = new THREE.Mesh(boxGeo(w + 0.14, h + 0.14, 0.08), this.mats.metalDark);
+    frame.castShadow = false;
+    frame.receiveShadow = true;
+    group.add(frame);
+
+    const bezel = new THREE.Mesh(boxGeo(w + 0.02, h + 0.02, 0.03), this.mats.rubber);
+    bezel.position.z = 0.04;
+    bezel.castShadow = false;
+    group.add(bezel);
+
+    // Live canvas — one instance per board, redrawn on every objective change.
+    const W = 512;
+    const H = Math.round((W * h) / w);
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+    const material = new THREE.MeshBasicMaterial({
+      map: texture, transparent: true, toneMapped: false,
+    });
+    const screen = new THREE.Mesh(planeGeo(w * 0.9, h * 0.88), material);
+    screen.position.z = 0.065;
+    group.add(screen);
+
+    // Bezel status lamps.
+    for (const dx of [-w * 0.4, w * 0.4]) {
+      const dot = new THREE.Mesh(boxGeo(0.05, 0.05, 0.02), this.mats.accent);
+      dot.position.set(dx, h / 2 + 0.055, 0.075);
+      dot.castShadow = false;
+      group.add(dot);
+    }
+
+    const PAD = 26;
+    const HEAD_H = 46;
+    const LABEL_H = 24;
+    const FOOT_H = 34;
+    const BODY_W = W - PAD * 2 - 14;
+
+    const wrapSegment = (segment, size) => {
+      ctx.font = `bold ${size}px monospace`;
+      const lines = [];
+      let line = '';
+      for (const word of segment.split(' ').filter(Boolean)) {
+        const probe = line ? `${line} ${word}` : word;
+        if (line && ctx.measureText(probe).width > BODY_W) {
+          lines.push(line);
+          line = word;
+        } else {
+          line = probe;
+        }
+      }
+      if (line) lines.push(line);
+      return lines;
+    };
+
+    /** Largest size whose wrapped lines still fit the space under the label. */
+    const fitBody = () => {
+      const segments = objective.split('/').map(s => s.trim()).filter(Boolean);
+      const budget = H - HEAD_H - LABEL_H - FOOT_H - 10;
+      for (let size = 30; size >= 15; size--) {
+        const lines = segments.flatMap(segment => wrapSegment(segment, size));
+        if (lines.length * size * 1.26 <= budget) return { size, lines };
+      }
+      return { size: 15, lines: segments.flatMap(segment => wrapSegment(segment, 15)) };
+    };
+
+    const draw = () => {
+      ctx.fillStyle = '#060d13';
+      ctx.fillRect(0, 0, W, H);
+      // Faint facilities grid + bright outer border.
+      ctx.strokeStyle = 'rgba(90,220,255,0.06)';
+      ctx.lineWidth = 1;
+      for (let gx = 32; gx < W; gx += 32) {
+        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+      }
+      for (let gy = 32; gy < H; gy += 32) {
+        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(120,230,255,0.55)';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(4, 4, W - 8, H - 8);
+
+      // Heading band + right-aligned level tag.
+      ctx.fillStyle = 'rgba(18,54,74,0.92)';
+      ctx.fillRect(4, 4, W - 8, HEAD_H);
+      ctx.fillStyle = 'rgba(120,230,255,0.85)';
+      ctx.fillRect(4, HEAD_H + 1, W - 8, 2);
+      ctx.font = 'bold 22px monospace';
+      ctx.fillStyle = '#eafcff';
+      ctx.fillText(head.toUpperCase(), PAD, 35);
+      if (tag) {
+        ctx.font = '16px monospace';
+        ctx.fillStyle = 'rgba(150,235,255,0.75)';
+        ctx.textAlign = 'right';
+        ctx.fillText(tag.toUpperCase(), W - PAD, 35);
+        ctx.textAlign = 'left';
+      }
+
+      // Objective label (triangle drawn by hand — the glyph is not portable).
+      const labelY = HEAD_H + LABEL_H - 6;
+      ctx.fillStyle = '#ffc566';
+      ctx.beginPath();
+      ctx.moveTo(PAD, labelY - 16);
+      ctx.lineTo(PAD + 10, labelY - 11);
+      ctx.lineTo(PAD, labelY - 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = 'bold 15px monospace';
+      ctx.fillText('CURRENT OBJECTIVE', PAD + 16, labelY);
+
+      // Auto-fitted objective text.
+      const { size, lines } = fitBody();
+      const lineH = size * 1.26;
+      ctx.font = `bold ${size}px monospace`;
+      ctx.fillStyle = '#eaf6ff';
+      let ty = labelY + 12 + size;
+      for (const line of lines) {
+        ctx.fillText(line, PAD + 12, ty);
+        ty += lineH;
+      }
+      ctx.fillStyle = 'rgba(255,180,70,0.9)';
+      ctx.fillRect(PAD, labelY + 6, 3, Math.min(lines.length * lineH, H - FOOT_H - labelY - 12));
+
+      // Footer rail.
+      ctx.fillStyle = 'rgba(10,32,44,0.95)';
+      ctx.fillRect(4, H - FOOT_H, W - 8, FOOT_H - 4);
+      ctx.font = '13px monospace';
+      ctx.fillStyle = '#7fe0b2';
+      ctx.fillText('STATUS: ACTIVE DIRECTIVE', PAD, H - 15);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(150,235,255,0.7)';
+      ctx.fillText('DIRECTIVE BOARD 01', W - PAD, H - 15);
+      ctx.textAlign = 'left';
+      texture.needsUpdate = true;
+    };
+
+    draw();
+    this.scene.add(group);
+
+    return {
+      group,
+      /** Publish a new objective (reason: Game.js _setObjective). */
+      setObjective: (text, nextTag) => {
+        objective = (text || '').toUpperCase() || 'AWAITING DIRECTIVE';
+        if (nextTag) tag = nextTag;
+        draw();
+      },
+      /** Owns only the canvas texture + material; the rest is shared kit data. */
+      dispose: () => {
+        this.scene.remove(group);
+        texture.dispose();
+        material.dispose();
+      },
+    };
+  }
+
   /** Rotating fan blade assembly — pass the returned group to host._addRotatingHazard. */
   fanBlade(x, y, z, o = {}) {
     const r = o.r || 0.85;
@@ -663,6 +850,126 @@ export default class LevelKit {
     this._child(main, this.mats.rubber, 0.5, 0.12, 0.6, -0.65, 0.44, 0);
     this._child(main, this.mats.metal, 0.06, 0.9, 0.9, -1.0, 0.35, 0);
     return main;
+  }
+
+  /**
+   * Medical cot — rails-and-casters hospital bed with a raised backrest,
+   * pillow, side rails and an IV hook. The frame box is the collider; the
+   * mattress, boards and hook are visual children.
+   */
+  medCot(x, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const main = this.box(this.mats.metalDark, 0.95, 0.4, 1.95, x, 0.5, z,
+      { physics: true, rotY });
+    this._child(main, this.mats.locker, 0.86, 0.16, 1.78, 0, 0.13, 0);
+    this._child(main, this.mats.locker, 0.6, 0.14, 0.34, 0, 0.24, -0.72, 0.5);
+    for (const s of [-1, 1]) {
+      this._child(main, this.mats.metal, 0.05, 0.3, 1.1, s * 0.48, 0.06, 0.1);
+    }
+    this._child(main, this.mats.metal, 0.95, 0.55, 0.06, 0, 0, -0.99);
+    this._child(main, this.mats.metal, 0.95, 0.42, 0.06, 0, -0.04, 0.99);
+    for (const sx of [-0.38, 0.38]) {
+      for (const sz of [-0.85, 0.85]) {
+        const c = new THREE.Mesh(cylGeo(0.07, 0.07, 0.06, 8), this.mats.metalDark);
+        c.rotation.x = Math.PI / 2;
+        c.position.set(sx, -0.31, sz);
+        main.add(c);
+      }
+    }
+    this._child(main, this.mats.metal, 0.04, 0.95, 0.04, 0.42, 0.62, -0.82);
+    this._child(main, this.mats.metal, 0.18, 0.04, 0.04, 0.33, 1.06, -0.82);
+    return main;
+  }
+
+  /** Shift-office desk — workstation with a monitor, papers and a mug. */
+  officeDesk(x, z, face, o = {}) {
+    const w = o.w || 1.7;
+    const rotY = this.faceAngle(face);
+    const main = this.box(this.mats.panel, w, 0.74, 0.8, x, 0.37, z,
+      { physics: true, rotY });
+    this._child(main, this.mats.metalDark, w + 0.06, 0.05, 0.86, 0, 0.37, 0);
+    this._child(main, this.mats.metalDark, w - 0.24, 0.5, 0.05, 0, -0.08, -0.36);
+    const scr = this._child(main, o.alt ? this.mats.screenAlt : this.mats.screen,
+      0.6, 0.4, 0.05, -0.2, 0.62, -0.14);
+    scr.rotation.x = -0.12;
+    this._child(main, this.mats.metalDark, 0.16, 0.1, 0.16, -0.2, 0.43, -0.14);
+    this._child(main, this.mats.locker, 0.32, 0.02, 0.24, 0.42, 0.4, 0.14, 0, 0.3, 0);
+    const mug = new THREE.Mesh(cylGeo(0.05, 0.05, 0.11, 10), this.mats.accent);
+    mug.position.set(0.62, 0.44, -0.2);
+    main.add(mug);
+    return main;
+  }
+
+  /** Wall notice board — cork backplate with pinned papers (no collision). */
+  noticeBoard(x, y, z, face, o = {}) {
+    const w = o.w || 1.4;
+    const h = o.h || 0.9;
+    const rotY = this.faceAngle(face);
+    const board = this.box(this.mats.trim, w, h, 0.06, x, y, z, { rotY, cast: false });
+    this._child(board, this.mats.debris, w - 0.12, h - 0.12, 0.02, 0, 0, 0.035);
+    const rand = mulberry32(o.seed || 5);
+    for (let i = 0; i < 6; i++) {
+      const paper = this._child(board,
+        i % 3 === 0 ? this.mats.beaconAmber : this.mats.locker,
+        0.26 + rand() * 0.1, 0.2 + rand() * 0.12, 0.01,
+        (rand() - 0.5) * (w - 0.5), (rand() - 0.5) * (h - 0.4), 0.05,
+        0, 0, (rand() - 0.5) * 0.2);
+      paper.castShadow = false;
+    }
+    return board;
+  }
+
+  /** Supply rack — framed upright with pipe stock and boxed parts. */
+  storageRack(x, z, face, o = {}) {
+    const w = o.w || 1.5;
+    const h = o.h || 2.1;
+    const rotY = this.faceAngle(face);
+    const main = this.box(this.mats.metalDark, w, h, 0.55, x, h / 2, z,
+      { physics: true, occluder: true, rotY });
+    for (const ly of [-0.32, 0, 0.32]) {
+      this._child(main, this.mats.metal, w - 0.06, 0.05, 0.58, 0, ly * h, 0);
+    }
+    for (let i = 0; i < 3; i++) {
+      const p = new THREE.Mesh(cylGeo(0.05, 0.05, w - 0.2, 8), this.mats.pipe);
+      p.rotation.z = Math.PI / 2;
+      p.position.set(0, -0.35 * h + 0.12, -0.1 + i * 0.1);
+      main.add(p);
+    }
+    this._child(main, this.mats.crate, 0.42, 0.3, 0.3, -0.3, 0.18, 0.1);
+    this._child(main, this.mats.crate, 0.3, 0.26, 0.26, 0.34, 0.16, 0.08);
+    return main;
+  }
+
+  /** Wall pipe manifold — header pipe with a bank of valve handwheels. */
+  pipeManifold(x, y, z, face, o = {}) {
+    const len = o.len || 1.6;
+    const g = new THREE.Group();
+    g.userData.staticScenery = true;
+    g.position.set(x, y, z);
+    g.rotation.y = this.faceAngle(face);
+    const header = new THREE.Mesh(cylGeo(0.09, 0.09, len, 12), this.mats.pipe);
+    header.rotation.z = Math.PI / 2;
+    header.castShadow = true;
+    g.add(header);
+    const n = o.valves || 3;
+    for (let i = 0; i < n; i++) {
+      const vx = -len / 2 + (len / (n + 1)) * (i + 1);
+      const stem = new THREE.Mesh(cylGeo(0.045, 0.045, 0.3, 8), this.mats.metal);
+      stem.position.set(vx, 0.22, 0.02);
+      stem.castShadow = true;
+      g.add(stem);
+      const wheel = new THREE.Mesh(cylGeo(0.09, 0.09, 0.03, 12), this.mats.beaconAmber);
+      wheel.rotation.x = Math.PI / 2;
+      wheel.position.set(vx, 0.38, 0.02);
+      g.add(wheel);
+      const dial = new THREE.Mesh(cylGeo(0.06, 0.06, 0.04, 10), this.mats.metalDark);
+      dial.rotation.x = Math.PI / 2;
+      dial.position.set(vx, -0.02, 0.13);
+      g.add(dial);
+    }
+    this.scene.add(g);
+    this.host._track(g);
+    return g;
   }
 
   /** Containment tube — the Level 1 focal prop (glass + specimen + cables). */

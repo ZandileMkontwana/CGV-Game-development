@@ -105,6 +105,13 @@ export default class LevelManager {
     this._casualties = [];
     this.serverAmbush = null;
 
+    /**
+     * Live mission-directive board (rebuilt per level): Game.js mirrors every
+     * objective change onto it so the level goal is also written in the world.
+     * It owns a canvas texture, so teardown must call its dispose().
+     */
+    this.goalBoard = null;
+
     /** Heat-haze zone meshes — ShaderManager swaps in the haze material. */
     this.heatHazeZones = [];
 
@@ -241,6 +248,8 @@ export default class LevelManager {
     this.serverAmbush = null;
     this.labChamber?.dispose();
     this.labChamber = null;
+    this.goalBoard?.dispose();
+    this.goalBoard = null;
     this.labEmergency = false;
     this.labRoute = [];
     this._staticBatch?.dispose();
@@ -862,7 +871,7 @@ export default class LevelManager {
     const m = this._mats;
 
     this._winTriggers = [
-      { x: 0, z: -62, radius: 2.0 }, // control room console
+      { x: 0, z: -68.4, radius: 1.7 }, // surface-lift lobby, past the bypass door
     ];
     this._monsterWaypoints = []; // L1 monster is a scripted cameo (see below)
 
@@ -908,6 +917,11 @@ export default class LevelManager {
     kit.floorDecal(3.2, -5.0, 'stripes', { size: 1.2 });
     // Station status board greeting the arriving shift engineer.
     kit.wallScreen(4.93, 1.9, -4.6, 'w', { w: 2.2, h: 1.2 });
+    // Mission directive board beside the reception's south exit: the in-world
+    // copy of the objective, so the goal is readable on the wall, not only HUD.
+    this.goalBoard = kit.goalBoard(-3.2, 1.95, -9.94, 's', {
+      tag: 'SECTOR A / LEVEL 01',
+    });
 
     // ── Corridor C1 (x -2..2, z -10..-20) ────────────────────────────────
     kit.floorSlab(4.3, 10.0, 0, -15.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
@@ -1096,25 +1110,76 @@ export default class LevelManager {
     });
     kit.wallRun(0.3, H, 10.3, -5.15, H / 2, -59.15);
     kit.wallRun(0.3, H, 10.3, 5.15, H / 2, -59.15);
-    kit.wallRun(10.6, H, 0.3, 0, H / 2, -64.15);              // south end wall
+    kit.wallRun(3.65, H, 0.3, -3.325, H / 2, -64.15);        // south wall, bypass gap
+    kit.wallRun(3.65, H, 0.3, 3.325, H / 2, -64.15);
+    kit.doorway(3.0, 2.8, 0, 1.4, -64.15, 's');
     kit.sign(0, 2.6, -54.32, 'n', 'CONTROL ROOM', { fg: '#7fe7ff' });
-    kit.consoleDesk(0, -62.6, 'n', { w: 3.2, monitors: 3 });
-    kit.chair(-0.7, -61.3, 'n');
-    kit.chair(0.7, -61.3, 'n');
-    kit.wallScreen(0, 2.2, -63.93, 's', { w: 3.4, h: 1.5 });
+    // Consoles sit off the exit lane: two banks on the west side.
+    kit.consoleDesk(-2.8, -62.6, 'e', { w: 2.6, monitors: 2 });
+    kit.chair(-1.75, -61.5, 'e');
+    kit.chair(-1.75, -63.4, 'e');
+    kit.consoleDesk(-2.8, -57.4, 'e', { w: 2.0, monitors: 1 });
+    kit.chair(-1.75, -57.4, 'e');
+    kit.wallScreen(4.93, 2.1, -62.6, 'w', { w: 2.8, h: 1.3 });
     kit.serverRack(-4.6, -55.8, 'e');
     kit.serverRack(4.6, -55.8, 'w');
     kit.cabinet(-4.6, -60.0, 'e');
     kit.shelfUnit(4.6, -60.0, 'w', { w: 1.4, h: 1.8 });
     kit.fuseBox(-4.94, 1.7, -58.0, 'e');
     kit.extinguisher(4.94, 1.2, -56.0);
-    kit.debrisPile(-2.6, -63.2, { s: 0.7, seed: 21 });
+    kit.debrisPile(-4.2, -63.4, { s: 0.7, seed: 21 });
     kit.floorDecal(0, -60.4, 'stripes', { size: 1.4, color: '#5cff8a' });
-    // Annunciator fascias flanking the status wall + side instrumentation.
-    kit.annunciatorBoard(-2.6, 2.15, -63.95, 's');
-    kit.annunciatorBoard(2.6, 2.15, -63.95, 's');
+    kit.floorDecal(0, -63.1, 'dashes', { size: 1.2 });
+    // Annunciator fascias flanking the exit door + side instrumentation.
+    kit.annunciatorBoard(-2.9, 2.15, -63.95, 's');
+    kit.annunciatorBoard(2.9, 2.15, -63.95, 's');
     kit.gaugeCluster(-4.94, 1.9, -61.6, 'e');
     kit.gaugeCluster(4.94, 1.9, -56.8, 'w');
+
+    // ── Bypass airlock door 'l1-exit' — the level's final passage ────────
+    // The run ends here: the player presses E at the door to release it, then
+    // walks through into the surface-lift lobby where the win zone sits.
+    this._createDoor('l1-exit', 3.0, 2.8, 0, 1.4, -64.15, 0, m.hazard);
+    kit.sign(0, 2.75, -63.97, 's', 'BYPASS AIRLOCK ▸', { sub: 'PRESS  E  TO RELEASE / SURFACE LIFT BEYOND', fg: '#ffd08a', w: 3.2, h: 0.6 });
+    kit.floorLine(0, -63.4, 1.5, { color: 'exit' });
+
+    // ── Surface-lift lobby (x -5..5, z -64..-71) — WIN ───────────────────
+    kit.floorSlab(10.6, 6.7, 0, -67.5, { lines: [{ axis: 'z', len: 5.4, color: 'exit' }] });
+    kit.ceilingSlab(10.6, 6.7, 0, H, -67.5, {
+      lamps: [
+        { x: -2.6, z: -1.5, light: true, intensity: 0.85 },
+        { x: 2.6, z: 1.5, light: true, intensity: 0.85 },
+      ],
+    });
+    kit.wallRun(0.3, H, 6.8, -5.15, H / 2, -67.6);
+    kit.wallRun(0.3, H, 6.8, 5.15, H / 2, -67.6);
+    kit.wallRun(10.6, H, 0.3, 0, H / 2, -70.95);             // south end
+    // The lift itself: heavy hazard-striped doors in the end wall.
+    kit.box(m.metalDark, 5.2, 3.4, 0.22, 0, 1.7, -70.78, { cast: false });
+    kit.box(m.hazard, 2.5, 3.0, 0.06, -1.28, 1.5, -70.65, { cast: false });
+    kit.box(m.hazard, 2.5, 3.0, 0.06, 1.28, 1.5, -70.65, { cast: false });
+    kit.box(m.accent, 0.1, 2.6, 0.09, 0, 1.5, -70.62, { cast: false });
+    kit.sign(0, 3.35, -70.6, 's', 'SURFACE LIFT / 01', { sub: 'TRANSFER TO SUB-LEVEL 2 LOCKOUT', fg: '#8bebbd', w: 3.2, h: 0.7 });
+    this._exitBeacon(0, -68.4, { radius: 1.7 });
+    // Housekeeping around the lift: pallets, pipework, fire point, boards.
+    kit.crateStack(3.6, -69.6, { w: 1.4, h: 1.4, d: 0.9, rotY: -0.25 });
+    kit.crate(-4.0, -66.2, { s: 0.8, rotY: 0.3 });
+    kit.barrel(-4.4, -68.6);
+    kit.barrel(-3.8, -69.0);
+    kit.canister(4.2, -65.6);
+    kit.fallenPanel(2.4, 0.3, -66.4, { rx: 0.35, ry: 0.7 });
+    kit.debrisPile(-2.2, -70.0, { s: 0.9, seed: 22 });
+    kit.pipeRun('z', 6.2, -4.9, 2.55, -67.6, { count: 3, r: 0.07 });
+    kit.cableTray('z', 6.2, 4.9, 2.5, -67.6);
+    kit.gaugeCluster(-4.94, 1.9, -68.8, 'e');
+    kit.fuseBox(4.94, 1.7, -66.8, 'w');
+    kit.extinguisher(4.94, 1.2, -69.0);
+    kit.annunciatorBoard(-4.94, 2.15, -66.2, 'e');
+    kit.floorDecal(0, -65.6, 'stripes', { size: 1.3, color: '#5cff8a' });
+    kit.floorLine(0, -69.6, 2.4, { color: 'exit' });
+    this._createSteamVent('l1-steam-3', 4.2, 2.05, -69.8, { count: 8, rate: 0.2, rise: 0.35, alpha: 0.24, lifeSpan: 1.0, drift: 0.08 });
+    this._flickerLight(-2.8, 2.55, -66.4, 0xaad4ff, 0.9, 7);
+    this._dustMotes(45, 0, -67.5, 4.5, 0.3, 2.7);
 
     // ── Walking staff — the station is alive before the breach ───────────
     // Patrol loops stay on walkable floor, clear of props and doorways;
@@ -1188,7 +1253,7 @@ export default class LevelManager {
     const kit = this._kit;
     const m = this._mats;
     this.serverAmbush = { x: 2.6, y: 0.65, z: -43, triggerZ: -39.3 };
-    this.navigationBounds = { minX: -7.5, maxX: 7.5, minZ: -63, maxZ: -1 };
+    this.navigationBounds = { minX: -16, maxX: 16, minZ: -63, maxZ: -1 };
 
     this._winTriggers = [
       { x: 0, z: -62.4, radius: 1.6 }, // emergency exit vestibule
@@ -1237,6 +1302,10 @@ export default class LevelManager {
       mesh: locker.gun, light: locker.light, taken: false,
     };
     kit.sign(-3.98, 2.12, -5.8, 'e', 'SECURITY / SIDEARM LOCKER', { sub: 'SIGNED OUT UNDER LOCKDOWN ORDER 6-11', fg: '#8bebbd', w: 1.9, h: 0.45 });
+    // Mission directive board on the staging-bay east wall, facing the spawn.
+    this.goalBoard = kit.goalBoard(4.02, 1.85, -4.0, 'w', {
+      head: 'SECTOR DIRECTIVE', tag: 'SECTOR B / LEVEL 02',
+    });
     this._flickerLight(-3.4, 2.55, -7.4, 0xff3520, 0.9, 7); // red lockdown wash
     this._dustMotes(40, 0, -4, 4, 0.35, 2.6);
 
@@ -1256,6 +1325,9 @@ export default class LevelManager {
     kit.hangingPipe(1.8, 2.5, -10.5, { tilt: 0.7 });
     kit.debrisPile(-1.6, -16.4, { s: 0.8, seed: 32 });
     kit.canister(-1.8, -9.4);
+    kit.fuseBox(1.97, 1.7, -15.0, 'w');
+    kit.noticeBoard(-1.93, 1.6, -16.6, 'e', { seed: 67, w: 1.0, h: 0.7 });
+    kit.gaugeCluster(-1.96, 1.7, -11.6, 'e');
     kit.fallenPanel(1.5, 0.28, -15.5, { rx: 0.4, ry: -0.6 });
     // The breach's human cost — an evacuating scientist who didn't make it.
     this._scorchDecal(-1.05, 0, -15.5, 2.0);
@@ -1279,7 +1351,9 @@ export default class LevelManager {
     kit.wallRun(7.0, H, 0.3, 4.8, H / 2, -18.15);
     kit.wallRun(7.0, H, 0.3, -4.8, H / 2, -30.15);
     kit.wallRun(7.0, H, 0.3, 4.8, H / 2, -30.15);
-    kit.wallRun(0.3, H, 12.3, -8.15, H / 2, -24.15);           // west
+    kit.wallRun(0.3, H, 6.5, -8.15, H / 2, -21.25);            // west (medical-bay door)
+    kit.wallRun(0.3, H, 3.4, -8.15, H / 2, -28.6);
+    kit.doorway(2.4, 2.6, -8.15, 1.3, -25.7, 'w');
     kit.wallRun(0.3, H, 12.3, 8.15, H / 2, -24.15);            // east
     kit.doorway(2.6, 2.6, 0, 1.3, -18.15, 's');
     kit.sign(0, 2.4, -17.97, 's', 'CREW QUARTERS ▸', { fg: '#ffd9a0' });
@@ -1287,7 +1361,7 @@ export default class LevelManager {
     // Lockers = tall stealth cover (occluders) along the west wall + mid-room.
     kit.lockerBank(-7.4, -20.0, 'e');
     kit.lockerBank(-7.4, -23.6, 'e');
-    kit.lockerBank(-7.4, -27.2, 'e');
+    kit.lockerBank(-7.4, -28.8, 'e');
     kit.lockerBank(-2.4, -29.4, 'n');
     kit.lockerBank(2.6, -19.2, 'n');
     kit.lockerBank(-2.7, -22.5, 'n', { count: 5, h: 2.35 });
@@ -1324,6 +1398,45 @@ export default class LevelManager {
     // Dusty beam through the ceiling gap the fallen panel dropped from.
     // Dust catches the practical lighting without a solid-looking cone.
     this._dustMotes(80, 0, -24, 7, 0.3, 2.8);
+
+    // ── Medical bay (x -16..-8, z -18..-30) ──────────────────────────────
+    // Overflow triage ward off the crew quarters. Only the west/north/south
+    // walls are new — the east side reuses the split quarters wall above
+    // (the 2.4 m doorway at z -25.7).
+    kit.floorSlab(8.3, 12.3, -12.15, -24.15, { lines: [{ axis: 'z', len: 9, color: 'warn', at: -1.8 }] });
+    kit.ceilingSlab(8.3, 12.3, -12.15, H, -24.15, {
+      lamps: [
+        { x: -2.6, z: 3.6, light: true, intensity: 0.6 },
+        { x: 2.6, z: 3.6 },
+        { x: 2.6, z: -3.6, light: true, intensity: 0.6 },
+      ],
+    });
+    kit.wallRun(0.3, H, 12.3, -16.15, H / 2, -24.15);         // west outer
+    kit.wallRun(8.3, H, 0.3, -12.15, H / 2, -18.15);          // north
+    kit.wallRun(8.3, H, 0.3, -12.15, H / 2, -30.15);          // south
+    kit.sign(-15.9, 2.2, -24.0, 'e', 'MEDICAL BAY / TRIAGE', { sub: 'ISOLATION PROTOCOL IN EFFECT', fg: '#9feac0', w: 2.8, h: 0.6 });
+    // Cots along the west wall; prep bench and storage on the far side.
+    kit.medCot(-14.4, -21.0, 'e');
+    kit.medCot(-14.4, -24.6, 'e');
+    kit.medCot(-14.4, -28.0, 'e');
+    kit.labBench(-10.8, -19.9, 's', { len: 2.4 });
+    kit.cabinet(-15.5, -29.7, 'n');
+    kit.shelfUnit(-9.6, -29.8, 'n', { w: 1.4, h: 1.9 });
+    kit.shelfUnit(-11.3, -29.8, 'n', { w: 1.4, h: 1.9 });
+    kit.wallScreen(-15.93, 2.0, -22.4, 'e', { w: 2.4, h: 1.2, alt: true });
+    kit.noticeBoard(-15.9, 1.7, -26.2, 'e', { seed: 61, w: 1.3, h: 0.8 });
+    kit.gaugeCluster(-15.96, 1.7, -28.4, 'e');
+    kit.fuseBox(-12.4, 1.8, -18.34, 'n');
+    kit.chair(-9.7, -21.0, 'e');
+    kit.crate(-12.6, -29.2, { s: 0.7 });
+    kit.debrisPile(-9.4, -19.5, { s: 0.7, seed: 62 });
+    kit.extinguisher(-15.93, 1.2, -18.7);
+    kit.floorDecal(-11.6, -24.0, 'dashes', { size: 1.6 });
+    this.healthPacks.push(new HealthPack(this.scene, -10.4, -22.4));
+    this._scorchDecal(-12.8, 0, -21.6, 1.2);
+    this._createSteamVent('l2-vent-4', -9.2, 0.35, -22.4, { count: 8, rate: 0.16, alpha: 0.3 });
+    this._flickerLight(-9.6, 2.55, -25.2, 0x9fffd0, 0.8, 6);
+    this._dustMotes(40, -12.2, -24, 4.6, 0.3, 2.6);
 
     // ── Maintenance C2 (x -2..2, z -30..-40) — hazards ───────────────────
     kit.floorSlab(4.3, 10.0, 0, -35.15, { lines: [{ axis: 'z', len: 8, color: 'warn' }] });
@@ -1381,8 +1494,12 @@ export default class LevelManager {
     kit.wallRun(7.0, H, 0.3, 4.8, H / 2, -40.15);
     kit.wallRun(7.0, H, 0.3, -4.8, H / 2, -52.15);
     kit.wallRun(7.0, H, 0.3, 4.8, H / 2, -52.15);
-    kit.wallRun(0.3, H, 12.3, -8.15, H / 2, -46.15);           // west
-    kit.wallRun(0.3, H, 12.3, 8.15, H / 2, -46.15);            // east
+    kit.wallRun(0.3, H, 6.1, -8.15, H / 2, -43.05);            // west (supply door)
+    kit.wallRun(0.3, H, 3.8, -8.15, H / 2, -50.4);
+    kit.doorway(2.4, 2.6, -8.15, 1.3, -47.3, 'w');
+    kit.wallRun(0.3, H, 2.1, 8.15, H / 2, -41.05);             // east (shift-office door)
+    kit.wallRun(0.3, H, 7.8, 8.15, H / 2, -48.4);
+    kit.doorway(2.4, 2.6, 8.15, 1.3, -43.3, 'e');
     kit.doorway(2.6, 2.6, 0, 1.3, -40.15, 's');
     kit.sign(0, 2.4, -39.98, 's', 'SERVER ROOM ▸', { fg: '#ffb04a' });
     kit.sign(0, 2.4, -51.97, 's', 'CORE ACCESS >', { sub: 'EVACUATION TRANSFER', fg: '#a4eac1', w: 2.2, h: 0.55 });
@@ -1417,6 +1534,69 @@ export default class LevelManager {
     this._flickerLight(-6.5, 2.55, -50.5, 0xffaa66, 0.8, 6);
     this._dustMotes(60, 0, -46, 6.5, 0.3, 2.7);
     kit.canister(4.1, -43.2);
+
+    // ── Supply store (x -16..-8, z -42..-52) ─────────────────────────────
+    // Locked-down stores off the server room's west flank.
+    kit.floorSlab(8.3, 10.3, -12.15, -47.15, { lines: [{ axis: 'z', len: 7, color: 'warn', at: 1.7 }] });
+    kit.ceilingSlab(8.3, 10.3, -12.15, H, -47.15, {
+      lamps: [
+        { x: -2.6, z: 3.0, light: true, intensity: 0.6 },
+        { x: 2.6, z: -3.0 },
+      ],
+    });
+    kit.wallRun(0.3, H, 10.3, -16.15, H / 2, -47.15);         // west outer
+    kit.wallRun(8.3, H, 0.3, -12.15, H / 2, -42.15);          // north
+    kit.wallRun(8.3, H, 0.3, -12.15, H / 2, -52.15);          // south
+    kit.sign(-15.9, 2.2, -47.3, 'e', 'SUPPLY / STORES', { sub: 'RESTRICTED - AUTHORISED ONLY', fg: '#e8c98a', w: 2.6, h: 0.55 });
+    kit.storageRack(-15.3, -44.2, 'e');
+    kit.storageRack(-15.3, -46.8, 'e');
+    kit.storageRack(-15.3, -49.4, 'e');
+    kit.shelfUnit(-10.4, -42.4, 'n', { w: 1.6, h: 2.0 });
+    kit.shelfUnit(-12.2, -42.4, 'n', { w: 1.6, h: 2.0 });
+    kit.crateStack(-11.4, -50.6, { w: 1.6, h: 1.6, d: 0.9, rotY: 0.2 });
+    kit.crate(-9.6, -49.6, { s: 0.8 });
+    kit.crate(-10.4, -50.3, { s: 0.7 });
+    kit.barrel(-15.4, -51.2);
+    kit.barrel(-14.7, -51.4);
+    kit.canister(-13.3, -51.3);
+    kit.debrisPile(-13.4, -49.0, { s: 0.8, seed: 63 });
+    kit.wallScreen(-15.93, 2.0, -45.2, 'e', { w: 2.2, h: 1.1 });
+    kit.gaugeCluster(-15.96, 1.7, -50.6, 'e');
+    kit.floorDecal(-12.0, -46.4, 'dashes', { size: 1.6 });
+    this._scorchDecal(-11.6, 0, -48.0, 1.1);
+    this._flickerLight(-12.6, 2.55, -48.2, 0xffcc88, 0.7, 6);
+    this._dustMotes(35, -12.2, -47, 4, 0.3, 2.6);
+
+    // ── Shift office (x 8..16, z -40..-50) ──────────────────────────────
+    // The control desk that ran Sector B before the breach - now abandoned.
+    kit.floorSlab(8.3, 10.3, 12.15, -45.15, { lines: [{ axis: 'z', len: 7, color: 'warn', at: -1.7 }] });
+    kit.ceilingSlab(8.3, 10.3, 12.15, H, -45.15, {
+      lamps: [
+        { x: -2.6, z: 3.0, light: true, intensity: 0.65 },
+        { x: 2.6, z: -3.0, light: true, intensity: 0.65 },
+      ],
+    });
+    kit.wallRun(0.3, H, 10.3, 16.15, H / 2, -45.15);          // east outer
+    kit.wallRun(8.3, H, 0.3, 12.15, H / 2, -40.15);           // north
+    kit.wallRun(8.3, H, 0.3, 12.15, H / 2, -50.15);           // south
+    kit.sign(15.9, 2.2, -44.2, 'w', 'SHIFT OFFICE / CONTROL', { sub: 'LOG ARCHIVE', fg: '#cfe0ea', w: 2.6, h: 0.55 });
+    kit.officeDesk(14.4, -42.4, 'w');
+    kit.officeDesk(14.4, -45.0, 'w', { alt: true });
+    kit.chair(13.4, -42.4, 'w');
+    kit.chair(13.4, -45.0, 'w');
+    kit.lockerBank(12.0, -49.7, 'n', { count: 3, h: 2.05 });
+    kit.cabinet(8.35, -49.5, 'e');
+    kit.shelfUnit(11.2, -49.6, 'n', { w: 1.4, h: 1.9 });
+    kit.wallScreen(15.93, 2.05, -46.4, 'w', { w: 2.6, h: 1.4, alt: true });
+    kit.noticeBoard(15.9, 1.7, -42.8, 'w', { seed: 64, w: 1.4, h: 0.9 });
+    kit.gaugeCluster(15.96, 1.7, -47.8, 'w');
+    kit.fuseBox(12.4, 1.8, -40.34, 'n');
+    kit.floorDecal(12.0, -44.0, 'stripes', { size: 1.4 });
+    kit.canister(15.3, -41.2);
+    kit.debrisPile(13.6, -49.0, { s: 0.8, seed: 65 });
+    this._scorchDecal(11.0, 0, -44.5, 1.2);
+    this._flickerLight(15.2, 2.55, -44.0, 0xffddaa, 0.8, 6);
+    this._dustMotes(40, 12.2, -45, 4.2, 0.3, 2.6);
 
     // ── C3 (x -2..2, z -52..-58) — final stretch ────────────────────────
     kit.floorSlab(4.3, 6.0, 0, -55.15, { lines: [{ axis: 'z', len: 4.5, color: 'exit' }] });
@@ -1453,6 +1633,9 @@ export default class LevelManager {
     kit.gaugeCluster(2.5, 1.7, -29.96, 's');        // quarters south wall
     kit.radiationMonitor(-3.0, -41.6);              // server room threshold
     kit.gaugeCluster(7.96, 1.7, -45.5, 'w');        // server room east wall
+    kit.pipeManifold(6.0, 1.9, -51.94, 's', { len: 1.8, valves: 3 });
+    kit.noticeBoard(-2.6, 1.75, -51.94, 's', { seed: 66, w: 1.2, h: 0.8 });
+    kit.pipeManifold(3.9, 1.9, -1.9, 'w', { len: 1.6, valves: 3 });
 
     // Med-kits tucked along the evacuation route (restore 35 health).
     for (const [x, z] of [[-4.3, -23.8], [1.2, -38.8], [-2.6, -45.5], [1.2, -55.5]]) {
@@ -1489,7 +1672,7 @@ export default class LevelManager {
       { x: -8.5, z: -16 }, { x: 8.5, z: -16 },
       { x: 8.5, z: -35 }, { x: -8.5, z: -35 },
     ];
-    this.navigationBounds = { minX: -14.5, maxX: 14.5, minZ: -58.5, maxZ: 0.5 };
+    this.navigationBounds = { minX: -22, maxX: 21, minZ: -58.5, maxZ: 0.5 };
 
     // ── Entry corridor (x -2..2, z 0..-10) ──────────────────────────────
     kit.floorSlab(4.3, 10.0, 0, -5.15, { lines: [{ axis: 'z', len: 8, color: 'emer' }] });
@@ -1508,6 +1691,10 @@ export default class LevelManager {
     kit.hangingPipe(-1.6, 3.4, -4.0, { tilt: 0.7 });
     kit.debrisPile(1.3, -7.5, { s: 0.8, seed: 41 });
     this._scorchDecal(0.8, 0, -3.0, 1.0);
+    // Mission directive board on the entry-corridor east wall.
+    this.goalBoard = kit.goalBoard(2.02, 2.1, -5.6, 'w', {
+      head: 'FAILSAFE DIRECTIVE', tag: 'CONTAINMENT / LEVEL 03',
+    });
 
     // ── Arena (x -14..14, z -10..-42) ───────────────────────────────────
     kit.floorSlab(28.6, 32.0, 0, -26.15, { trim: true });
@@ -1524,8 +1711,12 @@ export default class LevelManager {
     kit.wallRun(12.3, H, 0.3, 8.15, H / 2, -10.15);
     kit.wallRun(12.3, H, 0.3, -8.15, H / 2, -42.15);          // south (4 m exit gap)
     kit.wallRun(12.3, H, 0.3, 8.15, H / 2, -42.15);
-    kit.wallRun(0.3, H, 32.3, -14.15, H / 2, -26.15);         // west
-    kit.wallRun(0.3, H, 32.3, 14.15, H / 2, -26.15);          // east
+    kit.wallRun(0.3, H, 14.0, -14.15, H / 2, -17.0);          // west (pump-gallery door)
+    kit.wallRun(0.3, H, 14.9, -14.15, H / 2, -34.85);
+    kit.doorway(3.4, 3.2, -14.15, 1.6, -25.7, 'w');
+    kit.wallRun(0.3, H, 9.2, 14.15, H / 2, -14.6);            // east (observation door)
+    kit.wallRun(0.3, H, 20.1, 14.15, H / 2, -32.25);
+    kit.doorway(3.0, 3.2, 14.15, 1.6, -20.7, 'e');
     kit.sign(0, 3.4, -10.32, 'n', 'CONTAINMENT ARENA', { sub: 'CLASS-4 ENTITY — EXTREME CAUTION', fg: '#ff8f7f' });
     // Cover pillars (full height → occluders + colliders).
     for (const [cx, cz] of [
@@ -1578,10 +1769,74 @@ export default class LevelManager {
     // Sparse emergency equipment: the arena was part-stripped when the
     // failsafe armed, but the instrumentation never got switched off.
     kit.coolantTank(-12.9, -11.4, { h: 2.6 });      // NW corner reserve
+    kit.pipeRun('x', 26, 0, 3.6, -11.1, { count: 2, r: 0.08 });
+    kit.annunciatorBoard(-13.94, 2.6, -38.0, 'e', { cols: 5, rows: 3 });
+    kit.crateStack(9.5, -12.5, { w: 1.4, h: 1.4, d: 0.9, rotY: -0.2 });
+    kit.barrel(9.8, -33.5);
     kit.radiationMonitor(2.6, -12.5);               // threshold monitor
     kit.radiationMonitor(-2.6, -40.0);              // by the failsafe seal
     kit.gaugeCluster(-13.96, 2.0, -20.0, 'e');      // west wall
     kit.gaugeCluster(13.96, 2.0, -32.0, 'w');       // east wall
+
+    // ── Coolant pump gallery (x -22..-14, z -18..-32) ────────────────────
+    // The high-pressure loop that fed the arena's cooling — west of the
+    // arena, through the 3.4 m doorway at z -25.7.
+    kit.floorSlab(8.3, 14.3, -18.15, -25.15, { trim: true, lines: [{ axis: 'z', len: 10, color: 'emer', at: 1.9 }] });
+    kit.ceilingSlab(8.3, 14.3, -18.15, H, -25.15, {
+      lamps: [
+        { x: -2.5, z: 5.0, light: true, intensity: 0.7 },
+        { x: -2.5, z: -5.0, light: true, intensity: 0.7 },
+      ],
+    });
+    kit.wallRun(0.3, H, 14.3, -22.15, H / 2, -25.15);          // west outer
+    kit.wallRun(8.3, H, 0.3, -18.15, H / 2, -18.15);           // north
+    kit.wallRun(8.3, H, 0.3, -18.15, H / 2, -32.15);           // south
+    kit.sign(-21.9, 2.7, -25.2, 'e', 'COOLANT PUMP GALLERY', { sub: 'HIGH-PRESSURE LOOP', fg: '#8ce7eb', w: 2.8, h: 0.6 });
+    kit.coolantPump(-20.2, -20.5, 'e');
+    kit.coolantPump(-20.2, -25.7, 'e');
+    kit.coolantPump(-20.2, -30.0, 'e');
+    kit.coolantTank(-16.2, -19.6, { h: 2.6 });
+    kit.coolantTank(-16.2, -30.6, { h: 2.4 });
+    kit.pipeManifold(-21.9, 1.9, -23.2, 'e', { len: 2.0, valves: 3 });
+    kit.pipeManifold(-21.9, 1.9, -28.2, 'e', { len: 2.0, valves: 3 });
+    kit.pipeRun('z', 13, -21.6, 3.1, -25.15, { count: 3, r: 0.08 });
+    kit.gaugeCluster(-21.96, 2.0, -21.0, 'e');
+    kit.gaugeCluster(-21.96, 2.0, -31.0, 'e');
+    kit.barrel(-16.7, -22.6);
+    kit.debrisPile(-18.8, -28.2, { s: 0.9, seed: 68 });
+    kit.floorDecal(-18.0, -25.0, 'stripes', { size: 1.3 });
+    this._scorchDecal(-19.5, 0, -23.0, 1.3);
+    this._createSteamVent('l3-vent-1', -17.4, 0.35, -26.5, { count: 10, rate: 0.18, alpha: 0.32 });
+    this._flickerLight(-19.0, 3.3, -25.5, 0xff5533, 1.0, 8);
+    this._dustMotes(50, -18.2, -25, 5.0, 0.4, 3.4);
+
+    // ── Observation booth (x 14..21, z -18..-28) ────────────────────────
+    // The remote console that armed the failsafe — east of the arena,
+    // through the 3.0 m doorway at z -20.7. No glass window: a bank of
+    // wall screens shows the arena feed instead.
+    kit.floorSlab(7.3, 10.3, 17.65, -23.15, { trim: true, lines: [{ axis: 'z', len: 7, color: 'emer', at: -1.7 }] });
+    kit.ceilingSlab(7.3, 10.3, 17.65, H, -23.15, {
+      lamps: [{ x: 0, z: 3.0, light: true, intensity: 0.7 }],
+    });
+    kit.wallRun(0.3, H, 10.3, 21.15, H / 2, -23.15);           // east outer
+    kit.wallRun(7.3, H, 0.3, 17.65, H / 2, -18.15);            // north
+    kit.wallRun(7.3, H, 0.3, 17.65, H / 2, -28.15);            // south
+    kit.sign(20.9, 2.7, -23.2, 'w', 'OBSERVATION / CONTROL', { sub: 'ARENA FEED / FAILSAFE REMOTE', fg: '#cfe0ea', w: 2.8, h: 0.6 });
+    kit.consoleDesk(19.6, -20.5, 'w', { w: 2.2, monitors: 3 });
+    kit.consoleDesk(19.6, -25.7, 'w', { w: 2.2, monitors: 3 });
+    kit.chair(18.4, -20.5, 'w');
+    kit.chair(18.4, -25.7, 'w');
+    kit.wallScreen(15.85, 2.2, -19.4, 'w', { w: 2.4, h: 1.4 });
+    kit.wallScreen(15.85, 2.2, -26.8, 'w', { w: 2.4, h: 1.4, alt: true });
+    kit.annunciatorBoard(15.9, 1.55, -23.0, 'w', { cols: 6, rows: 3 });
+    kit.gaugeCluster(15.96, 1.7, -24.6, 'w');
+    kit.cabinet(20.6, -27.6, 'w');
+    kit.noticeBoard(20.9, 1.75, -19.0, 'w', { seed: 69, w: 1.2, h: 0.8 });
+    kit.floorDecal(17.5, -23.0, 'stripes', { size: 1.3 });
+    kit.canister(16.4, -27.6);
+    this._scorchDecal(19.5, 0, -23.5, 1.1);
+    this._flickerLight(16.5, 3.3, -21.5, 0xff7777, 0.9, 7);
+    this._dustMotes(45, 17.6, -23, 4.5, 0.4, 3.4);
 
     // ── Sealed failsafe door 'l3-exit' (opened by Game.js on boss death) ──
     kit.doorway(4.0, 3.4, 0, 1.7, -42.15, 's');
@@ -1599,6 +1854,8 @@ export default class LevelManager {
     kit.fallenPanel(-2.2, 0.35, -48.5, { rx: 0.5, ry: -0.4 });
     kit.hangingPipe(2.7, 3.3, -50.0, { tilt: 0.7 });
     this._scorchDecal(0.5, 0, -44.0, 1.3);
+    kit.gaugeCluster(2.94, 1.7, -46.0, 'w');
+    kit.fuseBox(-2.94, 1.7, -48.0, 'e');
 
     // ── Exit room (x -4..4, z -52..-58) — WIN ────────────────────────────
     kit.floorSlab(8.6, 6.0, 0, -55.15, { lines: [{ axis: 'z', len: 5, color: 'exit' }] });
@@ -1618,6 +1875,7 @@ export default class LevelManager {
     kit.fallenPanel(-2.0, 0.4, -53.5, { rx: 0.5, ry: 0.6 });
     kit.hangingPipe(-1.8, 3.3, -55.0, { tilt: 0.6 });
     kit.extinguisher(-3.94, 1.2, -53.0);
+    kit.pipeManifold(-3.9, 1.9, -53.6, 'e', { len: 1.4, valves: 2 });
     const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x8af0bd, toneMapped: false });
     for (const [z, length] of [[-26, 30], [-49, 16]]) {
       const guide = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.02, length), routeMaterial);

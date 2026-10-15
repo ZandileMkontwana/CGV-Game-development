@@ -1,17 +1,24 @@
 /**
  * AudioManager — procedural horror soundscape built entirely with the Web
- * Audio API. Effects and score are synthesized at runtime; the three PA
- * announcements use bundled WAV clips. Fear can be modulated in real time
- * through heartbeat speed, growl proximity, and ambience ducking.
+ * Audio API. Effects and score are synthesized at runtime — there is NO
+ * spoken dialogue. Facility P.A. calls are rendered as reactor-station
+ * alert tones and sirens; their wording is shown on screen as a caption by
+ * the UI layer. Fear can be modulated in real time through heartbeat speed,
+ * growl proximity, and ambience ducking.
  *
- * Event interface (called from Game.js — keep names stable so Person D can
- * later swap individual voices for recorded samples):
+ * Event interface (called from Game.js — keep names stable):
  *   play('pulseShot' | 'pulseHit' | 'pulseMiss' | 'doorOpen' | 'ventHiss' |
  *        'spark' | 'growl' | 'roar' | 'spotted' | 'attack' | 'transform' |
  *        'death' | 'alarm' | 'beep' | 'creak' | 'clang' | 'collapse' |
  *        'win' | 'gameover', opt?)
+ *   playAlert(name)        synthesized P.A. cue (dispatch | power | bypass |
+ *                          breach | failsafe | demolition): calm chimes for
+ *                          routine calls, klaxon sirens + reactor power-down
+ *                          for a lockdown.
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
+ *   setGameState(state)    'menu' plays the thriller title theme; the
+ *                          gameplay states play the level score
  *   update(dt, moving, sprinting, grounded, threat, chasing, monsterActive,
  *          health01)        per-frame schedulers: footsteps, heartbeat,
  *                          patrol growls, distant stingers
@@ -37,9 +44,8 @@ export default class AudioManager {
     this.musicVolume = 0.8;
     this._playing = false;
     this._paused = false;
+    this._menuActive = false;
     this._contextSync = Promise.resolve();
-    this._announcements = new Map();
-    this._announcementSource = null;
     this._scoreTime = 0;
     this._scoreStep = 0;
     this._rechargeVoice = null;
@@ -47,6 +53,7 @@ export default class AudioManager {
     this.onSettingsChange = null;
     this._unlocked = false; // AudioContext may only start on a user gesture
     this._level = 1;
+    this._mode = 'menu';    // currently built bed: 'menu' | 1 | 2 | 3 | null
     this._noise = null;
     this._dist = null;      // cached waveshaper curve
 
@@ -101,7 +108,7 @@ export default class AudioManager {
     // Background music/ambience has its own control; effects and PA voices
     // still use master directly so their volume does not change with it.
     this.music = this.ctx.createGain();
-    this.music.gain.value = this._playing ? this.musicVolume : 0;
+    this.music.gain.value = (this._playing || this._menuActive) ? this.musicVolume : 0;
     this.music.connect(this.master);
 
     // Shared 2 s white-noise buffer — every noise voice reuses it.
@@ -114,6 +121,7 @@ export default class AudioManager {
     this._unlocked = true;
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
+    else if (this._menuActive) this._startMenuBed();
   }
 
   setVolume(value) {
@@ -131,7 +139,8 @@ export default class AudioManager {
     if (!this.music) return;
     const t = this.ctx.currentTime;
     this.music.gain.cancelScheduledValues(t);
-    this.music.gain.setTargetAtTime(this._playing ? this.musicVolume : 0, t, 0.08);
+    const on = this._playing || this._menuActive;
+    this.music.gain.setTargetAtTime(on ? this.musicVolume : 0, t, 0.08);
   }
 
   _syncContextState() {
@@ -155,43 +164,14 @@ export default class AudioManager {
   setGameState(state) {
     this._playing = ['playing', 'paused', 'levelTransition'].includes(state);
     this._paused = state === 'paused';
+    this._menuActive = state === 'menu';
     this._applyMusicVolume();
     this._syncContextState();
-    if (!this._playing) this.stopAnnouncement();
-  }
-
-  async loadAnnouncements(announcements, manager) {
-    const decoder = new OfflineAudioContext(1, 1, 22050);
-    await Promise.all(Object.entries(announcements).map(async ([name, { url }]) => {
-      manager.itemStart(url);
-      try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
-        if (!response.ok) throw new Error(`Audio request failed: ${response.status}`);
-        this._announcements.set(name, await decoder.decodeAudioData(await response.arrayBuffer()));
-      } catch {
-        manager.itemError(url);
-      } finally {
-        manager.itemEnd(url);
-      }
-    }));
-  }
-
-  playAnnouncement(name) {
-    this.stopAnnouncement();
-    const buffer = this._announcements.get(name);
-    if (!buffer || !this._unlocked) return;
-    const source = this.ctx.createBufferSource();
-    source.buffer = buffer;
-    const gain = this.ctx.createGain();
-    gain.gain.value = 0.85;
-    source.connect(gain).connect(this.master);
-    source.onended = () => {
-      gain.disconnect();
-      if (this._announcementSource === source) this._announcementSource = null;
-    };
-    this._announcementSource = source;
-    source.start();
-    this.duck(0.7, buffer.duration * 1000);
+    // Swap the title theme in for the menu and the level score for gameplay.
+    if (this._unlocked) {
+      if (this._menuActive) this._startMenuBed();
+      else if (this._playing && this._mode !== this._level) this._startBed(this._level);
+    }
   }
 
   setRecharge(active) {
@@ -212,12 +192,6 @@ export default class AudioManager {
     this._recharging = active;
   }
 
-  stopAnnouncement() {
-    if (!this._announcementSource) return;
-    try { this._announcementSource.stop(); } catch { /* Already ended. */ }
-    this._announcementSource = null;
-  }
-
   toggleMute() {
     this.muted = !this.muted;
     this._applyVolume();
@@ -230,23 +204,26 @@ export default class AudioManager {
     // so that low frame rates do not stretch the gaps between notes.
     const now = this.ctx.currentTime;
     if (now >= this._scoreTime) {
-      const speechScale = this._announcementSource ? 0.3 : 1;
       if (this._level === 1) {
+        // Calm lab: a slow, consonant major-ish motif — nothing threatening.
         const note = CALM_NOTES[this._scoreStep % CALM_NOTES.length];
-        this._scoreNote(note, 2.8, 0.18 * speechScale);
-        this._scoreNote(note * 1.5, 2.6, 0.055 * speechScale);
+        this._scoreNote(note, 2.8, 0.18);
+        this._scoreNote(note * 1.5, 2.6, 0.055);
         this._scoreTime = now + 2.4;
       } else if (this._level === 2) {
+        // Suspense: a minor-second cluster with an icy high shimmer.
         const note = HUNT_NOTES[this._scoreStep % HUNT_NOTES.length];
-        this._scoreNote(note, 2.4, 0.12 * speechScale, 'triangle');
-        this._scoreNote(note * 1.05946, 2.2, 0.045 * speechScale);
+        this._scoreNote(note, 2.4, 0.12, 'triangle');
+        this._scoreNote(note * 1.05946, 2.2, 0.045);
+        if (this._scoreStep % 4 === 0) this._scoreNote(note * 6.28, 3.4, 0.02);
         this._scoreTime = now + 2;
       } else if (this._level === 3) {
+        // Terror: driving low stabs over a distant warning pulse.
         const note = BOSS_NOTES[Math.floor(this._scoreStep / 4) % BOSS_NOTES.length];
-        this._scoreNote(note, 0.45, 0.18 * speechScale, 'triangle');
-        this._scoreNote(note * 3, 0.42, 0.12 * speechScale, 'triangle');
-        this._chirp(140, 45, 0.18, 0.2 * speechScale, 'sine', undefined, this.music);
-        if (this._scoreStep % 2) this._burst({ dur: 0.1, vol: 0.085 * speechScale, type: 'bandpass', freq: 1600, destination: this.music });
+        this._scoreNote(note, 0.45, 0.18, 'triangle');
+        this._scoreNote(note * 3, 0.42, 0.12, 'triangle');
+        this._chirp(140, 45, 0.18, 0.2, 'sine', undefined, this.music);
+        if (this._scoreStep % 2) this._burst({ dur: 0.1, vol: 0.085, type: 'bandpass', freq: 1600, destination: this.music });
         this._scoreTime = now + 60 / 112;
       } else {
         this._scoreTime = now + 3;
@@ -313,6 +290,25 @@ export default class AudioManager {
       case 'collapse': this._startRumble(); break;
       case 'win': this._win(); break;
       case 'gameover': this._gameOver(); break;
+    }
+  }
+
+  /**
+   * Synthesized replacement for a spoken P.A. announcement. Routine calls use
+   * calm chimes; containment events use reactor-station klaxons and the sound
+   * of the reactor powering down. The caption text is shown by the UI layer.
+   */
+  playAlert(name) {
+    if (!this._unlocked || this.muted) return;
+    const t = this.ctx.currentTime;
+    switch (name) {
+      case 'dispatch': this._chime([523.25, 659.25], 0.75, 0.08); break;
+      case 'power':    this._chime([392, 523.25, 659.25], 0.42, 0.07); break;
+      case 'bypass':   this._chime([440, 587.33], 0.34, 0.08); break;
+      case 'breach':   this._lockdown(t); break;
+      case 'failsafe': this._wail(t, 2.6, 0.2); this._beep(true, t + 0.3); break;
+      case 'demolition': this._wail(t, 4.2, 0.26); this._startRumble(); break;
+      default: break;
     }
   }
 
@@ -443,7 +439,7 @@ export default class AudioManager {
     this._beatTimer = 0.4;
     this._growlTimer = 6;
     this._stingTimer = 10;
-    const changed = n !== this._level || !this._bed;
+    const changed = n !== this._mode || !this._bed;
     this._level = n;
     if (this._unlocked && changed) this._startBed(n);
   }
@@ -468,15 +464,18 @@ export default class AudioManager {
     }, duration);
   }
 
-  _startBed(level) {
+  _startBed(mode) {
     if (!this._unlocked) return;
     this._stopBed(1.2);
     const ctx = this.ctx;
     const t = ctx.currentTime;
-    const filter = this._filter('lowpass', level === 2 ? 720 : level === 3 ? 900 : 650, 0.6);
+    const isMenu = mode === 'menu';
+    const level = isMenu ? 0 : mode;
+    const filter = this._filter('lowpass',
+      isMenu ? 560 : level === 2 ? 720 : level === 3 ? 900 : 650, 0.6);
     const gain = this._gain(MIN_GAIN);
     filter.connect(gain).connect(this.music || this.master);
-    const bed = { gain, filter, nodes: [], base: 0.42 };
+    const bed = { gain, filter, nodes: [], base: isMenu ? 0.36 : 0.42 };
 
     const addOsc = (type, freq, vol, detune) => {
       const o = ctx.createOscillator();
@@ -515,7 +514,7 @@ export default class AudioManager {
       wl.connect(wlg).connect(bp.frequency);
       wl.start(t);
       bed.nodes.push(wl);
-    } else {
+    } else if (level === 3) {
       // Collapse: dissonant beat + a distant warning pulse.
       addOsc('sine', 65, 0.45, -5);
       addOsc('sine', 64.2, 0.45, 5);
@@ -533,6 +532,27 @@ export default class AudioManager {
       pulse.start(t);
       pl.start(t);
       bed.nodes.push(pulse, pl);
+    } else {
+      // Menu thriller: a low ominous drone with a slow heartbeat swell and
+      // a faint tritone shimmer — dread waiting behind the title screen.
+      addOsc('sine', 55, 0.5, -4);
+      addOsc('sine', 55.6, 0.5, 4);
+      addOsc('sawtooth', 82.5, 0.05, 0);
+      addOsc('triangle', 110, 0.1, 0);
+      addOsc('sine', 311.13, 0.03, 5);
+      const pulse = ctx.createOscillator();
+      pulse.type = 'triangle';
+      pulse.frequency.value = 82;
+      const pg = this._gain(0.12);
+      pulse.connect(pg).connect(filter);
+      const pl = ctx.createOscillator();
+      pl.type = 'sine';
+      pl.frequency.value = 1.0; // ~60 bpm heartbeat
+      const plg = this._gain(0.11);
+      pl.connect(plg).connect(pg.gain);
+      pulse.start(t);
+      pl.start(t);
+      bed.nodes.push(pulse, pl);
     }
 
     // Slow filter drift so the bed never sits still.
@@ -545,13 +565,22 @@ export default class AudioManager {
 
     gain.gain.setValueAtTime(MIN_GAIN, t);
     gain.gain.exponentialRampToValueAtTime(bed.base, t + 2.0);
+    this._mode = mode;
     this._bed = bed;
+  }
+
+  /** Swap in the menu thriller theme (no-op if it is already playing). */
+  _startMenuBed() {
+    if (!this._unlocked) return;
+    if (this._mode === 'menu' && this._bed) return;
+    this._startBed('menu');
   }
 
   _stopBed(fade) {
     const bed = this._bed;
     if (!bed) return;
     this._bed = null;
+    this._mode = null;
     const t = this.ctx.currentTime;
     const g = bed.gain.gain;
     g.cancelScheduledValues(t);
@@ -865,10 +894,10 @@ export default class AudioManager {
     }
   }
 
-  _beep(urgent) {
+  _beep(urgent, when) {
     this._chirp(
       urgent ? 1180 : 860, urgent ? 1180 : 860,
-      urgent ? 0.14 : 0.09, urgent ? 0.26 : 0.18, 'square'
+      urgent ? 0.14 : 0.09, urgent ? 0.26 : 0.18, 'square', when
     );
   }
 
@@ -946,6 +975,68 @@ export default class AudioManager {
       o.start(t + off);
       o.stop(t + off + 0.2);
     }
+  }
+
+  // ── Facility P.A. alert voices (no spoken dialogue) ──────────────────────
+
+  /** Soft sustained bell tone (routine P.A. chimes). */
+  _alertTone(freq, when, dur, vol) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, when);
+    g.gain.exponentialRampToValueAtTime(vol, when + 0.02);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, when + dur);
+    o.connect(g).connect(this.master);
+    o.start(when);
+    o.stop(when + dur + 0.02);
+  }
+
+  _chime(freqs, spacing, vol) {
+    const t = this.ctx.currentTime;
+    for (let i = 0; i < freqs.length; i++) {
+      this._alertTone(freqs[i], t + i * spacing, 1.0, vol);
+    }
+  }
+
+  /** Air-raid-style wailing klaxon: a saw swept by a slow LFO. */
+  _wail(when, dur, vol) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = 600;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'triangle';
+    lfo.frequency.value = 0.55;
+    const lg = this._gain(240);
+    lfo.connect(lg).connect(o.frequency);
+    const f = this._filter('bandpass', 820, 1.5);
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, when);
+    g.gain.exponentialRampToValueAtTime(vol, when + 0.5);
+    g.gain.setValueAtTime(vol, when + Math.max(0.6, dur - 0.6));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, when + dur);
+    o.connect(f).connect(g).connect(this.master);
+    o.start(when);
+    lfo.start(when);
+    o.stop(when + dur + 0.05);
+    lfo.stop(when + dur + 0.05);
+  }
+
+  /**
+   * Reactor-station lockdown: a long wailing klaxon over the reactor winding
+   * down, containment doors sealing, and tripping-breaker shutdown indicators.
+   */
+  _lockdown(t) {
+    this._wail(t, 6.2, 0.24);
+    this._chirp(150, 32, 2.8, 0.5, 'sine', t);
+    this._burst({ dur: 2.6, vol: 0.16, type: 'lowpass', freq: 240, attack: 0.18 });
+    this._clang(t + 0.5, 0.9);
+    this._clang(t + 1.7, 0.7);
+    this._clang(t + 3.1, 0.8);
+    for (let i = 0; i < 5; i++) this._beep(true, t + 1.3 + i * 0.55);
+    this.duck(0.5, 6200);
   }
 
   _win() {

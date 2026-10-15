@@ -136,6 +136,10 @@ export default class Game {
     this._weaponReady = true;
     this._l2Opening = null;
 
+    // Aim-down-sights toggle: the player can latch ADS on/off with a key
+    // (Z) so they don't have to hold right-mouse. Reset on every level load.
+    this._adsToggled = false;
+
     // Level 1 tutorial — controls walkthrough (see _updateTutorial).
     this._tutorialSteps = [
       {
@@ -144,7 +148,7 @@ export default class Game {
       },
       {
         text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
-        sub: 'ENERGY RECHARGES ON ITS OWN — KEEP AN EYE ON THE PULSE BAR',
+        sub: 'HOLD RMB OR TAP Z TO AIM · ENERGY RECHARGES ON ITS OWN',
       },
       {
         text: 'LAB A-2 — PULSE THE AMBER RELAY BESIDE THE CHAMBER',
@@ -218,10 +222,9 @@ export default class Game {
     this._fpsTime = 0;
 
     // --- Audio ---------------------------------------------------------------
-    // Procedural horror score/effects plus bundled PA voice clips.
+    // Procedural horror score/effects — no spoken dialogue (see AudioManager).
     this.audio = new AudioManager();
     this.ui.connect(this.audio, this.camera, this.gameState);
-    this.audio.loadAnnouncements(PA_ANNOUNCEMENTS, this.loadingManager);
     this._monsterSeen = false; // one first-sighting sting per level
     this._camPosVec = new THREE.Vector3(); // reused in the sight check
     this._fwdVec = new THREE.Vector3();
@@ -483,7 +486,9 @@ export default class Game {
     if (this.gameState.isPlaying) {
       // Stance/aim from raw input — feeds both the player (move speed) and
       // the camera (FOV zoom, shoulder tighten, pivot height).
-      const aiming = this.input.mouse.rightDown === true;
+      // ADS can be HELD on right-mouse or LATCHED with the aim-toggle key.
+      if (this.input.justPressed('KeyZ')) this._adsToggled = !this._adsToggled;
+      const aiming = this.input.mouse.rightDown === true || this._adsToggled;
       const crouching = this.input.keys['KeyC'] === true;
       this.player.setStance(crouching, aiming);
       this.player.update(dt);
@@ -653,7 +658,6 @@ export default class Game {
   _loadLevel(levelNum) {
     this.ui.reset();
     this.ui.setLevel(levelNum);
-    this.audio.stopAnnouncement();
     this.shaders.clearLevelVisuals();
     this.postfx.resetFrameTiming();
     this.postfx.setLevel(levelNum);
@@ -704,6 +708,9 @@ export default class Game {
     this._weaponReady = levelNum !== 2;
     this.pulseTool.enabled = this._weaponReady;
     this.player.weaponStowed = !this._weaponReady;
+
+    // Drop any latched ADS when a level (re)loads.
+    this._adsToggled = false;
 
     // 5b. Switch the procedural ambience to this level's mood.
     this.audio.setLevel(levelNum);
@@ -794,17 +801,22 @@ export default class Game {
   }
 
   /**
-   * Update the objective HUD text (top-left corner).
+   * Update the objective: the HUD text (top-left corner) and the in-world
+   * mission directive board mounted in the level.
    * @param {string} text
    */
   _setObjective(text) {
     this.ui.setObjective(text);
+    this.levels.goalBoard?.setObjective(text);
   }
 
   _announce(name) {
     const announcement = PA_ANNOUNCEMENTS[name];
+    if (!announcement) return;
     this.ui.showAnnouncement(announcement.text);
-    this.audio.playAnnouncement(name);
+    // No spoken dialogue — the facility "speaks" through synthesized
+    // reactor-station alert tones and sirens (see AudioManager.playAlert).
+    this.audio.playAlert(name);
   }
 
   /**
@@ -875,14 +887,22 @@ export default class Game {
 
     if (this._interactPromptEl) {
       this._interactPromptEl.classList.toggle('visible', !!near || pickupNear);
+      const prompt = near && near.id === 'l1-exit'
+        ? '[ E ] RELEASE BYPASS DOOR' : '[ E ] OPEN DOOR';
       this._interactPromptEl.textContent = near || !pickupNear
-        ? '[ E ] OPEN DOOR' : '[ E ] TAKE PULSE SIDEARM';
+        ? prompt : '[ E ] TAKE PULSE SIDEARM';
     }
 
     if (near && this.input.justPressed('KeyE')) {
       this.levels.openDoor(near.id);
       this.audio.play('doorOpen');
       if (this._tut) this._tut.doorOpened = true;
+      // Level 1 ends past the bypass door: releasing it opens the way into the
+      // surface-lift lobby where the win zone sits.
+      if (near.id === 'l1-exit') {
+        this._setObjective('BYPASS RELEASED / STEP THROUGH TO THE SURFACE LIFT');
+        this.ui.showAnnouncement('Bypass released. Surface lift lobby open — step through to transfer.');
+      }
     }
   }
 
