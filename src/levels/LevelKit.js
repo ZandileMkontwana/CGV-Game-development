@@ -277,6 +277,26 @@ export default class LevelKit {
     return null;
   }
 
+  /** Breakable pipe run — like pipeRun but returns segment data for destruction. */
+  breakablePipeRun(axis, length, x, y, z, o = {}) {
+    const count = o.count || 2;
+    const r = o.r || 0.07;
+    const mat = o.mat || this.mats.pipe;
+    const spacing = o.spacing || 0.18;
+    const segments = [];
+    for (let i = 0; i < count; i++) {
+      const off = (i - (count - 1) / 2) * spacing;
+      const px = axis === 'x' ? x : x + off;
+      const pz = axis === 'x' ? z + off : z;
+      const py = y - i * 0.02;
+      const m = this.cyl(mat, r, r, length, px, py, pz, { cast: false });
+      if (axis === 'x') m.rotation.z = Math.PI / 2;
+      else m.rotation.x = Math.PI / 2;
+      segments.push({ mesh: m, position: new THREE.Vector3(px, py, pz) });
+    }
+    return segments;
+  }
+
   /** Ventilation duct (box) with straps and optional grille openings. */
   duct(axis, length, x, y, z, o = {}) {
     const w = o.w || 0.55;
