@@ -56,31 +56,63 @@ function steamTexture() {
 let _fireTex = null;
 function fireTexture() {
   if (_fireTex) return _fireTex;
+  const S = 128;
   const c = document.createElement('canvas');
-  c.width = c.height = 64;
+  c.width = c.height = S;
   const x = c.getContext('2d');
-  const g = x.createRadialGradient(32, 32, 1, 32, 32, 31);
-  g.addColorStop(0, 'rgba(255,236,190,0.95)');
-  g.addColorStop(0.3, 'rgba(255,190,110,0.7)');
-  g.addColorStop(0.65, 'rgba(255,140,60,0.28)');
-  g.addColorStop(1, 'rgba(200,70,20,0)');
+  // Broad outer glow: a hot core cooling to deep orange at the edge.
+  let g = x.createRadialGradient(64, 64, 1, 64, 64, 63);
+  g.addColorStop(0, 'rgba(255,244,214,0.98)');
+  g.addColorStop(0.28, 'rgba(255,196,110,0.72)');
+  g.addColorStop(0.62, 'rgba(255,132,44,0.28)');
+  g.addColorStop(1, 'rgba(180,50,10,0)');
   x.fillStyle = g;
-  x.fillRect(0, 0, 64, 64);
+  x.fillRect(0, 0, S, S);
+  // Off-centre white-hot core so the flame is not a symmetric disc.
+  x.globalCompositeOperation = 'lighter';
+  g = x.createRadialGradient(60, 72, 1, 60, 72, 30);
+  g.addColorStop(0, 'rgba(255,255,244,0.95)');
+  g.addColorStop(0.5, 'rgba(255,222,150,0.45)');
+  g.addColorStop(1, 'rgba(255,180,90,0)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, S, S);
+  // A few warm lobes break the smooth falloff into an organic silhouette.
+  for (let i = 0; i < 10; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 10 + Math.random() * 34;
+    const px = 64 + Math.cos(a) * r, py = 60 + Math.sin(a) * r * 0.8;
+    const rr = 8 + Math.random() * 20;
+    const lg = x.createRadialGradient(px, py, 0, px, py, rr);
+    lg.addColorStop(0, 'rgba(255,168,70,0.22)');
+    lg.addColorStop(1, 'rgba(255,168,70,0)');
+    x.fillStyle = lg;
+    x.fillRect(0, 0, S, S);
+  }
+  x.globalCompositeOperation = 'source-over';
   _fireTex = new THREE.CanvasTexture(c);
   return _fireTex;
 }
 let _smokeTex = null;
 function smokeTexture() {
   if (_smokeTex) return _smokeTex;
+  const S = 128;
   const c = document.createElement('canvas');
-  c.width = c.height = 64;
+  c.width = c.height = S;
   const x = c.getContext('2d');
-  const g = x.createRadialGradient(32, 32, 2, 32, 32, 31);
-  g.addColorStop(0, 'rgba(255,255,255,0.72)');
-  g.addColorStop(0.5, 'rgba(255,255,255,0.34)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  x.fillStyle = g;
-  x.fillRect(0, 0, 64, 64);
+  // A billowy puff built from overlapping soft blobs, so smoke reads as a
+  // roiling cloud rather than a single hard disc.
+  const blobs = [
+    [64, 58, 48], [46, 70, 34], [84, 68, 33], [64, 42, 30],
+    [54, 90, 26], [80, 92, 24], [40, 50, 22], [90, 52, 22],
+  ];
+  for (const [bx, by, br] of blobs) {
+    const g = x.createRadialGradient(bx, by, 0, bx, by, br);
+    g.addColorStop(0, 'rgba(255,255,255,0.34)');
+    g.addColorStop(0.6, 'rgba(255,255,255,0.13)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, S, S);
+  }
   _smokeTex = new THREE.CanvasTexture(c);
   return _smokeTex;
 }
@@ -590,16 +622,33 @@ export default class LevelManager {
       this._track(s);
       smoke.push(s);
     }
+    const ne = o.embers === undefined ? 8 : o.embers;
+    const embers = [];
+    for (let i = 0; i < ne; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: fireTexture(), color: 0xffb24a, transparent: true, opacity: 0,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const s = new THREE.Sprite(mat);
+      s.scale.set(0.05, 0.05, 1);
+      s.position.set(x, y, z);
+      s.visible = false;
+      s.userData.ownsMaterial = true;
+      this.scene.add(s);
+      this._track(s);
+      embers.push(s);
+    }
     if (o.light !== false) {
       this._flickerLight(x, y + 0.7, z, o.color ?? 0xff7020, o.intensity ?? 1.1, o.range ?? 10);
     }
     this._fires.push({
-      id, x, y, z, flames, smoke,
-      fIdx: 0, sIdx: 0, ft: 0, st: 0,
-      fRate: o.fRate || 0.07, sRate: o.sRate || 0.17,
+      id, x, y, z, flames, smoke, embers,
+      fIdx: 0, sIdx: 0, eIdx: 0, ft: 0, st: 0, et: 0, t: Math.random() * 10,
+      fRate: o.fRate || 0.07, sRate: o.sRate || 0.17, eRate: o.eRate || 0.05,
       rise: o.rise || 2.1, scale: o.scale || 1,
       fLife: new Float32Array(nf), fVy: new Float32Array(nf), fMax: new Float32Array(nf),
       sLife: new Float32Array(ns), sVy: new Float32Array(ns), sMax: new Float32Array(ns),
+      eLife: new Float32Array(ne), eVy: new Float32Array(ne), eMax: new Float32Array(ne),
     });
   }
 
@@ -799,9 +848,13 @@ export default class LevelManager {
       }
     }
 
-    // Fire + smoke: flames rise and cool to red; smoke billows and fades.
+    // Fire + smoke: flames rise and cool to red; smoke billows and fades;
+    // embers pop off the base and flicker as they climb. A slow per-fire
+    // turbulence term sways the whole column so it never looks like a jet.
     for (const f of this._fires) {
       const sc = f.scale;
+      f.t += dt;
+      const turb = Math.min(dt, 0.05);
       f.ft += dt;
       while (f.flames.length && f.ft >= f.fRate) {
         f.ft -= f.fRate;
@@ -822,12 +875,24 @@ export default class LevelManager {
         s.position.set(f.x + (Math.random() - 0.5) * 0.7 * sc, f.y + 0.5 * sc, f.z + (Math.random() - 0.5) * 0.7 * sc);
         s.visible = true;
       }
+      f.et += dt;
+      while (f.embers.length && f.et >= f.eRate) {
+        f.et -= f.eRate;
+        const i = f.eIdx = (f.eIdx + 1) % f.embers.length;
+        const s = f.embers[i];
+        f.eLife[i] = f.eMax[i] = 0.7 + Math.random() * 0.9;
+        f.eVy[i] = (1.6 + Math.random() * 1.8) * sc;
+        s.position.set(f.x + (Math.random() - 0.5) * 0.5 * sc, f.y + 0.1, f.z + (Math.random() - 0.5) * 0.5 * sc);
+        s.visible = true;
+      }
       for (let i = 0; i < f.flames.length; i++) {
         if (f.fLife[i] <= 0) continue;
         f.fLife[i] -= dt;
         const s = f.flames[i];
         if (f.fLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
         s.position.y += f.fVy[i] * dt;
+        s.position.x += Math.sin(f.t * 1.8 + i) * turb * sc * 0.6;
+        s.position.z += Math.cos(f.t * 1.4 + i * 1.3) * turb * sc * 0.6;
         const t = f.fLife[i] / f.fMax[i];
         s.material.opacity = t * 0.55;
         s.material.color.setRGB(0.85 + 0.15 * t, 0.18 + 0.62 * t, 0.03 + 0.25 * t * t);
@@ -840,9 +905,23 @@ export default class LevelManager {
         const s = f.smoke[i];
         if (f.sLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
         s.position.y += f.sVy[i] * dt;
+        s.position.x += Math.sin(f.t * 0.9 + i * 0.7) * turb * sc * 1.1;
+        s.position.z += Math.cos(f.t * 0.7 + i * 1.1) * turb * sc * 1.1;
         const t = f.sLife[i] / f.sMax[i];
         s.material.opacity = t * (1 - t) * 2.4;
         const p = (0.7 + (1 - t) * 1.5) * sc;
+        s.scale.set(p, p, 1);
+      }
+      for (let i = 0; i < f.embers.length; i++) {
+        if (f.eLife[i] <= 0) continue;
+        f.eLife[i] -= dt;
+        const s = f.embers[i];
+        if (f.eLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
+        s.position.y += f.eVy[i] * dt;
+        s.position.x += Math.sin(f.t * 6 + i) * turb * sc * 0.5;
+        const t = f.eLife[i] / f.eMax[i];
+        s.material.opacity = t * (0.55 + 0.4 * Math.sin(f.t * 40 + i));
+        const p = (0.03 + (1 - t) * 0.05) * sc;
         s.scale.set(p, p, 1);
       }
     }
