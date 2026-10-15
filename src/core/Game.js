@@ -424,7 +424,15 @@ export default class Game {
       }
       // The suspense cue is a menu / stage-switch sting only — it must never
       // bleed into actual gameplay, so cut it the moment play resumes.
-      if (newState === 'playing') this.audio.stopSuspense(0.4);
+      if (newState === 'playing') {
+        this.audio.stopSuspense(0.4);
+        // The recorded emergency-intercom broadcast opens Level 3 the instant
+        // gameplay begins (not during the transition). Skipped on pause-resume.
+        if (this.gameState.currentLevel === 3 && oldState !== 'paused') {
+          this.audio.playClipSequence(['emergencyIntercom']);
+          this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
+        }
+      }
       if (newState === 'gameover') {
         this.audio.play('gameover');
         this.audio.stopAmbient();
@@ -807,13 +815,9 @@ export default class Game {
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
     if (levelNum === 1) this._announce('dispatch');
-    // Level 2 opens on its recorded sector briefing (_l2Opening); Level 3 opens
-    // on the recorded emergency-intercom broadcast — the old synthesized
-    // 'failsafe' alert is removed for that level.
-    if (levelNum === 3) {
-      this.audio.playClipSequence(['emergencyIntercom']);
-      this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
-    }
+    // Level 2's recorded sector briefing runs from _l2Opening; Level 3's
+    // emergency-intercom broadcast is fired the moment its gameplay actually
+    // begins (see the state-change handler), not under the transition overlay.
 
     // 10. Level 1 runs the controls tutorial (hints only — no gating).
     if (levelNum === 1) {
