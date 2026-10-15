@@ -852,6 +852,126 @@ export default class LevelKit {
     return main;
   }
 
+  /**
+   * Medical cot — rails-and-casters hospital bed with a raised backrest,
+   * pillow, side rails and an IV hook. The frame box is the collider; the
+   * mattress, boards and hook are visual children.
+   */
+  medCot(x, z, face, o = {}) {
+    const rotY = this.faceAngle(face);
+    const main = this.box(this.mats.metalDark, 0.95, 0.4, 1.95, x, 0.5, z,
+      { physics: true, rotY });
+    this._child(main, this.mats.locker, 0.86, 0.16, 1.78, 0, 0.13, 0);
+    this._child(main, this.mats.locker, 0.6, 0.14, 0.34, 0, 0.24, -0.72, 0.5);
+    for (const s of [-1, 1]) {
+      this._child(main, this.mats.metal, 0.05, 0.3, 1.1, s * 0.48, 0.06, 0.1);
+    }
+    this._child(main, this.mats.metal, 0.95, 0.55, 0.06, 0, 0, -0.99);
+    this._child(main, this.mats.metal, 0.95, 0.42, 0.06, 0, -0.04, 0.99);
+    for (const sx of [-0.38, 0.38]) {
+      for (const sz of [-0.85, 0.85]) {
+        const c = new THREE.Mesh(cylGeo(0.07, 0.07, 0.06, 8), this.mats.metalDark);
+        c.rotation.x = Math.PI / 2;
+        c.position.set(sx, -0.31, sz);
+        main.add(c);
+      }
+    }
+    this._child(main, this.mats.metal, 0.04, 0.95, 0.04, 0.42, 0.62, -0.82);
+    this._child(main, this.mats.metal, 0.18, 0.04, 0.04, 0.33, 1.06, -0.82);
+    return main;
+  }
+
+  /** Shift-office desk — workstation with a monitor, papers and a mug. */
+  officeDesk(x, z, face, o = {}) {
+    const w = o.w || 1.7;
+    const rotY = this.faceAngle(face);
+    const main = this.box(this.mats.panel, w, 0.74, 0.8, x, 0.37, z,
+      { physics: true, rotY });
+    this._child(main, this.mats.metalDark, w + 0.06, 0.05, 0.86, 0, 0.37, 0);
+    this._child(main, this.mats.metalDark, w - 0.24, 0.5, 0.05, 0, -0.08, -0.36);
+    const scr = this._child(main, o.alt ? this.mats.screenAlt : this.mats.screen,
+      0.6, 0.4, 0.05, -0.2, 0.62, -0.14);
+    scr.rotation.x = -0.12;
+    this._child(main, this.mats.metalDark, 0.16, 0.1, 0.16, -0.2, 0.43, -0.14);
+    this._child(main, this.mats.locker, 0.32, 0.02, 0.24, 0.42, 0.4, 0.14, 0, 0.3, 0);
+    const mug = new THREE.Mesh(cylGeo(0.05, 0.05, 0.11, 10), this.mats.accent);
+    mug.position.set(0.62, 0.44, -0.2);
+    main.add(mug);
+    return main;
+  }
+
+  /** Wall notice board — cork backplate with pinned papers (no collision). */
+  noticeBoard(x, y, z, face, o = {}) {
+    const w = o.w || 1.4;
+    const h = o.h || 0.9;
+    const rotY = this.faceAngle(face);
+    const board = this.box(this.mats.trim, w, h, 0.06, x, y, z, { rotY, cast: false });
+    this._child(board, this.mats.debris, w - 0.12, h - 0.12, 0.02, 0, 0, 0.035);
+    const rand = mulberry32(o.seed || 5);
+    for (let i = 0; i < 6; i++) {
+      const paper = this._child(board,
+        i % 3 === 0 ? this.mats.beaconAmber : this.mats.locker,
+        0.26 + rand() * 0.1, 0.2 + rand() * 0.12, 0.01,
+        (rand() - 0.5) * (w - 0.5), (rand() - 0.5) * (h - 0.4), 0.05,
+        0, 0, (rand() - 0.5) * 0.2);
+      paper.castShadow = false;
+    }
+    return board;
+  }
+
+  /** Supply rack — framed upright with pipe stock and boxed parts. */
+  storageRack(x, z, face, o = {}) {
+    const w = o.w || 1.5;
+    const h = o.h || 2.1;
+    const rotY = this.faceAngle(face);
+    const main = this.box(this.mats.metalDark, w, h, 0.55, x, h / 2, z,
+      { physics: true, occluder: true, rotY });
+    for (const ly of [-0.32, 0, 0.32]) {
+      this._child(main, this.mats.metal, w - 0.06, 0.05, 0.58, 0, ly * h, 0);
+    }
+    for (let i = 0; i < 3; i++) {
+      const p = new THREE.Mesh(cylGeo(0.05, 0.05, w - 0.2, 8), this.mats.pipe);
+      p.rotation.z = Math.PI / 2;
+      p.position.set(0, -0.35 * h + 0.12, -0.1 + i * 0.1);
+      main.add(p);
+    }
+    this._child(main, this.mats.crate, 0.42, 0.3, 0.3, -0.3, 0.18, 0.1);
+    this._child(main, this.mats.crate, 0.3, 0.26, 0.26, 0.34, 0.16, 0.08);
+    return main;
+  }
+
+  /** Wall pipe manifold — header pipe with a bank of valve handwheels. */
+  pipeManifold(x, y, z, face, o = {}) {
+    const len = o.len || 1.6;
+    const g = new THREE.Group();
+    g.userData.staticScenery = true;
+    g.position.set(x, y, z);
+    g.rotation.y = this.faceAngle(face);
+    const header = new THREE.Mesh(cylGeo(0.09, 0.09, len, 12), this.mats.pipe);
+    header.rotation.z = Math.PI / 2;
+    header.castShadow = true;
+    g.add(header);
+    const n = o.valves || 3;
+    for (let i = 0; i < n; i++) {
+      const vx = -len / 2 + (len / (n + 1)) * (i + 1);
+      const stem = new THREE.Mesh(cylGeo(0.045, 0.045, 0.3, 8), this.mats.metal);
+      stem.position.set(vx, 0.22, 0.02);
+      stem.castShadow = true;
+      g.add(stem);
+      const wheel = new THREE.Mesh(cylGeo(0.09, 0.09, 0.03, 12), this.mats.beaconAmber);
+      wheel.rotation.x = Math.PI / 2;
+      wheel.position.set(vx, 0.38, 0.02);
+      g.add(wheel);
+      const dial = new THREE.Mesh(cylGeo(0.06, 0.06, 0.04, 10), this.mats.metalDark);
+      dial.rotation.x = Math.PI / 2;
+      dial.position.set(vx, -0.02, 0.13);
+      g.add(dial);
+    }
+    this.scene.add(g);
+    this.host._track(g);
+    return g;
+  }
+
   /** Containment tube — the Level 1 focal prop (glass + specimen + cables). */
   containmentTube(x, z, o = {}) {
     const r = o.r || 0.85;

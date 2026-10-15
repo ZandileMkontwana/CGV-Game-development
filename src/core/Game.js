@@ -877,14 +877,22 @@ export default class Game {
 
     if (this._interactPromptEl) {
       this._interactPromptEl.classList.toggle('visible', !!near || pickupNear);
+      const prompt = near && near.id === 'l1-exit'
+        ? '[ E ] RELEASE BYPASS DOOR' : '[ E ] OPEN DOOR';
       this._interactPromptEl.textContent = near || !pickupNear
-        ? '[ E ] OPEN DOOR' : '[ E ] TAKE PULSE SIDEARM';
+        ? prompt : '[ E ] TAKE PULSE SIDEARM';
     }
 
     if (near && this.input.justPressed('KeyE')) {
       this.levels.openDoor(near.id);
       this.audio.play('doorOpen');
       if (this._tut) this._tut.doorOpened = true;
+      // Level 1 ends past the bypass door: releasing it opens the way into the
+      // surface-lift lobby where the win zone sits.
+      if (near.id === 'l1-exit') {
+        this._setObjective('BYPASS RELEASED / STEP THROUGH TO THE SURFACE LIFT');
+        this.ui.showAnnouncement('Bypass released. Surface lift lobby open — step through to transfer.');
+      }
     }
   }
 
