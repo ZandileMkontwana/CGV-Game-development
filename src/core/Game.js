@@ -413,16 +413,18 @@ export default class Game {
         // A restart resumes the level the player was on (death retry, pause
         // restart); entering from a menu always starts the campaign at 1.
         this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
-        // Suspense cue underscores a fresh run — not a death/pause retry.
-        if (reason !== 'restart') this.audio.playSuspense();
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
         this._loadLevel(this.gameState.currentLevel);
+        // The suspense cue covers only the stage-switch overlay.
         this.audio.playSuspense();
         this._transitionNeedsRender = true;
       }
+      // The suspense cue is a menu / stage-switch sting only — it must never
+      // bleed into actual gameplay, so cut it the moment play resumes.
+      if (newState === 'playing') this.audio.stopSuspense(0.4);
       if (newState === 'gameover') {
         this.audio.play('gameover');
         this.audio.stopAmbient();
