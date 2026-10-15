@@ -412,6 +412,8 @@ export default class Game {
           || oldState === 'victory' || reason === 'restart')) {
         // A restart resumes the level the player was on (death retry, pause
         // restart); entering from a menu always starts the campaign at 1.
+        // Fresh gameplay entry also silences any lingering escape alarm.
+        this.audio.stopEasAlarm();
         this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
@@ -442,12 +444,15 @@ export default class Game {
         this.audio.stopAmbient();
         this.audio.stopRumble();
         this.audio.stopChaos();
+        this.audio.stopEasAlarm();
         this.audio.stopFireEmitters();
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
         this.audio.stopAmbient();
         this.audio.stopRumble();
+        // The run is over — silence the escape alarm.
+        this.audio.stopEasAlarm();
         // Victory keeps the collapse chaos running under the ending; only
         // returning to the menu finally silences it.
         if (newState === 'menu') {
@@ -1415,6 +1420,8 @@ export default class Game {
     // Collapse ambience: sustained structural rumble + flickering lights.
     this.audio.play('collapse');
     this.audio.duck(0.65);
+    // The EAS alarm loops from the countdown until the game ends.
+    this.audio.playEasAlarm();
     this.levels.collapseMode = true; // fixtures now stutter constantly
     this._lastBeepSec = -1;
 

@@ -17,6 +17,8 @@
  *                          for a lockdown.
  *   playExplosion()        one-shot recorded nuclear-detonation cue for the
  *                          Level-3 reactor failure
+ *   playEasAlarm()         looping recorded EAS alarm from the collapse
+ *                          countdown until the game ends (stopEasAlarm() to fade)
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
  *   setGameState(state)    'menu' plays the thriller title theme; the
@@ -70,6 +72,12 @@ export default class AudioManager {
     this._explosion = null;      // { buffer } recorded Level-3 nuclear-detonation cue
     this._explosionFailed = false;
     this._explosionWanted = false; // requested before the sample finished decoding
+    this._easAlarm = null;       // { buffer } recorded EAS alarm for the escape
+    this._easAlarmFailed = false;
+    this._easAlarmWanted = false; // loop requested before the sample decoded
+    this._easAlarmSrc = null;    // currently looping alarm source
+    this._easAlarmGain = null;   // its gain node (for the fade-out)
+    this._easAlarmOn = false;
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -144,6 +152,7 @@ export default class AudioManager {
     this._loadLevel1Ambience();
     this._loadAnnouncementClips();
     this._loadExplosionSample();
+    this._loadEasAlarmSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -1548,6 +1557,70 @@ export default class AudioManager {
     // Let the blast dominate: pull the ambience/chaos bed down under it.
     this.duck(0.7, Math.min(dur, 10) * 1000);
     src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+  }
+
+  /** Fetch + decode the recorded EAS alarm looped through the Level-3 escape. */
+  async _loadEasAlarmSample() {
+    if (!this.ctx || this._easAlarm || this._easAlarmFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/eas_alarm.mp3');
+      if (!res.ok) { this._easAlarmFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._easAlarm = { buffer: audio };
+      // A loop requested while the sample was still decoding starts now.
+      if (this._easAlarmWanted && this._playing) {
+        this._easAlarmWanted = false;
+        this.playEasAlarm();
+      }
+    } catch (e) { this._easAlarmFailed = true; }
+  }
+
+  /**
+   * Loop the recorded emergency-alert (EAS) alarm for the whole escape run —
+   * from the failsafe countdown until the player finishes the game.
+   */
+  playEasAlarm(vol = 0.5) {
+    if (!this._unlocked || this.muted || this._easAlarmOn) return;
+    if (!this._easAlarm) {
+      if (!this._easAlarmFailed) this._easAlarmWanted = true;
+      return;
+    }
+    this._easAlarmWanted = false;
+    this._easAlarmOn = true;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this._easAlarm.buffer;
+    src.loop = true;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.6);   // fade in
+    src.connect(g).connect(this.master);
+    src.start(t);
+    this._easAlarmSrc = src;
+    this._easAlarmGain = g;
+  }
+
+  /** Fade out and stop the looping EAS alarm (game won, lost, or menu). */
+  stopEasAlarm(fade = 1.2) {
+    const src = this._easAlarmSrc;
+    const g = this._easAlarmGain;
+    this._easAlarmOn = false;
+    this._easAlarmWanted = false;
+    this._easAlarmSrc = null;
+    this._easAlarmGain = null;
+    if (!src) return;
+    const t = this.ctx.currentTime;
+    try {
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(g.gain.value, MIN_GAIN), t);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + Math.max(0, fade));
+      src.stop(t + Math.max(0, fade) + 0.05);
+    } catch (e) { /* already stopped */ }
+    setTimeout(() => {
+      try { src.disconnect(); } catch (e) { /* noop */ }
+      try { g.disconnect(); } catch (e) { /* noop */ }
+    }, (Math.max(0, fade) + 0.1) * 1000);
   }
 
   /** Fetch + decode the level-start / stage-switch suspense track. */
