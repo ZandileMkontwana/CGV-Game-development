@@ -17,7 +17,7 @@
  */
 import * as THREE from 'three';
 import { buildPBRMaps } from '../shaders/textures.js';
-import { applySurfaceShading } from '../shaders/SurfaceShading.js';
+import { applySurfaceShading, applyCrtShading } from '../shaders/SurfaceShading.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Seeded drawing helpers
@@ -758,6 +758,10 @@ export function getThemeMaterials(themeName) {
   for (const key of ['trim', 'beam', 'metal', 'metalDark', 'panel', 'pipe', 'locker', 'crate', 'debris']) {
     applySurfaceShading(mats[key], { grime: surface.grime * 0.6, wet: 0, contact: 0, macro: 0.35 });
   }
+
+  // Animated CRT look on every terminal screen.
+  applyCrtShading(mats.screen);
+  applyCrtShading(mats.screenAlt);
 
   _themeCache.set(themeName, mats);
   return mats;

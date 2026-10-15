@@ -7,6 +7,7 @@ import CameraController from './CameraController.js';
 import GameState from './GameState.js';
 import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
+import { updateCrt } from '../shaders/SurfaceShading.js';
 import { setMaxAnisotropy } from '../shaders/textures.js';
 import UIManager from '../ui/UIManager.js';
 import { PA_ANNOUNCEMENTS } from '../ui/content.js';
@@ -533,6 +534,7 @@ export default class Game {
         grounded: this.player._charState.grounded,
       });
       this.shaders.update(dt);
+      updateCrt(dt);
       this.ui.update(dt);
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
       if (this.gameState.currentLevel === 2) this._updateServerAmbush(dt);

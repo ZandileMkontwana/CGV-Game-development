@@ -61,7 +61,8 @@ const GradeShader = {
       // Cold cinematic grade — slight desaturation, cool shadows, contrast.
       float luma = dot(col, vec3(0.299, 0.587, 0.114));
       col = mix(col, vec3(luma), 0.12);
-      col *= vec3(0.96, 1.0, 1.05);
+      // Split-toning (Alien: Isolation look): cool teal shadows, warm amber highlights.
+      col *= mix(vec3(0.90, 1.0, 1.08), vec3(1.10, 1.0, 0.88), smoothstep(0.08, 0.75, luma));
       col = pow(max(col, 0.0), vec3(1.09));
 
       // Danger: red pulse creeping in from the screen edges.

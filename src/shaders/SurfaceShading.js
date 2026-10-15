@@ -156,3 +156,41 @@ export function setSurfaceShading(material, patch) {
   shader.uniforms.uSsContact.value = params.contact;
   shader.uniforms.uSsMacro.value = params.macro;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRT screen shader — Alien: Isolation's 1979 "retro-future" monitors.
+// Patches the emissive output of a standard material (the terminal screens) with
+// fine scanlines, a slow rolling bright band, tiny voltage flicker and darker
+// edges, all computed in the fragment shader from the screen's UVs + a time
+// uniform shared by every screen. Call updateCrt(dt) once per frame.
+// ─────────────────────────────────────────────────────────────────────────────
+const crtTime = { value: 0 };
+
+export function updateCrt(dt) {
+  crtTime.value += dt;
+}
+
+export function applyCrtShading(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uCrtTime = crtTime;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uCrtTime;')
+      .replace('#include <emissivemap_fragment>', /* glsl */ `
+#include <emissivemap_fragment>
+  {
+    vec2 crtUv = vEmissiveMapUv;
+    float crtScan = 0.80 + 0.20 * sin(crtUv.y * 240.0);
+    float crtRoll = fract(crtUv.y - uCrtTime * 0.12);
+    float crtBand = 1.0 + 0.35 * smoothstep(0.10, 0.0, crtRoll);
+    float crtJitter = fract(sin(floor(uCrtTime * 30.0) * 12.9898) * 43758.5453);
+    float crtFlicker = 0.95 + 0.05 * crtJitter;
+    float crtEdge = smoothstep(0.0, 0.12, crtUv.x) * smoothstep(1.0, 0.88, crtUv.x)
+                  * smoothstep(0.0, 0.12, crtUv.y) * smoothstep(1.0, 0.88, crtUv.y);
+    totalEmissiveRadiance *= crtScan * crtBand * crtFlicker * mix(0.55, 1.0, crtEdge);
+  }
+`);
+  };
+  material.customProgramCacheKey = () => 'crt-screen-v1';
+  material.needsUpdate = true;
+  return material;
+}
