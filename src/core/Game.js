@@ -556,12 +556,14 @@ export default class Game {
         // Fresh gameplay entry also silences any lingering escape alarm.
         this.audio.stopEasAlarm();
         this.audio.stopL1Alarm();
+        this.audio.stopFireBed();
         this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
         this.audio.stopL1Alarm();
+        this.audio.stopFireBed();
         this.audio.playSuspense();
         this._loadLevel(this.gameState.currentLevel);
         this._transitionNeedsRender = true;
@@ -576,7 +578,7 @@ export default class Game {
           this.audio.playClipSequence(['emergencyIntercom']);
           this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
           this.audio.startChaos();
-          this.audio.setFireEmitters(this.levels._fires);
+          this.audio.playFireBed();
           // The reactor finally goes critical: detonate as Level 3 opens.
           this.audio.playExplosion();
         }
@@ -588,7 +590,7 @@ export default class Game {
         this.audio.stopChaos();
         this.audio.stopEasAlarm();
         this.audio.stopL1Alarm();
-        this.audio.stopFireEmitters();
+        this.audio.stopFireBed();
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
@@ -601,7 +603,7 @@ export default class Game {
         // returning to the menu finally silences it.
         if (newState === 'menu') {
           this.audio.stopChaos();
-          this.audio.stopFireEmitters();
+          this.audio.stopFireBed();
         }
       }
       if (newState === 'menu' || newState === 'gameover' || newState === 'victory') {
@@ -732,11 +734,8 @@ export default class Game {
       this._updateExpansion(dt);
       if (!this.gameState.isPlaying) { this.input.endFrame(); return; }
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
-      // Keep the Web Audio listener on the camera so each fire's PannerNode
-      // tracks the player's heading (fires rise left/right, fade behind).
       this.camera.camera.getWorldPosition(this._camPosVec);
       this.camera.camera.getWorldDirection(this._fwdVec);
-      this.audio.updateListener(this._camPosVec, this._fwdVec);
       if (this.gameState.currentLevel === 2) this._updateServerAmbush(dt);
       this._updateHealthPacks(dt);
 

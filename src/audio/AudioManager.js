@@ -21,6 +21,8 @@
  *                          countdown until the game ends (stopEasAlarm() to fade)
  *   playL1Alarm()          looping recorded red-alert buzzer from the Level-1
  *                          containment breach until the level ends (stopL1Alarm)
+ *   playFireBed()          looping recorded fire bed for Level-3 fire/smoke
+ *                          (stopFireBed() to fade)
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
  *   setGameState(state)    'menu' plays the thriller title theme; the
@@ -97,8 +99,12 @@ export default class AudioManager {
     this._chaosBed = null;  // { gain, nodes[] } Level-3 collapse chaos bed
     this._chaosOn = false;  // is the chaos layer running?
     this._chaosT = { boom: 3, machine: 2, scream: 5, rumble: 4 };
-    this._fireEmitters = []; // Panner-positioned crackle sources, one per Level-3 fire
-    this._crackleBuf = null; // cached looping ember-crackle buffer
+    this._fireBed = null;        // { buffer } recorded Level-3 fire/smoke loop
+    this._fireBedFailed = false;
+    this._fireBedWanted = false; // loop requested before the sample decoded
+    this._fireBedSrc = null;     // currently looping fire bed source
+    this._fireBedGain = null;    // its gain node (for the fade-out)
+    this._fireBedOn = false;
     this._duckTO = 0;
 
     // Per-frame schedulers (seconds until next event).
@@ -169,6 +175,7 @@ export default class AudioManager {
     this._loadExplosionSample();
     this._loadEasAlarmSample();
     this._loadL1AlarmSample();
+    this._loadFireBedSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -705,7 +712,7 @@ export default class AudioManager {
 
   // ── Level-3 collapse chaos ───────────────────────────────────────────────
 
-  /** Start the collapse chaos: a fire/rumble bed plus randomized events. */
+  /** Start the collapse chaos: a rumble bed plus randomized events. */
   startChaos() {
     if (!this._unlocked || this._chaosOn) return;
     this._chaosOn = true;
@@ -715,29 +722,17 @@ export default class AudioManager {
     const bedGain = this._gain(MIN_GAIN);
     bedGain.connect(this.master);
 
-    // Roaring fire: broadband noise through a lowpass with a fast flicker LFO.
-    const roarSrc = this._noiseSource(true);
-    const roarF = this._filter('lowpass', 420, 0.7);
-    const roarG = this._gain(0.16);
-    const roarLfo = ctx.createOscillator();
-    roarLfo.frequency.value = 6.5;
-    const roarLfoG = this._gain(0.07);
-    roarLfo.connect(roarLfoG).connect(roarG.gain);
-    roarSrc.connect(roarF).connect(roarG).connect(bedGain);
-
     // Deep structural rumble under everything.
     const rumbleSrc = this._noiseSource(true);
     const rumbleF = this._filter('lowpass', 80, 0.9);
     const rumbleG = this._gain(0.5);
     rumbleSrc.connect(rumbleF).connect(rumbleG).connect(bedGain);
 
-    roarSrc.start(t);
     rumbleSrc.start(t);
-    roarLfo.start(t);
     bedGain.gain.setValueAtTime(MIN_GAIN, t);
     bedGain.gain.exponentialRampToValueAtTime(0.9, t + 2.5);
 
-    this._chaosBed = { gain: bedGain, nodes: [roarSrc, rumbleSrc, roarLfo, roarG, rumbleG] };
+    this._chaosBed = { gain: bedGain, nodes: [rumbleSrc, rumbleG] };
     this._chaosT = { boom: 2.5, machine: 2, scream: 5, rumble: 4 };
   }
 
@@ -787,61 +782,78 @@ export default class AudioManager {
   }
 
   /**
-   * Give every Level-3 fire its own positional crackle, so walking past one
-   * you hear it rise on your left or right and fall away behind you. Each
-   * emitter is a looping ember buffer through a band-pass into a PannerNode
-   * parked at the fire.
+   * Positional fire crackle is now handled by a single recorded fire bed;
+   * this method is kept as a no-op so existing callers do not need changes.
    */
   setFireEmitters(fires) {
-    this.stopFireEmitters();
-    if (!this.ctx || !fires || !fires.length) return;
-    const buf = this._crackleBuf || (this._crackleBuf = this._buildCrackleBuffer());
-    for (const f of fires) {
-      const hasFlame = f.flames && f.flames.length > 0; // smoke columns are quieter
-      const ctx = this.ctx;
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.loop = true;
-      src.playbackRate.value = 0.9 + Math.random() * 0.2;
-      const bp = this._filter('bandpass', hasFlame ? 1500 : 900, 0.8);
-      const g = this._gain(0);
-      const pan = ctx.createPanner();
-      pan.panningModel = 'HRTF';   // binaural spatialisation (only 'HRTF'/'equalpower' are valid)
-      pan.distanceModel = 'inverse';
-      pan.refDistance = 2.5;
-      pan.maxDistance = 30;
-      pan.rolloffFactor = 1.5;
-      if (pan.positionX) {
-        pan.positionX.value = f.x; pan.positionY.value = f.y + 0.4; pan.positionZ.value = f.z;
-      } else {
-        pan.setPosition(f.x, f.y + 0.4, f.z);
-      }
-      src.connect(bp).connect(g).connect(pan).connect(this.master);
-      const t = ctx.currentTime;
-      const target = (hasFlame ? 0.5 : 0.16) * (0.8 + Math.random() * 0.4);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(target, t + 1.5);
-      src.start(t);
-      this._fireEmitters.push({ src, bp, g, pan });
-    }
+    // Intentionally empty — the recorded fire bed plays globally via playFireBed().
   }
 
   stopFireEmitters() {
-    if (!this.ctx || !this._fireEmitters.length) { this._fireEmitters = []; return; }
-    const t = this.ctx.currentTime;
-    for (const e of this._fireEmitters) {
-      try {
-        e.g.gain.cancelScheduledValues(t);
-        e.g.gain.setValueAtTime(Math.max(e.g.gain.value, MIN_GAIN), t);
-        e.g.gain.linearRampToValueAtTime(0, t + 0.4);
-        e.src.stop(t + 0.5);
-      } catch (err) { /* noop */ }
-      const nodes = [e.src, e.bp, e.g, e.pan];
-      setTimeout(() => {
-        for (const n of nodes) { try { n.disconnect(); } catch (err) { /* noop */ } }
-      }, 650);
+    // Intentionally empty — stopFireBed() handles the recorded loop.
+  }
+
+  /**
+   * Loop the recorded fire bed while Level-3 fire/smoke is present.
+   */
+  playFireBed(vol = 0.55) {
+    if (!this._unlocked || this.muted || this._fireBedOn) return;
+    if (!this._fireBed) {
+      if (!this._fireBedFailed) this._fireBedWanted = true;
+      return;
     }
-    this._fireEmitters = [];
+    this._fireBedWanted = false;
+    this._fireBedOn = true;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this._fireBed.buffer;
+    src.loop = true;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.8);   // fade in
+    src.connect(g).connect(this.master);
+    src.start(t);
+    this._fireBedSrc = src;
+    this._fireBedGain = g;
+  }
+
+  /** Fade out and stop the looping Level-3 fire bed. */
+  stopFireBed(fade = 1.2) {
+    const src = this._fireBedSrc;
+    const g = this._fireBedGain;
+    this._fireBedOn = false;
+    this._fireBedWanted = false;
+    this._fireBedSrc = null;
+    this._fireBedGain = null;
+    if (!src) return;
+    const t = this.ctx.currentTime;
+    try {
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(g.gain.value, MIN_GAIN), t);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + Math.max(0, fade));
+      src.stop(t + Math.max(0, fade) + 0.05);
+    } catch (e) { /* already stopped */ }
+    setTimeout(() => {
+      try { src.disconnect(); } catch (e) { /* noop */ }
+      try { g.disconnect(); } catch (e) { /* noop */ }
+    }, (Math.max(0, fade) + 0.1) * 1000);
+  }
+
+  /** Fetch + decode the recorded Level-3 fire/smoke bed loop. */
+  async _loadFireBedSample() {
+    if (!this.ctx || this._fireBed || this._fireBedFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/fire_bed.mp3');
+      if (!res.ok) { this._fireBedFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._fireBed = { buffer: audio };
+      // A loop requested while the sample was still decoding starts now.
+      if (this._fireBedWanted && this._playing) {
+        this._fireBedWanted = false;
+        this.playFireBed();
+      }
+    } catch (e) { this._fireBedFailed = true; }
   }
 
   /** Park the Web Audio listener on the camera so panned fires sound correct. */
@@ -863,26 +875,6 @@ export default class AudioManager {
       L.setPosition(pos.x, pos.y, pos.z);
       L.setOrientation(fwd.x, fwd.y, fwd.z, 0, 1, 0);
     }
-  }
-
-  /** A few seconds of looping firebed: sparse crackle pops over a faint hiss. */
-  _buildCrackleBuffer(dur = 4) {
-    const rate = this.ctx.sampleRate;
-    const len = Math.floor(rate * dur);
-    const buf = this.ctx.createBuffer(1, len, rate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * 0.015; // hiss bed
-    const pops = Math.floor(dur * 26);
-    for (let p = 0; p < pops; p++) {
-      const start = (Math.random() * len) | 0;
-      const amp = 0.25 + Math.random() * 0.7;
-      const dec = Math.max(2, Math.floor(rate * (0.004 + Math.random() * 0.03)));
-      for (let i = 0; i < dec && start + i < len; i++) {
-        const t = i / dec;
-        d[start + i] += (Math.random() * 2 - 1) * amp * Math.exp(-t * 6) * (1 - t);
-      }
-    }
-    return buf;
   }
 
   /** Distant explosion: sub-bass boom, pressure crackle, debris tail. */
