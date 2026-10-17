@@ -1427,26 +1427,6 @@ export default class LevelManager {
   }
 
   /**
-   * A panicked staff member fleeing continuously through a chaos area. Unlike
-   * evacuateWalkers() the loop never ends, so Level 3 always reads as a crowd
-   * running for their lives. Reuses the worker's `fleeing` animation (forward
-   * lean, pumping arms, glances back over the shoulder).
-   */
-  _addPanicRunner(path, o = {}) {
-    const w = this._addWalker(o.variant || 'coat', path, {
-      speed: o.speed || 3.4 + Math.random() * 1.3,
-    });
-    w.fleeSpeed = w.speed;
-    // Send the runner toward the end of the route; StaffWalker handles the
-    // fleeing animation/pathfinding and stops at the refuge.
-    w.evacuate(path[path.length - 1]);
-    // Crowd NPCs are ambience — drop their shadow casting to keep the already
-    // heavy Level-3 frame budget in check.
-    w.npc.group.traverse((c) => { if (c.isMesh) c.castShadow = false; });
-    return w;
-  }
-
-  /**
    * Place a fallen worker — static storytelling scenery (the breach's human
    * cost). The joint pose is set once by part name (update() is never
    * called) and the figure is laid on its back, then spun to place it.
@@ -2773,18 +2753,16 @@ export default class LevelManager {
     buildEscapeRoute(this);
     this.expansion = new CollapseExpansion(this);
 
-    // ── Panicked crowd — staff fleeing through the arena ────────────────
-    const panicRoutes = [
-      [{ x: 1.5, z: -12.5 }, { x: 1.0, z: -40.5 }],
-      [{ x: -3.5, z: -13.5 }, { x: -3.0, z: -39.5 }],
-      [{ x: 4.0, z: -15.0 }, { x: 3.2, z: -38.0 }],
-      [{ x: -5.5, z: -16.5 }, { x: 5.5, z: -35.5 }, { x: 5.0, z: -18.0 }],
-      [{ x: 0.0, z: -13.0 }, { x: -8.0, z: -20.0 }, { x: -8.5, z: -30.0 }],
-      [{ x: 2.5, z: -35.0 }, { x: -1.5, z: -13.5 }],
+    // ── Injured staff — casualties of the containment breach ─────────────
+    const injured = [
+      { variant: 'tech', x: 1.5, z: -12.5, rotY: 0.4 },
+      { variant: 'coat', x: -3.5, z: -13.5, rotY: -0.3 },
+      { variant: 'tech', x: 4.0, z: -15.0, rotY: 0.6 },
+      { variant: 'coat', x: -5.5, z: -16.5, rotY: -0.5 },
+      { variant: 'tech', x: 0.0, z: -13.0, rotY: 0.2 },
+      { variant: 'coat', x: 2.5, z: -35.0, rotY: 0.3 },
     ];
-    panicRoutes.forEach((route, i) => {
-      this._addPanicRunner(route, { variant: i % 2 ? 'coat' : 'tech', speed: 3.6 + (i % 3) * 0.4 });
-    });
+    injured.forEach((c) => this._addCasualty(c.variant, c.x, c.z, c.rotY));
 
     // ── Fog ──────────────────────────────────────────────────────────────
     this.fogColor = 0x10131a;
