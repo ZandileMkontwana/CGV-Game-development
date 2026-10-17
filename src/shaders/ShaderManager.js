@@ -52,17 +52,14 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    // Soft sky/ground fill so unlit surfaces are never pure black. Kept
-    // deliberately low: the room's ceiling practicals (LevelKit.lamp) must
-    // read as the dominant sources, leaving genuine dark corners between them.
-    this._addLight(new THREE.HemisphereLight(0xc7e3e5, 0x111d22, 0.16));
+    // Soft sky/ground fill so unlit surfaces are never pure black.
+    this._addLight(new THREE.HemisphereLight(0xc7e3e5, 0x111d22, 0.28));
 
-    // Cool white ambient — just enough to lift the deepest shadow without
-    // washing the scene flat (was 0.16, which erased all contrast).
-    this._addLight(new THREE.AmbientLight(0xe7f0e9, 0.06));
+    // Cool white ambient.
+    this._addLight(new THREE.AmbientLight(0xe7f0e9, 0.16));
 
     // Main directional light (overhead fluorescents feel).
-    const main = new THREE.DirectionalLight(0xf0fff8, 0.72);
+    const main = new THREE.DirectionalLight(0xf0fff8, 0.65);
     main.position.set(-3, 9, -20);
     main.target.position.set(0, 0, -25);
     this._addLight(main.target);
@@ -70,12 +67,12 @@ export default class ShaderManager {
     this._addLight(main);
 
     // Fill light from the opposite side — no shadow, just softens contrast.
-    const fill = new THREE.DirectionalLight(0xc4e6e9, 0.12);
+    const fill = new THREE.DirectionalLight(0xc4e6e9, 0.22);
     fill.position.set(-8, 10, -8);
     this._addLight(fill);
 
     // Subtle rim/back light so character silhouettes read against the wall.
-    const rim = new THREE.DirectionalLight(0xffffff, 0.2);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.3);
     rim.position.set(0, 6, -12);
     this._addLight(rim);
     this._labFill = this._lights.filter(light => light.isLight)
