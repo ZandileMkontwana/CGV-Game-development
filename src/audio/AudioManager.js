@@ -1042,18 +1042,23 @@ export default class AudioManager {
       const t = ctx.currentTime;
       const playDur = Math.min(js.range.duration, 0.45);
       const dur = playDur / src.playbackRate.value;
+      const attack = 0.005;
+      const release = 0.02;
+      const peak = 1.0;
+      // Thumps are very short; keep attack/release from overlapping.
+      const releaseStart = Math.max(t + attack + 0.005, t + dur - release);
       g.gain.setValueAtTime(MIN_GAIN, t);
-      g.gain.exponentialRampToValueAtTime(0.85, t + 0.01);
-      g.gain.setValueAtTime(0.85, t + Math.max(0.03, dur - 0.04));
-      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+      g.gain.exponentialRampToValueAtTime(peak, t + attack);
+      g.gain.setValueAtTime(peak, releaseStart);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur + 0.005);
       src.connect(g).connect(this.master);
       src.start(t, js.range.offset, playDur);
       src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
       return;
     }
-    // Synthesized fallback: a soft thump + low chirp.
-    this._chirp(180, 90, 0.06, 0.22, 'sine');
-    this._burst({ dur: 0.12, vol: 0.15, type: 'lowpass', freq: 250 });
+    // Synthesized fallback: a louder thump + low chirp.
+    this._chirp(160, 80, 0.08, 0.28, 'sine');
+    this._burst({ dur: 0.14, vol: 0.35, type: 'lowpass', freq: 220 });
   }
 
   _spark() {
@@ -1470,7 +1475,10 @@ export default class AudioManager {
       if (!res.ok) return;
       const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
       this._jumpSample = { buffer: audio, range: this._trimRange(audio) };
-    } catch (e) { /* keep the synthesized jump */ }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('jump sample failed to load:', e);
+    }
   }
 
   /** Play the recorded door-open take, loud and pitch-jittered slightly. */
