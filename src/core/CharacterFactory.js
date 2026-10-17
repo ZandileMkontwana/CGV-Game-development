@@ -450,7 +450,7 @@ export function createScientist() {
     const type = 1 - cower;
 
     // Typing pose: elbows bent, hands tapping on the console.
-    const tap = Math.sin(t * 7) * 0.06;
+    const tap = mode === 'idle' ? 0 : Math.sin(t * 7) * 0.06;
     elbL.rotation.x = -1.15 * type + tap * type;
     elbR.rotation.x = -1.15 * type - tap * type;
     armL.rotation.x = -0.85 * type;

@@ -22,6 +22,7 @@
  */
 import * as THREE from 'three';
 import { buildPBRMaps, buildGradientSkybox, buildSoftSprite } from './textures.js';
+import LabPowerLighting from './LabPowerLighting.js';
 
 export default class ShaderManager {
   constructor(scene) {
@@ -34,6 +35,14 @@ export default class ShaderManager {
     this._levelShaders = new Set();
     this._autoCollapse = null; // { t, duration } while active
     this._pulseTrails = [];
+    this.labPowerLighting = new LabPowerLighting();
+    this._labPowerSource = null;
+  }
+
+  configureLabPower(source) {
+    this._labPowerSource = source;
+    this.labPowerLighting.power.value = source?.power ?? 1;
+    if (source) this.labPowerLighting.apply(this.scene);
   }
 
   // ── Lighting presets ───────────────────────────────────────────────────
@@ -540,6 +549,7 @@ export default class ShaderManager {
 
   /** Release level effects while preserving the tool and monster shaders. */
   clearLevelVisuals() {
+    this.configureLabPower(null);
     for (const material of this._levelShaders) material.dispose();
     this._activeShaders = this._activeShaders.filter(material => !this._levelShaders.has(material));
     this._dissolveMaterials = this._dissolveMaterials.filter(material => !this._levelShaders.has(material));
@@ -574,6 +584,7 @@ export default class ShaderManager {
    * @param {number} dt delta time in seconds
    */
   update(dt) {
+    this.labPowerLighting.power.value = this._labPowerSource?.power ?? 1;
     this._time += dt;
 
     for (const mat of this._activeShaders) {

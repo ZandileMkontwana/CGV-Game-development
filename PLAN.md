@@ -1,6 +1,13 @@
 # Containment Breach — Lab Facility
 ## CGV Group Project Plan
 
+Current implementation reviewed on 15 October 2026. Status below describes the
+working tree, including recent fixes; it does not certify a final submission.
+Owner names record team responsibilities, rather than verified asset authorship.
+The latest functional check passed 66 automated tests and the production build.
+See [BUGFIX_CHECKS.md](./BUGFIX_CHECKS.md) for recent checks and
+[ASSET_CREDITS.md](./ASSET_CREDITS.md) for asset evidence and unresolved attribution.
+
 ---
 
 ## 1. Project Overview
@@ -25,7 +32,7 @@
 | Level | Theme | Challenge Type | Visual Identity | Custom Shader |
 |---|---|---|---|---|
 | **1 — The Experiment** | Clean lab, everything normal | Exploration — learn the facility, witness the breach | Cool white lighting, clean lab surfaces | — |
-| **2 — The Hunt** | Damaged facility, two escaped creatures | Stealth + repair + chase — use cover, isolate pressure, sprint past the second creature | Amber hazard lighting, cool archive screens, green evacuation signs | **Heat-haze / ripple** (time + proximity driven) |
+| **2 — The Hunt** | Damaged facility, two escaped creatures | Stealth, scientist rescue, pressure isolation and archive recovery | Amber hazard lighting, cool archive screens, green evacuation signs | **Heat shimmer** (time-driven noise overlay) |
 | **3 — The Collapse** | Entity locks the surface seal | Boss fight + escape — dodge warned charges, shoot three cyan nodes, follow the released route | Red emergency lights, cool fill, cyan targets and green escape guidance | **Dissolve / noise** (time + escape progress driven) |
 
 ### Core Progression
@@ -41,20 +48,21 @@ An engineer answers a routine power fault in Lab A-2. Pulsing the amber relay re
 | Level | How You Win |
 |---|---|
 | **1** | Repair the amber relay, survive the breach and follow the emergency bypass to the control room |
-| **2** | Cross the crew quarters, shoot both amber pressure valves to release the server-room bypass, then evade the second creature and sprint to the green core-access beacon |
-| **3** | Destroy the cyan chest and shoulder nodes, then follow the green route to the surface exit within the 90-second countdown |
+| **2** | Release two scientists in medical and escort them north to refuge; isolate both pressure valves, recover experiment records from the east archive, then escape to the green core-access beacon |
+| **3** | Start the west and east emergency generators, defeat the entity through three recovery openings, then cross the collapsing maintenance route and service bypass to the surface within 90 seconds |
 
 ### The Pulse Tool
 The player carries an engineering pulse device — a handheld tool that fires energy bursts.
 - **Level 1:** Activate terminals, open power couplings, interact with lab equipment
-- **Level 2:** Override the blue entry relay and isolate both amber pressure valves. Shots draw the creature to their origin; combat is reserved for Level 3.
-- **Level 3:** Shoot the three cyan weak points. Each hit interrupts the creature and removes a node; wind-up and recovery give clear opportunities to dodge and aim.
+- **Level 2:** Override the blue entry relay, release the trapped scientists, isolate both amber pressure valves, power the archive and start the records download. Shots draw creatures to their origin; combat is reserved for Level 3.
+- **Level 3:** The entity hunts before power is restored. Pulse both generators to disable its node shields, then shoot cyan nodes during recovery. One node can rupture per opening; amber charge and sweep warnings give time to dodge.
 
 ### Camera
 - **First-person:** Eye-level view, maximum tension (stealth, shooting, precision)
 - **Third-person:** Behind-the-player view, see the character model (exploration, awareness)
 - Press **V** to toggle between views at any time
 - Press **L** to toggle the flashlight; left click or **F** fires the pulse tool.
+- The canvas minimap follows the player; **M** expands the whole-level map. It is a drawn plan view, not an orthographic 3D camera or security-camera feed.
 
 ---
 
@@ -83,12 +91,15 @@ src/
 ├── ui/                    ← Ronie (HUD, menus, sound, credits, trailer, deployment)
 │   └── UIManager.js       — HUD updates, sound triggers, credits screen
 │
-├── assets/                ← shared (models, textures, audio — credit everything)
-│   ├── models/            — Blender exports (.glb)
-│   ├── textures/
-│   └── audio/
+├── audio/                 ← procedural Web Audio score, effects and alerts
+├── assets/audio/          ← archived PA WAVs, unused by the current entry point
 │
 └── main.js                — entry point
+
+public/
+├── models/                — five Blender-exported props and a legacy Soldier GLB
+├── assets/textures/       — menu-bg.png; environment textures are generated in code
+└── licenses/              — installed library notices
 ```
 
 ### Key Design Decisions
@@ -96,8 +107,8 @@ src/
 - **Corridor width:** 4m, **ceiling height:** 3m
 - **Asset filenames:** lowercase, hyphen-separated, no spaces (`wall-panel-metal.png`)
 - **No absolute paths** (`/assets/...`) — everything relative for LAMP server compatibility
-- **Dispose everything** on level teardown to prevent GPU memory leaks
-- **No per-frame allocations** — reuse vectors, materials, geometries
+- Release owned per-level resources on teardown; retain shared caches and persistent actors.
+- Reuse vectors, geometry and particle pools in update loops to limit allocations.
 
 ### Controls
 
@@ -108,8 +119,13 @@ src/
 | Arrow Up / Down | Look up / down |
 | Shift | Sprint (~11 m/s vs 6 m/s walk) |
 | Space | Jump |
+| C (hold) | Crouch |
 | V | Toggle first-person / third-person camera |
 | F or Left Click | Fire pulse tool |
+| Right Mouse (hold) or Z (toggle) | Aim |
+| L or T | Toggle flashlight |
+| M | Expand/collapse map |
+| U | Mute/unmute audio |
 | Mouse (after click) | Free look (pointer lock) |
 | Escape | Pause / Resume |
 
@@ -119,22 +135,27 @@ src/
 
 ### How Each Grading Category Is Addressed
 
-| Category | Weight | Implementation |
-|---|---|---|
-| **Viewing** | 10% | First-person + third-person camera toggle (V key). Camera follows player through the world. Animated character model visible in third person. Planned: minimap or security camera view. |
-| **Control & Playability** | 25% | Smooth WASD + mouse controls. Sprint, jump, and shoot (pulse tool). Physics-based collisions. Three levels with distinct objectives (explore → evade → fight/escape). Monster AI creates dynamic encounters. Win/fail conditions per level. |
-| **3D Effects** | 25% | Antialiasing, PCF soft shadow maps, multiple light sources per level, PBR metallic materials (roughness + metalness), fog (colour changes per level), ACES filmic tone mapping. Planned: bump/normal maps, skybox, reflections, procedural textures. |
-| **Shaders** | 10% | Three custom GLSL shaders: (1) Heat-haze ripple — sin-wave UV distortion. (2) Dissolve/noise — 3D hash noise + edge glow. (3) Pulse projectile glow — energy bolt shader with trail. All time-driven and game-state-driven. |
-| **Gameplay & Experience** | 25% | Three distinct levels with escalating tension. Story-driven (experiment gone wrong → monster hunt → building collapse). Monster AI creates dynamic stealth/chase encounters. Environmental storytelling through terminal logs and PA announcements. Sound design enhances immersion. |
-| **Polish** | 10% | Main menu, pause menu, restart without page refresh. FPS counter. Loading screen. HUD with health, energy, objective, level indicator. Planned: options menu, sound settings, smooth transitions. |
-| **Innovation** | 10% | Custom Blender models (player character, monster, scientist NPC, lab equipment). First/third-person toggle. Monster AI with patrol/chase/attack states. Pulse tool that evolves per level. Dynamic lighting shifts. Three custom shaders. |
-| **Game Trailer** | 10% | Max 2 min YouTube video. Story progression (normal lab → monster hunt → collapse) makes compelling footage. Chase sequences and boss fight are trailer highlights. |
+Weights below match the supplied grading rubric and total **100%**. Examples in
+the rubric apply as relevant; optional techniques are not all mandatory features.
+
+| Category | Weight | Implemented evidence | Remaining work / limits |
+|---|---|---|---|
+| **Viewing** | 10% | Animated 3D scenes; first/third-person camera toggle; scientist player/NPC rigs; camera-mounted weapon; world props; minimap and expanded map. | Final animation/camera-clipping review. The map is a 2D canvas; no second 3D camera or picture-in-picture. |
+| **Control & Playability** | 10% | Keyboard/mouse movement, sprint, jump, crouch, aim and pulse fire; Cannon gravity/collision; training; mission gates, health failure and timed escape failure. | Full human playthrough for difficulty, collision edge cases and useful vertical interaction. |
+| **3D Effects** | 15% | Depth testing, multiple lights, soft shadows, smooth curved and hard-edged geometry, PBR normal/bump/roughness textures, static gradient skyboxes/environment reflections, fog, drifting smoke, bloom and tone mapping. | Renderer requests antialiasing, but the composer has no multisampling or AA pass. Glass is alpha-transparent, not refractive. No animated skybox or dynamic scene reflections. |
+| **Shaders** | 10% | Custom vertex/fragment shaders for noisy heat shimmer, 3D value-noise dissolve with glowing edges, pulse/weak-point glow and screen grading/danger effects. Uniforms follow time, power, hits or collapse state as applicable. | Prepare explanations of attributes, varyings, uniforms, noise and discard. Heat shimmer is an overlay, not background refraction; no custom vertex-displacement effect. |
+| **Gameplay & Experience** | 25% | Breach story, fleeing staff, two-creature hunt, scientist escort, records transfer, generator hazards, warned boss attacks and collapsing escape route; procedural music/effects and captioned PA alerts. | Human pacing, balance and listening review; replay routes/objectives are largely fixed. |
+| **Polish** | 10% | Loading, menus, pause/current-level retry, briefings, higher guidance panel, map, saved volume/music/sensitivity settings, mute, victory/credits, static batching and resource cleanup. | Latest expanded levels need target Chrome/Ubuntu hardware checks. Refresh final package; verify hosting and resolve asset attribution. Debug FPS is development-only. |
+| **Innovation** | 10% | Pulse tool used for repairs, rescue, records and combat; power-dependent lighting/shields; reactive staff; procedural models/textures/audio and gameplay-driven effects. Five Blender-exported prop GLBs are present. | Demonstrate original contributions. Custom Blender character/weapon GLBs, baked PBR image sets and sampled effects are absent; confirm prop authorship/source evidence. |
+| **Game Trailer** | 10% | A 1:45 storyboard exists in [TRAILER_PLAN.md](./TRAILER_PLAN.md). | Capture, editing, final video of at most two minutes, upload and playback-link verification remain pending. |
 
 ---
 
 ## 5. Milestones & Timeline
 
 ### Alpha (Formative — Not for Marks)
+
+Historical prototype milestones below; use the current tables for submission status.
 
 **Goal:** Show your mentor a running demo that communicates the final vision. Be ready to explain each rubric category.
 
@@ -148,55 +169,56 @@ src/
 | Three lighting presets (cool / amber / red) | Done |
 | Both custom shaders (basic versions) | Done |
 | Menu system (start, pause, restart) | Done |
-| Talking points for each rubric category | Done |
-| **Deployed and playable from dev server** | Done |
+| Talking points for each rubric category | Initial plan exists; rehearse the current implementation |
+| **Playable from local dev server** | Done; department hosting is separate and unverified |
 
 ### Beta (Graded — 16 October 2026)
 
 | Deliverable | Owner | Status |
 |---|---|---|
-| Full Level 1 geometry (lab corridors, experiment room, control room) | Mlungisi | Not started |
-| Full Level 2 geometry (damaged corridors, hiding spots, monster patrol paths) | Mlungisi | Not started |
-| Full Level 3 geometry (boss arena, collapsing sections, escape route) | Mlungisi | Implemented; arena movement, cover routing and escape checked |
-| Blender models: player character, monster, scientist NPC, lab equipment | Mlungisi | Not started |
-| Monster AI system (patrol, chase, attack states) | Zandile | Not started |
-| Pulse tool (raycasting, energy, cooldown, fire) | Zandile | Not started |
-| Third-person camera rig + V key toggle | Zandile | Not started |
-| Win/lose conditions per level | Zandile | Not started |
-| Level 2 stealth mechanic (detection range, chase trigger) | Zandile + Mlungisi | Not started |
-| Level 3 boss fight logic (weak points, health, phases) | Zandile + Mlungisi | Implemented; warned charges, recovery and three-node fight checked |
-| PBR textures (diffuse, normal, roughness maps) | Kutloano | Not started |
-| Refined heat-haze shader (proper UV distortion) | Kutloano | Not started |
-| Refined dissolve shader (3D noise, edge glow) | Kutloano | Not started |
-| Pulse projectile glow shader (energy bolt + trail) | Kutloano | Not started |
-| Monster weak-point glow effects | Kutloano | Implemented; exposed cyan cores and hit feedback checked |
-| Bump maps on lab surfaces | Kutloano | Not started |
-| Skybox (lab interior / exterior) | Kutloano | Not started |
-| HUD (health bar, energy bar, objective text, timer) | Ronie | Not started |
-| Sound effects: monster (growls, footsteps, screams), lab ambience, pulse fire, collapse | Ronie | Not started |
-| Music: calm (L1), tense/horror (L2), intense (L3) | Ronie | Not started |
-| PA announcement system (countdown, warnings) | Ronie | Not started |
-| Credits screen (all libraries, assets, licenses) | Ronie | Not started |
-| Loading screen with real asset progress | Ronie | Not started |
-| Game trailer (max 2 min, YouTube) | Ronie | Not started |
-| **Deployed on LAMP server and verified** | Ronie | Not started |
+| Full Level 1 geometry, training and breach | Mlungisi | Implemented; staff, room traversal and relay progression checked |
+| Full Level 2 geometry, rescue and archive | Mlungisi | Implemented; escort routes, pressure gates and download completion checked |
+| Full Level 3 arena, generators and extended escape | Mlungisi | Implemented; hazards, cover routing and escape checked |
+| Blender prop models | Mlungisi | Five exports present; history/metadata recorded, authorship confirmation pending |
+| Blender character and weapon models | Mlungisi | Absent; current characters and weapons are built in code |
+| Monster AI system | Zandile | Implemented; collision-aware patrol, detection, pursuit and attack |
+| Pulse tool | Zandile | Implemented; raycasts, energy, cooldown and mission interactions |
+| Third-person camera + V toggle | Zandile | Implemented; animated coat avatar and held weapon |
+| Win/lose and retry per level | Zandile | Implemented; mission gates, health failure and escape timeout |
+| Level 2 stealth / second creature | Zandile + Mlungisi | Implemented; sightlines, crouch, hearing, search and ambush |
+| Level 3 boss phases | Zandile + Mlungisi | Implemented; pre-power threat, shields, charges, recovery and final-phase sweep |
+| PBR normal/roughness textures | Kutloano | Generated in code; no baked Blender image sets present |
+| Heat shimmer | Kutloano | Implemented as animated noise overlay; background distortion remains absent |
+| Dissolve shader | Kutloano | Implemented with 3D value noise, discard and animated edge glow |
+| Pulse glow and trail | Kutloano | Implemented; custom glow shader and pooled soft sprite trail |
+| Monster weak-point glow | Kutloano | Implemented; amber shields, cyan openings and hit feedback |
+| Bump/normal surface detail | Kutloano | Normal maps on facility surfaces; bump maps on procedural creature/scientist materials |
+| Skybox / reflections | Kutloano | Static generated cube backgrounds and environment-map reflections |
+| HUD and map | Ronie | Implemented; health, energy, objectives, warnings, timer and M map |
+| Effects, ambience and level music | Ronie | Implemented with Web Audio; final listening/balance review pending |
+| PA alerts and captions | Ronie | Implemented as synthesized chimes/sirens and text; archived WAV dialogue is unused |
+| Credits and license links | Ronie | Implemented in menu and ending; asset source confirmations remain pending |
+| Loading and level briefings | Ronie | Implemented; initialization/model progress and fallback handling |
+| Game trailer (max 2 min) | Ronie | Storyboard only; capture/edit/upload pending |
+| **Department LAMP deployment** | Ronie | No verified published URL recorded; local subdirectory checks passed |
 
 ### Final (Graded — End of Teaching Term)
 
 | Deliverable | Owner | Status |
 |---|---|---|
-| All beta items polished and bug-free | All | — |
-| Devlog video | All | Not started |
-| Post-processing (bloom on reactor, vignette during collapse) | Kutloano | Not started |
-| Optional: local co-op mode (shared keyboard) | Zandile | Not started |
-| Final LAMP deployment verified | Ronie | Not started |
-| Individual contribution reports on Moodle | Each member | Not started |
+| Final full human playthrough, visual polish and target-hardware check | All | Pending; automated checks do not replace this review |
+| Devlog video | All | No deliverable recorded in repository |
+| Post-processing (bloom, grade, vignette, danger pulse) | Kutloano | Implemented; dedicated antialiasing remains pending |
+| Optional: local co-op mode | Zandile | Not implemented; outside the current feature set |
+| Final LAMP deployment and refreshed submission ZIP | Ronie | Current CodeCrafters.zip prepared; final human playthrough, Moodle upload and published-URL verification pending |
+| Individual contribution reports on Moodle | Each member | Submission status not recorded in repository |
 
 ---
 
 ## 6. Task Assignments
 
 ### Zandile — Engine & Controls
+
 - [x] Project scaffold (Vite + Three.js + cannon-es)
 - [x] InputManager (keyboard + mouse + pointer lock)
 - [x] PlayerController (WASD, sprint, jump, physics body)
@@ -205,58 +227,66 @@ src/
 - [x] GameState (menu, pause, restart, level transitions)
 - [x] Game.js orchestrator (main loop, subsystem wiring)
 - [x] Level 1 prototype corridors for alpha
-- [ ] Third-person camera rig + V key toggle
-- [ ] PulseTool.js (raycasting, energy, cooldown, fire)
-- [ ] MonsterAI.js (patrol, chase, attack state machine)
-- [ ] Level 2 stealth mechanic (detection range, chase trigger)
+- [x] Third-person camera rig + V key toggle
+- [x] PulseTool.js (raycasting, energy, cooldown, fire)
+- [x] MonsterAI.js (patrol, chase, attack state machine)
+- [x] Level 2 stealth mechanic (detection range, chase trigger)
 - [x] Level 3 boss fight logic (weak points, health, phases)
-- [ ] Win/lose trigger system per level
-- [ ] Integration testing with teammates' code
-- [ ] Performance profiling (Chrome DevTools)
+- [x] Win/lose trigger system per level
+- [x] Automated integration and regression checks (see BUGFIX_CHECKS.md)
+- [x] Local rendering/resource measurements (see PERFORMANCE_CHECKS.md)
+- [ ] Final human playthrough and target-hardware performance profiling
 
 ### Mlungisi — Level Builder & Blender Models
-- [ ] Modular corridor pieces (straight, T-junction, corner, room)
-- [ ] Level 1 — clean lab corridors, experiment room, control room
-- [ ] Level 2 — damaged corridors, hiding spots, monster patrol paths
-- [ ] Level 3 — boss arena, collapsing sections, escape route
-- [ ] Blender: player character model (engineer)
-- [ ] Blender: monster model (mutated scientist)
-- [ ] Blender: scientist NPC model (pre-mutation)
-- [ ] Blender: lab equipment (containment tube, computers, consoles)
-- [ ] Scene graph hierarchy (explainable parent-child relationships)
-- [ ] Collision physics bodies for all walls/obstacles
-- [ ] Shootable target markers (conduits, valves, boss weak points)
+
+- [x] Modular corridor/room geometry and prop builders
+- [x] Level 1 — training, lab corridors, experiment room, control room
+- [x] Level 2 — cover, patrol paths, rescue and archive
+- [x] Level 3 — boss arena, generator rooms and extended collapsing escape
+- [x] Project-built scientist/player rigs and procedural monster model
+- [x] Five Blender-exported prop GLBs present (not a complete authored asset kit)
+- [ ] Confirm prop authorship/source records; retain Blender source files if available
+- [ ] Optional authored Blender character/weapon replacements (currently absent)
+- [x] Scene graph hierarchy and independent animated rigs
+- [x] Collision bodies for structural walls, blocking props and moving hazards
+- [x] Shootable mission panels, valves, dummies and weak points
 
 ### Kutloano — Visuals & Shaders
+
 - [x] Basic lighting presets (cool white, flickering amber, red emergency)
-- [x] Basic heat-haze and dissolve shader stubs
-- [ ] Refined heat-haze shader (proper sine-wave UV distortion, sampling)
-- [ ] Refined dissolve shader (3D simplex noise, animated edge glow)
-- [ ] Pulse projectile glow shader (energy bolt + trail)
-- [ ] Monster weak-point glow material (emissive, pulsing)
-- [ ] PBR materials with diffuse + normal + roughness maps
-- [ ] Bump maps on lab walls and floors
-- [ ] Skybox (lab interior / exterior)
-- [ ] Flickering light animation (sin-driven intensity per frame)
-- [ ] Shadow configuration (limit casters, constrain shadow camera)
-- [ ] Post-processing (bloom, vignette during collapse) — final only
+- [x] Heat-shimmer noise overlay with time-driven motion
+- [x] Dissolve shader with 3D value noise and animated edge glow
+- [x] Pulse projectile glow shader and soft sprite trail
+- [x] Monster weak-point glow material and state-driven colour
+- [x] Procedural PBR colour, normal and roughness maps
+- [x] Character/creature bump detail and facility normal-map detail
+- [x] Static generated skyboxes and environment-map reflections
+- [x] Flickering/emergency lighting and lab power restoration
+- [x] Shadow configuration and resource/performance safeguards
+- [x] Post-processing bloom, grade, vignette and danger pulse
+- [x] Textured dust and drifting, expanding smoke
+- [ ] Antialiasing for the post-processing pipeline
+- [ ] Optional background refraction / vertex displacement / animated skybox
+- [ ] Rehearse shader explanations with visible gameplay examples
 
 ### Ronie — UI, Polish, Sound & Deployment
-- [ ] HUD: health bar, energy bar, objective text, level timer
-- [ ] Sound: monster (growls, footsteps, screams, heartbeat when near)
-- [ ] Sound: pulse tool (fire, impact, recharge)
-- [ ] Sound: ambience (lab hum L1, alarms L2, collapse L3)
-- [ ] Music: calm (L1), tense/horror (L2), intense (L3)
-- [ ] PA announcement system (failsafe countdown, warnings)
-- [ ] Credits screen (all libraries, assets, tutorials, licenses)
-- [ ] Loading screen with real progress tracking
-- [ ] Level transition overlay screens
-- [ ] Options menu (volume, sensitivity)
+
+- [x] HUD: health, energy, objectives, warnings, timer and facility map
+- [x] Procedural creature cues, footsteps and threat heartbeat
+- [x] Pulse tool fire, impact and recharge audio
+- [x] Level ambience and distinct procedural music
+- [x] PA synthesized alerts and matching captions
+- [x] Menu and ending credits with shipped library notices
+- [ ] Confirm remaining asset/tutorial sources and update attribution
+- [x] Loading progress and model-failure handling
+- [x] Level briefing/transition overlays
+- [x] Saved master/music volume, mute and mouse sensitivity options
 - [ ] Game trailer (max 2 min, edited, YouTube upload)
 - [ ] Devlog video (final submission only)
-- [ ] Vite build configuration verification (`base: './'`)
-- [ ] LAMP server deployment (build → zip → upload → verify)
-- [ ] Case-sensitivity and path testing on Linux
+- [x] Relative Vite base and local production subdirectory checks
+- [x] ZIP packaging script with a top-level index.html and portable paths
+- [ ] Rebuild/package the final reviewed version and verify department hosting
+- [ ] Final Chrome/Ubuntu path, performance and full-playthrough checks
 
 ---
 
@@ -290,31 +320,30 @@ main           ← always deployable
 
 ## 8. Deployment Checklist (Ronie)
 
-```bash
-# 1. Verify vite config has relative base
-cat vite.config.js  # base: './'
+Department hosting uses **Moodle archive upload**. SSH/SCP access is unavailable;
+the department serves the uploaded static build and does not run npm or Vite.
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for the CodeCrafters walkthrough.
 
-# 2. Build
-npm run build
+```powershell
+# Build dist/ and package its contents with index.html at archive root.
+npm run package
 
-# 3. Test the BUILD locally (not the dev server!)
-npx serve dist
-
-# 4. Play through ALL 3 levels in Chrome, check console for 404s
-
-# 5. Zip the dist/ contents (index.html at top level)
-cd dist && zip -r ../submission.zip . && cd ..
-
-# 6. Upload to Moodle
-
-# 7. Open published URL and play through in Chrome
-#    (first upload often reveals path/case issues)
+# Serve the production build beneath a group folder with exact-case checks.
+npm run preview:deployment
+# Open http://127.0.0.1:4174/group-game/ in Chrome.
 ```
 
+Play through all three levels from that preview. Upload
+`submission/CodeCrafters.zip` to the Moodle deployment activity, following its
+exact filename convention. Use the course-provided published URL for the final
+Chrome playthrough; the actual server address/group folder is not yet recorded.
+
 ### Pre-Flight Checks
-- [ ] No absolute paths (`/`) anywhere in code or markup
-- [ ] Asset filenames match case used in code exactly
-- [ ] `index.html` at top level of zip archive
+- [x] Vite uses a relative base; runtime assets stay under the local group prefix
+- [x] Current built assets load with exact filename case in the strict local preview
+- [x] `index.html` at top level of CodeCrafters.zip; archive files match the build
+- [ ] Complete human playthrough of the current production build
+- [ ] Moodle archive uploaded and actual published URL verified
 - [ ] Frame rate acceptable on lab hardware
 - [ ] Memory does not climb across three levels
 - [ ] Trailer uploaded to YouTube, link submitted

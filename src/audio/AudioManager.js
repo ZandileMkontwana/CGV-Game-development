@@ -28,7 +28,7 @@
  *                          patrol growls, distant stingers
  *   duck(amount)           momentarily pull the ambience down for stingers
  *   stopAmbient() / stopRumble()
- *   toggleMute()           M key; shows the [ MUTED ] HUD indicator
+ *   toggleMute()           U key; shows the [ MUTED ] HUD indicator
  *
  * No per-frame allocations: update() only mutates counters and reads input.
  */
@@ -36,7 +36,7 @@
 const MIN_GAIN = 0.0001;
 // Seconds skipped past the home/menu theme's intro (plus the silence-trimmed
 // lead-in) so it starts the instant the app is first interacted with.
-const SUSPENSE_HEAD_TRIM = 0.65;
+const SUSPENSE_HEAD_TRIM = 2.5;
 const CALM_NOTES = [329.63, 392, 493.88, 440, 392, 329.63, 293.66, 392];
 const HUNT_NOTES = [220, 233.08, 220, 207.65];
 const BOSS_NOTES = [130.81, 155.56, 146.83, 110];
@@ -107,7 +107,7 @@ export default class AudioManager {
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyM' && !e.repeat && !e.target.closest?.('input, textarea, select')) this.toggleMute();
+      if (e.code === 'KeyU' && !e.repeat && !e.target.closest?.('input, textarea, select')) this.toggleMute();
     });
   }
 

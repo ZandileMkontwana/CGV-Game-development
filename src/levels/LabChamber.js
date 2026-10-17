@@ -132,17 +132,20 @@ export default class LabChamber {
     const red = ['alarm', 'mutate', 'burst'].includes(phase);
     this._light.color.setHex(red ? 0xff6650 : 0x8ce5dc);
     this._energy.emissive.setHex(red ? 0xff3d22 : 0x3dcbc6);
+    this.update(0);
   }
 
   update(dt) {
     this._time += dt;
     this._phaseTime += dt;
     const active = this.phase !== 'standby';
-    this._rotor.rotation.z += dt * (active ? 1.3 : 0.12);
-    this._specimen.position.y = Math.sin(this._time * 0.8) * 0.04;
+    this._rotor.rotation.z += dt * (active ? 1.3 : 0);
+    this._specimen.position.y = active ? Math.sin(this._time * 0.8) * 0.04 : 0;
     const red = ['alarm', 'mutate', 'burst'].includes(this.phase);
-    this._light.intensity = red ? 5 + Math.sin(this._time * 4) * 1.2 : active ? 5 : 3.8;
-    this._energy.emissiveIntensity = red ? 1.4 : active ? 1.1 : 0.35;
+    const startup = this.phase === 'powering' ? Math.min(1, this._phaseTime / 0.85) : 1;
+    this._light.intensity = red ? 5 + Math.sin(this._time * 4) * 1.2 : active ? 5 * startup : 0;
+    this._energy.emissiveIntensity = red ? 1.4 : active ? 1.1 * startup : 0;
+    this._culture.emissiveIntensity = active ? 0.4 * startup : 0;
     if (this.phase !== 'standby' && this.phase !== 'powering' && this.phase !== 'alarm') {
       this._ruptureTime += dt;
       for (let i = 0; i < this._shards.length; i++) {

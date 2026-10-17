@@ -198,6 +198,7 @@ export default class LevelKit {
 
   /** Floor slab with a border trim and optional glowing guide lines. */
   floorSlab(w, d, x, z, o = {}) {
+    this.host.mapFloors?.push({ w, d, x, z });
     const y = o.y || 0;
     const mat = o.mat || this.mats.floor;
     this.plane(mat, w, d, x, y, z, { rx: -Math.PI / 2 });
@@ -233,7 +234,7 @@ export default class LevelKit {
       }
     }
     for (const l of o.lamps || []) {
-      this.lamp(l.x, z + l.z, { y: y - 0.12, color: l.color, light: l.light, intensity: l.intensity });
+      this.lamp(x + l.x, z + l.z, { y: y - 0.12, color: l.color, light: l.light, intensity: l.intensity, circuit: o.circuit });
     }
     return null;
   }
@@ -245,7 +246,7 @@ export default class LevelKit {
     const panel = colorName === 'amber' ? this.mats.beaconAmber
       : colorName === 'red' ? this.mats.emergencyRed : this.mats.lampPanel;
     this.box(this.mats.metalDark, 1.0, 0.07, 0.30, x, y, z);
-    this.box(panel, 0.86, 0.05, 0.22, x, y - 0.05, z, { cast: false });
+    this.box(o.circuit ? o.circuit.material(panel) : panel, 0.86, 0.05, 0.22, x, y - 0.05, z, { cast: false });
     if (o.light !== false) {
       const c = colorName === 'amber' ? this.mats.colors.warn
         : colorName === 'red' ? this.mats.colors.emer : this.mats.colors.lampLight;
@@ -254,7 +255,8 @@ export default class LevelKit {
       // into a real warm pool that spills down the walls, with dark between.
       const gain = o.gain || 2.8;
       const light = new THREE.PointLight(c, (o.intensity || 0.9) * gain, o.distance || 12, 2);
-            light.userData.flicker = true;
+      light.userData.flicker = !o.circuit;
+      if (o.circuit) o.circuit.addLight(light);
       light.position.set(x, y - 0.35, z);
       this.scene.add(light);
       this.host._track(light);
@@ -289,6 +291,26 @@ export default class LevelKit {
       }
     }
     return null;
+  }
+
+  /** Breakable pipe run — like pipeRun but returns segment data for destruction. */
+  breakablePipeRun(axis, length, x, y, z, o = {}) {
+    const count = o.count || 2;
+    const r = o.r || 0.07;
+    const mat = o.mat || this.mats.pipe;
+    const spacing = o.spacing || 0.18;
+    const segments = [];
+    for (let i = 0; i < count; i++) {
+      const off = (i - (count - 1) / 2) * spacing;
+      const px = axis === 'x' ? x : x + off;
+      const pz = axis === 'x' ? z + off : z;
+      const py = y - i * 0.02;
+      const m = this.cyl(mat, r, r, length, px, py, pz, { cast: false });
+      if (axis === 'x') m.rotation.z = Math.PI / 2;
+      else m.rotation.x = Math.PI / 2;
+      segments.push({ mesh: m, position: new THREE.Vector3(px, py, pz) });
+    }
+    return segments;
   }
 
   /** Ventilation duct (box) with straps and optional grille openings. */
@@ -436,7 +458,8 @@ export default class LevelKit {
     const frame = new THREE.Mesh(boxGeo(w + 0.16, h + 0.16, 0.12), this.mats.metalDark);
     frame.castShadow = false; frame.receiveShadow = true;
     g.add(frame);
-    const screen = new THREE.Mesh(planeGeo(w, h), o.alt ? this.mats.screenAlt : this.mats.screen);
+    const screenMaterial = o.alt ? this.mats.screenAlt : this.mats.screen;
+    const screen = new THREE.Mesh(planeGeo(w, h), o.circuit ? o.circuit.material(screenMaterial) : screenMaterial);
     screen.position.z = 0.07;
     g.add(screen);
     // Two indicator lights on the frame.
@@ -708,7 +731,8 @@ export default class LevelKit {
     const n = o.monitors === undefined ? 2 : o.monitors;
     for (let i = 0; i < n; i++) {
       const sx = n === 1 ? 0 : (i - (n - 1) / 2) * 0.75;
-      const scr = this._child(main, i % 2 ? this.mats.screenAlt : this.mats.screen, 0.62, 0.4, 0.05, sx, 0.66, -0.05);
+      const screenMaterial = i % 2 ? this.mats.screenAlt : this.mats.screen;
+      const scr = this._child(main, o.circuit ? o.circuit.material(screenMaterial) : screenMaterial, 0.62, 0.4, 0.05, sx, 0.66, -0.05);
       scr.rotation.x = -0.12;
     }
     this._child(main, this.mats.rubber, 0.5, 0.03, 0.18, 0, 0.41, d / 2 - 0.24);

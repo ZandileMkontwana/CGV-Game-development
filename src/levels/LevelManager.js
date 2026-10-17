@@ -3,7 +3,7 @@
  *
  * Every level is composed from LevelKit builders (architecture + props) and
  * a shared LevelMaterials theme bundle:
- *   Level 1  lab        — clean research facility, cool palette
+ *   Level 1  lab        — training hub + clean research facility, cool palette
  *   Level 2  damaged    — collapsed sections, rust + amber palette
  *   Level 3  emergency  — red alert, arena + collapse escape
  *
@@ -11,8 +11,9 @@
  *   - Kit meshes and cached model roots carry userData.kitShared and are
  *     removed but NOT disposed — shared geometry/material caches stay alive.
  *   - Texture maps are never disposed here (all cached/shared).
- *   - Only per-level creations (doors, targets, decals, steam sprites) own
- *     their resources, flagged via userData.ownsGeometry / ownsMaterial.
+ *   - Only per-level creations (doors, targets, decals, steam sprites,
+ *     pickups) own their resources, flagged via userData.ownsGeometry /
+ *     ownsMaterial.
  *
  * Public API consumed by Game.js (do not change):
  *   load(n), _teardown(), update(dt), shootables, occluders, monsterWaypoints,
@@ -21,11 +22,15 @@
  *   openDoor(id), disableVent(id), _disposables ([{mesh, body}]) —
  *   Game._startCollapseSequence looks the exit door up in _disposables.
  *
+ * Added (optional for Game.js):
+ *   pickups, collectPickups(x, z) — health pickups in Level 1 side rooms.
+ *
  * Conventions: 1 unit = 1 m; corridors 4 m wide × 3 m tall (L3 arena 4 m
  * tall); every collider gets a matching cannon body; geometry faces use the
  * LevelKit 'n/e/s/w' convention (front direction).
  */
 import * as THREE from 'three';
+import { dustTexture } from '../shaders/AtmosphereTextures.js';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import LevelKit from './LevelKit.js';
@@ -33,7 +38,51 @@ import StaticBatch from './StaticBatch.js';
 import LabChamber from './LabChamber.js';
 import HealthPack from './HealthPack.js';
 import { getThemeMaterials } from './LevelMaterials.js';
-import { createWorker } from '../core/CharacterFactory.js';
+import NavigationGrid from '../core/NavigationGrid.js';
+import StaffWalker from '../core/StaffWalker.js';
+import StaffModel from '../core/StaffModel.js';
+import { HuntExpansion, CollapseExpansion, buildEscapeRoute } from './LevelExpansion.js';
+import ShootingLesson from '../core/ShootingLesson.js';
+import TrainingDummy from './TrainingDummy.js';
+import LabPower from '../core/LabPower.js';
+
+// ── Blender props (public/models/*.glb) ─────────────────────────────────────
+// Extra hero props placed on top of the procedural LevelKit geometry.
+// x / z are world metres, rotY is radians. The models face +Z at rotY 0:
+//   rotY 0 = faces north (+Z)    rotY -PI/2 = faces west (-X)
+//   rotY PI = faces south (-Z)   rotY  PI/2 = faces east (+X)
+// collision: adds a solid box so the player cannot walk through it (box half
+// size = collisionRadius). occlude: blocks the monster's line of sight and the
+// third-person camera, so it works as stealth cover.
+//
+// NOTE: Level 1 props are listed in the ORIGINAL authoring coordinates and are
+// pushed south by TRAIN_LEN when placed (see _placeProps).
+const PROP_PLACEMENTS = {
+  1: [
+    { file: 'locker',    x: 4.6,  z: -9.0,  rotY: -Math.PI / 2, collision: true, collisionRadius: 0.3 },
+    { file: 'pipe_run',  x: 0,    z: -13.5, rotY: 0 },
+    { file: 'console',   x: 6.0,  z: -22.0, rotY: -Math.PI / 2, collision: true, collisionRadius: 0.5 },
+  ],
+  2: [
+    { file: 'console',   x: -2.8, z: -7.6,  rotY: 0,             collision: true, collisionRadius: 0.5 },
+    { file: 'locker',    x: 3.2,  z: -23.0, rotY: -Math.PI / 2, collision: true, collisionRadius: 0.3, occlude: true },
+    { file: 'locker',    x: -3.4, z: -21.6, rotY: Math.PI / 2,  collision: true, collisionRadius: 0.3, occlude: true },
+    { file: 'pipe_run',  x: 0,    z: -31.8, rotY: 0 },
+    { file: 'pipe_run',  x: 0,    z: -39.0, rotY: 0 },
+  ],
+  3: [],
+};
+
+// ── Level 1 layout ──────────────────────────────────────────────────────────
+// The training wing occupies z 0 … -TRAIN_LEN (the player still spawns at the
+// same place near z 0). The original route (Reception → Control room) is
+// authored with direct z values pushed south by TRAIN_LEN.
+const TRAIN_LEN = 34;
+
+// Control labels shown on the training signs — edit these to match your game.
+const L1_KEYS = { move: 'WASD', look: 'MOUSE', fire: 'CLICK', jump: 'SPACE' };
+// Height of the jump-room hurdles (m). Must be clearable by the player's jump.
+const HURDLE_H = 0.4;
 
 // ── Shared scorch decal texture (created once, kept for the session) ────────
 let _scorchTex = null;
@@ -195,6 +244,7 @@ function alertLineTexture() {
   return t;
 }
 
+// ── Shared smoke particle texture (created once, kept for the session) ──────
 export default class LevelManager {
   /**
    * @param {import('three').Scene} scene
@@ -223,11 +273,10 @@ export default class LevelManager {
     this._monsterWaypoints = [];
     this.navigationBounds = null;
     this.navigationVersion = 0;
+    this.mapFloors = [];
     this.healthPacks = [];
     this.escapeRoute = [];
 
-    /** L2 staging-bay sidearm pickup {x, z, radius, mesh, light, taken}. */
-    this.weaponPickup = null;
 
     /** Static fallen-worker figures (L2 storytelling) — traverse-disposed. */
     this._casualties = [];
@@ -255,6 +304,15 @@ export default class LevelManager {
     /** Rotating hazard meshes {mesh, speed} (rebuilt each load). */
     this._rotatingHazards = [];
 
+    /**
+     * Power-routing nodes {id, mesh, led, lit, lights, doorIds}
+     * (rebuilt each load) — the Level 1 puzzle layer.
+     */
+    this._powerNodes = [];
+
+    /** Lights fading in after their node fired {light, target, ramp}. */
+    this._powerLights = [];
+
     /** Dust-mote Points clouds with a slow drift (rebuilt each load). */
     this._dustFields = [];
 
@@ -264,22 +322,34 @@ export default class LevelManager {
     /** Meshes the dissolve shader fades during the L3 collapse. */
     this._dissolveWalls = [];
 
+    /** Breakable pipe segments for creature-escape destruction (L1). */
+    this._breakablePipes = [];
+
     /**
-     * Walking staff NPCs (Level 1 pre-breach ambience): CharacterFactory
-     * workers on patrol loops. Game.js calls evacuateWalkers() when the
-     * mutation alarm sounds; teardown disposes their per-instance
-     * geometries/materials (worker models are built fresh per level).
+     * Level 1 staff: independent animated rigs on collider-aware patrols.
+     * They react to the alarm and evacuate when the creature appears.
+     * Teardown releases owned materials/skeletons, retaining cached assets.
      */
     this._walkers = [];
+    this._walkerNavigation = null;
+    this._walkerNavVersion = -1;
+    this._walkerThreat = null;
+    this.shootingLesson = null;
+    this.trainingDummies = [];
 
     /** L3 sealed failsafe door Mesh — Game.js hides it when the boss dies. */
     this._exitDoor = null;
 
-    /**
-     * L1 scripted monster reveal (read by Game.js):
+    /** L1 scripted monster reveal (read by Game.js):
      * {trigger:{x,z,radius}, spawn:{x,y,z}, escape:[{x,z}...]}
      */
     this.scriptedReveal = null;
+
+    /** L1 LabChamber instance (containment tube + effects). */
+    this.labChamber = null;
+    this.labPower = null;
+    this.expansion = null;
+    this.archiveCircuit = null;
 
     /** NPC placement anchors for Game.js, e.g. {scientist:{x,z,face}}. */
     this.npcAnchors = {};
@@ -288,6 +358,16 @@ export default class LevelManager {
     this.fogColor = null;
     this.fogNear = 25;
     this.fogFar = 90;
+
+    /**
+     * Collectible pickups for the active level (rebuilt each load):
+     * {id, type:'health', amount, x, y, z, radius, taken, mesh, baseY, phase}.
+     * Game.js calls collectPickups(playerX, playerZ) each frame and applies
+     * the returned pickups (e.g. heal the player by p.amount).
+     */
+    this.pickups = [];
+    this._collectedBuf = [];   // reused result array — no per-frame allocation
+    this._time = 0;            // running clock for pickup bobbing
 
     /** GLTF loader for Blender .glb models (reused across levels). */
     this._gltfLoader = new GLTFLoader();
@@ -324,6 +404,8 @@ export default class LevelManager {
       default: throw new Error(`Unknown level: ${levelNum}`);
     }
 
+    this._placeProps(levelNum);
+
     const excluded = new Set([
       ...this._rotatingHazards.map(entry => entry.mesh),
       ...this._doors.map(entry => entry.mesh),
@@ -331,11 +413,6 @@ export default class LevelManager {
       ...this.heatHazeZones,
       ...this.shootables,
     ]);
-    // The sidearm pickup must stay a real, hideable mesh — once merged into
-    // a static batch it would keep rendering after the player takes it.
-    if (this.weaponPickup?.mesh) {
-      this.weaponPickup.mesh.traverse(object => excluded.add(object));
-    }
     const roots = this._disposables.map(entry => entry.mesh)
       .filter(mesh => mesh?.userData.staticScenery);
     this._staticBatch = new StaticBatch(this.scene, roots, excluded);
@@ -362,26 +439,23 @@ export default class LevelManager {
 
   /** Remove the active level; keep shared kit/material caches alive. */
   _teardown() {
+    this.expansion?.dispose();
+    this.expansion = null;
+    this.archiveCircuit = null;
+    for (const dummy of this.trainingDummies) dummy.dispose();
+    this.trainingDummies = [];
+    this.shootingLesson = null;
     ++this._levelGeneration;
     for (const pack of this.healthPacks) pack.dispose();
     this.healthPacks = [];
     this.escapeRoute = [];
-    this.weaponPickup = null;
-    // Casualties own their geometries/materials like walkers — traverse-dispose.
-    for (const figure of this._casualties) {
-      this.scene.remove(figure);
-      figure.traverse((child) => {
-        if (!child.isMesh) return;
-        if (child.geometry) child.geometry.dispose();
-        const mat = child.material;
-        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-        else if (mat) mat.dispose();
-      });
-    }
+    for (const figure of this._casualties) figure.dispose();
     this._casualties = [];
     this.serverAmbush = null;
     this.labChamber?.dispose();
     this.labChamber = null;
+    this.labPower?.dispose();
+    this.labPower = null;
     this.goalBoard?.dispose();
     this.goalBoard = null;
     this.labEmergency = false;
@@ -407,17 +481,23 @@ export default class LevelManager {
     this._monsterWaypoints = [];
     this.navigationBounds = null;
     this.heatHazeZones = [];
+    this.mapFloors = [];
     this._doors = [];
     this._steamVents = [];
     this._fires = [];
     this._rotatingHazards = [];
+    this._powerNodes = [];
+    this._powerLights = [];
     this._dustFields = [];
     this._alertLines = [];
     this._dissolveWalls = [];
+    this._breakablePipes = [];
     this._exitDoor = null;
     this.scriptedReveal = null;
     this.npcAnchors = {};
     this._flickerLights = [];
+    this.pickups = [];
+    this._collectedBuf.length = 0;
     this.collapseMode = false;
 
     // Procedural worker NPCs own their geometries/materials (built fresh per
@@ -427,7 +507,7 @@ export default class LevelManager {
     // placed here (soldier.glb is reserved for the player operator only).
     for (const w of this._walkers) {
       this.scene.remove(w.npc.group);
-      w.npc.dispose?.();
+      if (w.npc.dispose) { w.npc.dispose(); continue; }
       w.npc.group.traverse((child) => {
         if (!child.isMesh) return;
         if (child.userData.kitShared) {
@@ -444,6 +524,9 @@ export default class LevelManager {
       });
     }
     this._walkers = [];
+    this._walkerNavigation = null;
+    this._walkerNavVersion = -1;
+    this._walkerThreat = null;
   }
 
   // ── Bookkeeping helpers ───────────────────────────────────────────────────
@@ -551,8 +634,10 @@ export default class LevelManager {
           new CANNON.Vec3(x, y + collisionRadius, z)
         );
         body.quaternion.setFromEuler(0, rotY, 0);
+        this.navigationVersion++;
       }
       this.scene.add(model);
+      this.onModelPlaced?.(model);
       this._track(model, body);
       return model;
     } catch (err) {
@@ -562,12 +647,40 @@ export default class LevelManager {
   }
 
   /**
+   * Load this level's Blender props from PROP_PLACEMENTS. Loading is async and
+   * never blocks the level: a missing file just logs a warning and is skipped.
+   * @param {number} levelNum
+   */
+  _placeProps(levelNum) {
+    const list = PROP_PLACEMENTS[levelNum] || [];
+    // Level 1's route is pushed south by TRAIN_LEN (see L1Z).
+    const zShift = levelNum === 1 ? TRAIN_LEN : 0;
+    for (const p of list) {
+      this._loadModel(`models/${p.file}.glb`, p.x, 0, p.z - zShift, {
+        rotY: p.rotY || 0,
+        collision: !!p.collision,
+        collisionRadius: p.collisionRadius || 0.5,
+      }).then((model) => {
+        if (!model) return; // failed, or the level was torn down meanwhile
+        model.updateMatrixWorld(true);
+        if (p.occlude) {
+          model.traverse((child) => {
+            if (child.isMesh) this.occluders.push(child);
+          });
+        }
+      });
+    }
+  }
+
+  /**
    * Sliding door that opens when triggered (E at the panel, or by shooting
    * its linked target). Slides up (Y+) and its collision body is removed
    * once fully open.
    *
-   * opts.locked — true for scripted doors (the L3 failsafe seal): no button
-   * panel is placed and E interaction ignores them; Game.js opens these.
+   * opts.locked — no manual E override or button panel; a relay or script opens
+   * the door. opts.lockedHint explains the required action when approached.
+   * Pass o.needPower = [nodeIds] to require power nodes before it unlocks
+   * (checked in _activatePowerNode). rotY may be PI/2 for doors in side walls.
    */
   _createDoor(id, w, h, x, y, z, rotY, mat, opts = {}) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.15), mat);
@@ -581,15 +694,41 @@ export default class LevelManager {
       0, w / 2, h / 2, 0.075,
       new CANNON.Vec3(x, y, z)
     );
+    if (rotY) body.quaternion.setFromEuler(0, rotY, 0); // match the mesh yaw
     this._track(mesh, body);
     this.occluders.push(mesh); // a closed door blocks line of sight
+    // Status beacon beside the frame (own material — safe to recolor).
+    const ledMat = new THREE.MeshStandardMaterial({
+      color: 0xff4030, emissive: 0xff4030, emissiveIntensity: 1.0,
+    });
+    const led = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.06), ledMat);
+    const sideX = Math.cos(rotY) * (w / 2 + 0.28);
+    const sideZ = -Math.sin(rotY) * (w / 2 + 0.28);
+    led.position.set(x + sideX, y + h / 2 + 0.22, z + sideZ);
+    led.rotation.y = rotY;
+    led.userData.ownsGeometry = true;
+    led.userData.ownsMaterial = true;
+    this.scene.add(led);
+    this._track(led);
+    // opts.noBeaconLight skips the extra PointLight (the LED still changes colour).
+    let beacon = null;
+    if (!opts.noBeaconLight) {
+      beacon = new THREE.PointLight(0xff4030, 0.45, 5, 2);
+      beacon.position.set(x + sideX, y + h / 2 + 0.1, z + sideZ);
+      this.scene.add(beacon);
+      this._track(beacon);
+    }
     this._doors.push({
       id, mesh, body,
       closedY: y,
       openY: y + h + 0.3,
       progress: 0,
       opening: false,
+      needPower: opts.needPower || null,
+      led,
+      beacon,
       locked: !!opts.locked,
+      lockedHint: opts.lockedHint || null,
     });
     // Glowing button plate beside the frame — the E-interaction affordance
     // (proud of the wall face the player approaches from). All doors are
@@ -603,8 +742,17 @@ export default class LevelManager {
 
   /** Trigger a door to open by its id. */
   openDoor(id) {
+    if (id === 'l2-pressure' && this.expansion?.canOpenPressure === false) return;
     const door = this._doors.find(d => d.id === id);
-    if (door && !door.opening) door.opening = true;
+    if (door && !door.opening) {
+      door.opening = true;
+      // Status beacon flips from sealed red to open green.
+      if (door.led) {
+        door.led.material.color.setHex(0x5cff8a);
+        door.led.material.emissive.setHex(0x5cff8a);
+      }
+      if (door.beacon) door.beacon.color.setHex(0x5cff8a);
+    }
   }
 
   // ── Steam / spark vents (pre-allocated pools — zero per-frame allocs) ─────
@@ -614,32 +762,59 @@ export default class LevelManager {
    * stops new spawns while live particles fade out.
    */
   _createSteamVent(id, x, y, z, o = {}) {
-    const n = o.count || 14;
+    const isSmoke = o.smoke !== false;
+    const rate = o.rate ?? 0.07, lifeSpan = o.lifeSpan ?? 1.8;
+    // Smoke must finish fading before the pool slot is reused.
+    const n = isSmoke ? Math.max(o.count || 14, Math.ceil(lifeSpan / rate) + 1) : o.count || 14;
     const pool = [];
+    const texture = isSmoke ? smokeTexture() : steamTexture();
+
+    const life = new Float32Array(n);
+    const vy = new Float32Array(n);
+    const vx = new Float32Array(n);
+    const vz = new Float32Array(n);
+    const sizes = new Float32Array(n);
+    const phases = new Float32Array(n);
+
     for (let i = 0; i < n; i++) {
       const mat = new THREE.SpriteMaterial({
         color: o.color ?? 0xc9d2da, transparent: true, opacity: 0, depthWrite: false,
-        map: steamTexture(), blending: o.rise < 0 ? THREE.AdditiveBlending : THREE.NormalBlending,
+        map: texture,
+        blending: !isSmoke && (o.additive || o.rise < 0) ? THREE.AdditiveBlending : THREE.NormalBlending,
       });
+
       const s = new THREE.Sprite(mat);
+
       s.scale.set(0.25, 0.25, 1);
       s.position.set(x, y, z);
       s.visible = false;
-      s.userData.ownsMaterial = true; // Sprite shares its geometry — do not dispose it
+
+      s.userData.ownsMaterial = true;
+
       this.scene.add(s);
       this._track(s);
       pool.push(s);
     }
+
     this._steamVents.push({
-      id, x, y, z, pool, idx: 0, timer: 0,
+      id, x, y, z, pool,
+      idx: 0,
+      timer: 0,
       active: true,
-      life: new Float32Array(n),
-      vy: new Float32Array(n),
-      rate: o.rate || 0.07,
-      rise: o.rise || 0.55,
+      age: 0,
+      stopAt: o.stopAt || 0,
+      life,
+      vy,
+      vx,
+      vz,
+      sizes,
+      phases,
+      rate,
+      rise: o.rise ?? 0.55,
       drift: o.drift ?? 0.12,
-      lifeSpan: o.lifeSpan || 1.3,
-      alpha: o.alpha || 0.42,
+      lifeSpan,
+      alpha: o.alpha ?? 0.32,
+      isSmoke,
     });
   }
 
@@ -732,9 +907,256 @@ export default class LevelManager {
     for (const guide of this.escapeRoute) guide.visible = true;
   }
 
+  /**
+   * One-shot spark burst at a world point (event time, not per-frame). A
+   * tiny additive sprite pool that emits for ~0.12 s and then dies out with
+   * the remaining particles. Used for power-node activation feedback.
+   */
+  _sparkBurst(x, y, z) {
+    this._createSteamVent(
+      `burst-${this._levelGeneration}-${Math.random()}`,
+      x, y, z,
+      {
+        count: 7, color: 0xffc060, rate: 0.015, rise: 1.7, drift: 0.55,
+        lifeSpan: 0.35, alpha: 0.95, stopAt: 0.12, additive: true,
+        smoke: false,
+      }
+    );
+  }
+
+  // ── Breakable pipes (creature-escape destruction) ────────────────────────
+
+  /**
+   * Register a breakable pipe run. Called during level build.
+   * @param {Array} segments - from kit.breakablePipeRun()
+   * @param {object} breakPoint - {x, y, z} where sparks/steam spawn
+   */
+  _addBreakablePipe(segments, breakPoint) {
+    this._breakablePipes.push({
+      segments,       // [{ mesh, position }]
+      breakPoint,     // { x, y, z }
+      broken: false,
+      dissolveT: 0,   // 0..1 animation progress
+      dissolveDuration: 0.6,
+      active: false,   // is currently dissolving?
+    });
+  }
+
+  /**
+   * Trigger destruction of a breakable pipe by index.
+   * Returns the pipe data so Game.js can swap materials and spawn effects.
+   */
+  _breakPipe(index) {
+    const pipe = this._breakablePipes[index];
+    if (!pipe || pipe.broken) return null;
+    pipe.broken = true;
+    pipe.active = true;
+    pipe.dissolveT = 0;
+    return pipe;
+  }
+
+  /** Drive dissolve animation for broken pipes. Called from update(dt). */
+  _updateBreakablePipes(dt) {
+    for (const pipe of this._breakablePipes) {
+      if (!pipe.active) continue;
+      pipe.dissolveT += dt / pipe.dissolveDuration;
+      if (pipe.dissolveT >= 1) {
+        pipe.dissolveT = 1;
+        pipe.active = false;
+      }
+      // Each segment's dissolve material uniform is updated by Game.js
+      // which holds the material references.
+    }
+  }
+
+  // ── Power-routing nodes (Level 1 puzzle) ─────────────────────────────────
+
+  /**
+   * Place a shootable power node: a dark panel with a red standby LED and a
+   * flickering red halo so it is findable in an unlit alcove. o.lights lists
+   * PointLights that fade in when the node fires (see _powerLight);
+   * o.doorIds lists doors unlocked once every node they need is live (doors
+   * carry needPower themselves). Pass o.halo = false to skip the halo light. o.group scopes the
+   * live/total counter returned by _activatePowerNode to nodes of that group.
+   *
+   * @param {string} id    unique node id ('l1-power-a')
+   * @param {number} x     world x
+   * @param {number} y     panel centre height
+   * @param {number} z     world z
+   * @param {number} rotY  panel facing (radians — toward the approach)
+   * @param {object} o     { lights: PointLight[], doorIds: string[], halo?: boolean }
+   */
+  _addPowerNode(id, x, y, z, rotY = 0, o = {}) {
+    const mesh = this._shootableTarget(0.55, 0.7, x, y, z, 'terminal', rotY);
+    mesh.userData.powerNode = { id };
+    // Offline state: dim red instead of the default terminal green.
+    mesh.material.color.setHex(0xff4030);
+    mesh.material.emissive.setHex(0xff4030);
+    mesh.material.emissiveIntensity = 0.5;
+    // Housing box behind the panel.
+    const kit = this._kit;
+    kit.box(kit.mats.metalDark, 0.8, 1.0, 0.16,
+      x - Math.sin(rotY) * 0.1, y, z - Math.cos(rotY) * 0.1, { rotY, occluder: false });
+    // Status LED above the panel (own material — recolored on activation).
+    const led = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, 0.1, 0.05),
+      new THREE.MeshStandardMaterial({ color: 0xff4030, emissive: 0xff4030, emissiveIntensity: 1.0 })
+    );
+    led.position.set(x + Math.cos(rotY) * 0.34, y + 0.46, z - Math.sin(rotY) * 0.34);
+    led.rotation.y = rotY;
+    led.userData.ownsGeometry = true;
+    led.userData.ownsMaterial = true;
+    this.scene.add(led);
+    this._track(led);
+    // A flickering red halo so the node reads in a dark alcove.
+    if (o.halo !== false) {
+      this._flickerLight(
+        x + Math.sin(rotY) * 0.3, y + 0.2, z + Math.cos(rotY) * 0.3,
+        0xff4030, 0.32, 4.5
+      );
+    }
+    this._powerNodes.push({
+      id, mesh, led, lit: false,
+      lights: o.lights || [],
+      doorIds: o.doorIds || [],
+      group: o.group || null,
+    });
+    return mesh;
+  }
+
+  /**
+   * A light that starts dark and fades in when the power node that lists it
+   * fires. Never toggles `visible` (that would change the light inventory).
+   */
+  _powerLight(x, y, z, color, target = 0.9, distance = 8) {
+    const light = new THREE.PointLight(color, 0, distance, 2);
+    light.position.set(x, y, z);
+    light.userData.powerTarget = target;
+    this.scene.add(light);
+    this._track(light);
+    return light;
+  }
+
+  /**
+   * Fire a power node (PulseTool hit). Lights the panel/LED green, starts
+   * the linked lights fading in, sparks, and unlocks doors whose needPower
+   * set is now fully live. Returns null when unknown or already live;
+   * otherwise { live, total, unlockedDoor } for the caller's HUD/audio.
+   */
+  _activatePowerNode(id) {
+    const node = this._powerNodes.find((n) => n.id === id);
+    if (!node || node.lit) return null;
+    node.lit = true;
+    if (node.dummy) {
+      node.dummy.confirmHit();
+      this.shootingLesson.hit(id);
+    }
+    node.mesh.material.color.setHex(0x2bd96a);
+    node.mesh.material.emissive.setHex(0x2bd96a);
+    node.mesh.material.emissiveIntensity = 0.9;
+    node.led.material.color.setHex(0x2bd96a);
+    node.led.material.emissive.setHex(0x2bd96a);
+    for (const l of node.lights) {
+      this._powerLights.push({ light: l, target: l.userData.powerTarget || 0.9, ramp: 0 });
+    }
+    const impact = node.dummy ? node.mesh.getWorldPosition(new THREE.Vector3()) : node.mesh.position;
+    this._sparkBurst(impact.x, impact.y, impact.z);
+    let unlockedDoor = null;
+    for (const door of this._doors) {
+      if (!door.needPower || door.opening) continue;
+      const ready = door.needPower.every((nid) => {
+        const n2 = this._powerNodes.find((n) => n.id === nid);
+        return n2 && n2.lit;
+      });
+      if (ready) {
+        this.openDoor(door.id);
+        unlockedDoor = door.id;
+      }
+    }
+    // Event-time allocations only (a PulseTool hit, never per frame).
+    let live = 0;
+    let total = 0;
+    for (const n of this._powerNodes) {
+      if (n.group !== node.group) continue;
+      total++;
+      if (n.lit) live++;
+    }
+    if (this.shootingLesson?.completed) this.shootingLesson.success.sub =
+      this._powerNodes.some(entry => entry.id === 'tr-relay-jump' && entry.lit)
+        ? 'BOTH ROOMS COMPLETE — RETURN TO THE HUB AND GO THROUGH THE OPEN GATE.'
+        : 'RETURN TO THE HUB. FINISH JUMP TRAINING TO RELEASE THE GATE.';
+    return { live, total, unlockedDoor };
+  }
+
   /** Add a rotating hazard mesh (fan blades, spinning debris). */
   _addRotatingHazard(mesh, speed) {
     this._rotatingHazards.push({ mesh, speed });
+  }
+
+  // ── Pickups ───────────────────────────────────────────────────────────────
+
+  /**
+   * Floating, spinning pickup (a glowing cross). Owns its geometry/material.
+   * Nothing happens when walked over until Game.js calls collectPickups().
+   *
+   * @param {string} id
+   * @param {'health'} type
+   * @param {number} x
+   * @param {number} z
+   * @param {object} o  { amount = 25, y = 0.8, radius = 0.9 }
+   */
+  _addPickup(id, type, x, z, o = {}) {
+    const amount = o.amount ?? 25;
+    const y = o.y ?? 0.8;
+    const color = 0x39e07a;
+    const mat = new THREE.MeshStandardMaterial({
+      color, emissive: color, emissiveIntensity: 1.3, roughness: 0.4, metalness: 0.1,
+    });
+    // A "+" built from two bars; the horizontal bar is a child of the vertical one.
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.34, 0.1), mat);
+    bar.position.set(x, y, z);
+    bar.userData.ownsGeometry = true;
+    bar.userData.ownsMaterial = true;
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.1, 0.1), mat);
+    arm.userData.ownsGeometry = true;
+    bar.add(arm);
+    this.scene.add(bar);
+    this._track(bar);
+    this._track(arm);
+    const pickup = {
+      id, type, amount, x, y, z,
+      radius: o.radius ?? 0.9,
+      taken: false,
+      mesh: bar,
+      baseY: y,
+      phase: Math.random() * 6.283,
+    };
+    this.pickups.push(pickup);
+    return pickup;
+  }
+
+  /**
+   * Collect any pickups within reach of the player. Returns a REUSED array of
+   * the pickups just collected this call (usually empty) — consume it right
+   * away and do not keep a reference. Cheap enough to call every frame.
+   *
+   * @param {number} px player x
+   * @param {number} pz player z
+   */
+  collectPickups(px, pz) {
+    const out = this._collectedBuf;
+    out.length = 0;
+    for (const p of this.pickups) {
+      if (p.taken) continue;
+      const dx = px - p.x;
+      const dz = pz - p.z;
+      if (dx * dx + dz * dz <= p.radius * p.radius) {
+        p.taken = true;
+        p.mesh.visible = false;
+        out.push(p);
+      }
+    }
+    return out;
   }
 
   // ── Decor helpers ─────────────────────────────────────────────────────────
@@ -850,6 +1272,30 @@ export default class LevelManager {
   }
 
   /**
+   * A side (east/west) wall at x running along z, with an open doorway gap:
+   * two wall segments, a header above the opening and a thin jamb strip on
+   * each side of the gap. zNorth > zSouth (levels run toward -z).
+   *
+   * @param {number} x          wall centre x
+   * @param {number} zNorth     z of the wall's north end
+   * @param {number} zSouth     z of the wall's south end
+   * @param {number} gapCenter  z centre of the opening
+   * @param {number} gapW       opening width along z
+   * @param {number} H          wall height
+   * @param {number} openH      opening height (default 2.5)
+   */
+  _gappedSideWall(x, zNorth, zSouth, gapCenter, gapW, H, openH = 2.5) {
+    const kit = this._kit;
+    const g1 = gapCenter + gapW / 2; // north edge of the opening
+    const g2 = gapCenter - gapW / 2; // south edge of the opening
+    kit.wallRun(0.3, H, zNorth - g1, x, H / 2, (zNorth + g1) / 2);
+    kit.wallRun(0.3, H, g2 - zSouth, x, H / 2, (g2 + zSouth) / 2);
+    kit.wallRun(0.3, H - openH, gapW, x, openH + (H - openH) / 2, gapCenter);
+    kit.box(this._mats.metalDark, 0.36, openH, 0.12, x, openH / 2, g1 - 0.06, { physics: true });
+    kit.box(this._mats.metalDark, 0.36, openH, 0.12, x, openH / 2, g2 + 0.06, { physics: true });
+  }
+
+  /**
    * A dying practical light (bare bulb / damaged fixture). Tagged with
    * userData.flicker so load() collects it into _flickerLights and the
    * update() driver stutters it — idle stretches, then bursts, faster in
@@ -909,6 +1355,7 @@ export default class LevelManager {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const mat = new THREE.PointsMaterial({
       color: 0xcfe0ea,
+      map: dustTexture(),
       size: 0.035,
       sizeAttenuation: true,
       transparent: true,
@@ -928,6 +1375,8 @@ export default class LevelManager {
   // ── Per-frame update: doors, vents, rotating hazards (zero allocations) ───
 
   update(dt) {
+    this.labPower?.update(dt);
+    for (const dummy of this.trainingDummies) dummy.update(dt);
     // Doors: lerp upward once triggered.
     for (const door of this._doors) {
       if (door.opening && door.progress < 1) {
@@ -946,31 +1395,74 @@ export default class LevelManager {
 
     // Steam / spark vents: recycle the sprite pool, fade by remaining life.
     for (const v of this._steamVents) {
+      v.age += dt;
+      if (v.stopAt > 0 && v.age > v.stopAt) v.active = false;
+
       if (v.active) {
         v.timer += dt;
+
         while (v.timer >= v.rate) {
           v.timer -= v.rate;
+
           const i = v.idx = (v.idx + 1) % v.pool.length;
           const s = v.pool[i];
+
           v.life[i] = v.lifeSpan;
           v.vy[i] = v.rise * (0.7 + Math.random() * 0.6);
+
+          v.vx[i] = (Math.random() - 0.5) * v.drift;
+          v.vz[i] = (Math.random() - 0.5) * v.drift;
+
+          v.sizes[i] = v.isSmoke
+            ? 0.25 + Math.random() * 0.2
+            : 0.12;
+
+          v.phases[i] = Math.random() * Math.PI * 2;
+          s.material.rotation = v.phases[i];
+
           s.position.set(
-            v.x + (Math.random() - 0.5) * v.drift * 2, v.y,
-            v.z + (Math.random() - 0.5) * v.drift * 2
+            v.x + (Math.random() - 0.5) * v.drift,
+            v.y,
+            v.z + (Math.random() - 0.5) * v.drift
           );
+
+          s.scale.set(v.sizes[i], v.sizes[i], 1);
+          s.material.opacity = 0;
           s.visible = true;
         }
       }
+
       for (let i = 0; i < v.pool.length; i++) {
         if (v.life[i] <= 0) continue;
+
         v.life[i] -= dt;
+
         const s = v.pool[i];
-        if (v.life[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
+
+        if (v.life[i] <= 0) {
+          s.visible = false;
+          s.material.opacity = 0;
+          continue;
+        }
+
+        const remaining = v.life[i] / v.lifeSpan;
+        const age = 1 - remaining;
+        if (v.isSmoke) {
+          // Ease into view, billow sideways and dissipate as each puff expands.
+          s.material.opacity = Math.min(1, age / 0.16) * remaining * remaining * v.alpha;
+          s.position.x += (v.vx[i] + Math.sin(age * 5 + v.phases[i]) * v.drift) * dt;
+          s.position.z += (v.vz[i] + Math.cos(age * 4 + v.phases[i]) * v.drift) * dt;
+          s.material.rotation += dt * 0.12 * Math.sin(v.phases[i]);
+          const size = v.sizes[i] * (1 + age * 4);
+          s.scale.set(size, size * (1.1 + age * 0.25), 1);
+        } else {
+          s.material.opacity = remaining * v.alpha;
+          s.position.x += v.vx[i] * dt;
+          s.position.z += v.vz[i] * dt;
+          const size = v.sizes[i] * (0.5 + remaining * 0.5);
+          s.scale.set(size, size, 1);
+        }
         s.position.y += v.vy[i] * dt;
-        const t = v.life[i] / v.lifeSpan;
-        s.material.opacity = t * v.alpha;
-        const sc = v.rise < 0 ? 0.06 + (1 - t) * 0.06 : 0.25 + (1 - t) * 0.55;
-        s.scale.set(sc, sc, 1);
       }
     }
 
@@ -1076,6 +1568,22 @@ export default class LevelManager {
       a.mat.color.copy(a.alarm).lerp(a.advisory, mix);
     }
 
+    // Pickups: slow spin + gentle bob until collected.
+    this._time += dt;
+    for (const p of this.pickups) {
+      if (p.taken) continue;
+      p.mesh.rotation.y += dt * 1.6;
+      p.mesh.position.y = p.baseY + Math.sin(this._time * 2.2 + p.phase) * 0.06;
+    }
+
+    // Power-routed lights — fade in after their node fired, then hand off.
+    for (let i = this._powerLights.length - 1; i >= 0; i--) {
+      const p = this._powerLights[i];
+      p.ramp = Math.min(1, p.ramp + dt * 1.6);
+      p.light.intensity = p.target * p.ramp;
+      if (p.ramp >= 1) this._powerLights.splice(i, 1);
+    }
+
     // Walking staff NPCs (patrol loops; flee once the alarm sounds).
     this._updateWalkers(dt);
 
@@ -1099,13 +1607,16 @@ export default class LevelManager {
         f.next = (6 + Math.random() * 12) * haste;
       }
     }
+
+    // Breakable pipes — dissolve animation for creature-escape destruction.
+    this._updateBreakablePipes(dt);
   }
 
   // ── Walking staff NPCs ─────────────────────────────────────────────────────
 
   /**
    * Spawn a worker NPC on a patrol loop. Paths must stay on walkable floor
-   * (walkers have no physics — they are ambience, not obstacles). After the
+   * using clearance from the actual physics colliders. After the
    * loop's last point they cycle back to the first, so a two-point path
    * reads as pacing and a 4-point ring as a proper patrol.
    *
@@ -1114,24 +1625,16 @@ export default class LevelManager {
    * @param {{speed?:number, npc?:object}} [o]  explicit npc overrides the default
    */
   _addWalker(variant, path, o = {}) {
-    // Station staff are scientists/engineers (lab coat, jumpsuit, civvies) —
-    // the procedural worker builder. No soldier assets appear in the crowd;
-    // the skinned soldier.glb is reserved for the player operator only.
-    const npc = o.npc || createWorker(variant);
+    const npc = new StaffModel(variant);
     npc.group.position.set(path[0].x, 0, path[0].z);
     this.scene.add(npc.group);
-    const walker = {
-      npc,
-      path,
-      idx: 1,                       // next waypoint index
-      speed: o.speed || 0.85 + Math.random() * 0.35,
-      pause: Math.random() * 1.5,   // idle before the first leg
-      state: 'patrol',              // 'patrol' | 'flee' | 'gone'
-      fleeRoute: null,
-      fleeSpeed: 3.1,
-      // Reused per frame — the zero-allocation rule.
-      animState: { moving: false, speed: 1, fleeing: false },
-    };
+    const walker = new StaffWalker(npc, path, {
+      speed: o.speed ?? 0.85 + Math.random() * 0.35,
+      pause: Math.random() * 1.5,
+    });
+    const index = this._walkers.length;
+    walker.emergencyNorth = { x: index % 2 ? 2.8 : -2.8, z: -1.2 - Math.floor(index % 12 / 2) };
+    walker.emergencySouth = { x: -2 + index % 3 * 2, z: -91 - Math.floor(index / 3) * 0.65 };
     this._walkers.push(walker);
     return walker;
   }
@@ -1146,12 +1649,10 @@ export default class LevelManager {
     const w = this._addWalker(o.variant || 'coat', path, {
       speed: o.speed || 3.4 + Math.random() * 1.3,
     });
-    w.state = 'flee';
-    w.fleeRoute = path;
     w.fleeSpeed = w.speed;
-    w.loopFlee = true;          // cycle the route forever instead of leaving
-    w.pause = Math.random() * 1.6;
-    w.idx = path.length > 1 ? 1 : 0;
+    // Send the runner toward the end of the route; StaffWalker handles the
+    // fleeing animation/pathfinding and stops at the refuge.
+    w.evacuate(path[path.length - 1]);
     // Crowd NPCs are ambience — drop their shadow casting to keep the already
     // heavy Level-3 frame budget in check.
     w.npc.group.traverse((c) => { if (c.isMesh) c.castShadow = false; });
@@ -1162,11 +1663,10 @@ export default class LevelManager {
    * Place a fallen worker — static storytelling scenery (the breach's human
    * cost). The joint pose is set once by part name (update() is never
    * called) and the figure is laid on its back, then spun to place it.
-   * Ownership matches walkers: per-instance geometry/materials,
-   * traverse-disposed in teardown.
+   * Ownership matches walkers: each scientist releases its rig on teardown.
    */
   _addCasualty(variant, x, z, rotY = 0, o = {}) {
-    const npc = createWorker(variant);
+    const npc = new StaffModel(variant);
     const g = npc.group;
     const pose = o.pose || {
       torso: [0.04, 0, 0], head: [0.18, 0.55, 0],
@@ -1183,170 +1683,160 @@ export default class LevelManager {
     g.rotation.set(0, rotY, Math.PI / 2);
     this.scene.add(g);
     this._track(g);
-    this._casualties.push(g);
+    this._casualties.push(npc);
     return g;
   }
 
-  /**
-   * Send every walker running for the level entrance (Game.js calls this
-   * when the Level-1 mutation alarm sounds). Staff south of the lab arch
-   * route through the corridor mouth first; the rest run straight up the
-   * x=0 centre line, which is clear all the way to the entrance.
-   */
-  evacuateWalkers() {
-    for (const w of this._walkers) {
-      if (w.state === 'gone') continue;
-      w.state = 'flee';
-      w.pause = 0;
-      w.idx = 0;
-      w.fleeRoute = w.npc.group.position.z < -20
-        ? [{ x: 0, z: -19.8 }, { x: 0, z: -0.6 }]
-        : [{ x: 0, z: -0.6 }];
-    }
+  alertWalkers() {
+    for (const walker of this._walkers) walker.alert();
   }
 
-  /** Advance walkers along their route (patrol pause, flee run). */
-  _updateWalkers(dt) {
-    for (const w of this._walkers) {
-      if (w.state === 'gone') continue;
-      const st = w.animState;
-      st.moving = false;
-      st.fleeing = w.state === 'flee';
+  setWalkerThreat(threat) { this._walkerThreat = threat; }
 
-      if (w.pause > 0) {
-        w.pause -= dt;
-      } else {
-        const route = w.state === 'flee' ? w.fleeRoute : w.path;
-        const target = route[w.idx];
-        if (target) {
-          const g = w.npc.group;
-          const dx = target.x - g.position.x;
-          const dz = target.z - g.position.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
-          const spd = w.state === 'flee' ? w.fleeSpeed : w.speed;
-          if (dist < 0.25) {
-            w.idx++;
-            if (w.state === 'flee') {
-              if (w.idx >= route.length) {
-                if (w.loopFlee) {
-                  w.idx = 0;                 // keep the crowd panicking forever
-                } else {
-                  // Reached the entrance — staff have left the level.
-                  w.state = 'gone';
-                  g.visible = false;
-                }
-              }
-            } else if (w.idx >= route.length) {
-              w.idx = 0;                        // loop the patrol
-              w.pause = 1 + Math.random() * 2.4; // look around a moment
-            }
-          } else {
-            const step = Math.min(spd * dt, dist);
-            g.position.x += (dx / dist) * step;
-            g.position.z += (dz / dist) * step;
-            st.moving = true;
-            st.speed = spd;
-            // Face the direction of travel (shortest-arc turn).
-            const targetYaw = Math.atan2(dx, dz);
-            let d = targetYaw - g.rotation.y;
-            while (d > Math.PI) d -= Math.PI * 2;
-            while (d < -Math.PI) d += Math.PI * 2;
-            g.rotation.y += d * Math.min(1, dt * 8);
-          }
-        }
+  /** Evacuate away from containment into separate refuges in each wing. */
+  evacuateWalkers(threat = this.scriptedReveal?.spawn) {
+    let northLane = 0;
+    let southLane = 0;
+    let trainingLane = 0;
+    for (const walker of this._walkers) {
+      if (walker.npc.group.position.z > -34) {
+        const lane = trainingLane++;
+        walker.evacuate({ x: lane % 2 ? 2.8 : -2.8, z: -1.4 - Math.floor(lane / 2) * 1.4 });
+        continue;
       }
-      w.npc.update(dt, st);
+      const south = walker.npc.group.position.z < (threat?.z ?? -59.2);
+      // Separate refuge positions keep the crew from stacking in one spot.
+      walker.evacuate(south
+        ? { x: -2 + (southLane % 3) * 2, z: -91 - Math.floor(southLane++ / 3) * 1.3 }
+        : { x: (-18 + (northLane % 4) * 12) / 10, z: -36.5 - Math.floor(northLane++ / 4) * 1.3 });
     }
   }
 
-  // ── Level 1 — The Experiment (clean lab) ────────────────────────────────
+  /** Rebuild only when doors/props change; share the grid across all staff. */
+  _updateWalkers(dt) {
+    if (!this._walkers.length) return;
+    if (!this._walkerNavigation || this._walkerNavVersion !== this.navigationVersion) {
+      this._walkerNavigation = new NavigationGrid(
+        this._disposables.map(entry => entry.body).filter(body => body && body.world),
+        this.navigationBounds, 0.4, 0.5, 1.8
+      );
+      this._walkerNavVersion = this.navigationVersion;
+      for (const walker of this._walkers) walker.setNavigation(this._walkerNavigation);
+    }
+    for (let i = 0; i < this._walkers.length; i++) {
+      const walker = this._walkers[i];
+      if (this._walkerThreat) {
+        const north = walker.npc.group.position.z > this._walkerThreat.z;
+        walker.reactToThreat(this._walkerThreat, north ? walker.emergencyNorth : walker.emergencySouth);
+      }
+      walker.update(dt);
+    }
+  }
+
+  // ── Level 1 — The Experiment (training hub + clean lab) ──────────────────
   //
-  // Flow (player walks toward -z):
-  //   Reception (0..-10)  → arch → corridor C1 (-10..-20) → Laboratory
-  //   (-20..-32, scientist + containment tube + scripted reveal) → door
-  //   'l1-lab' (shoot conduit) → maintenance C2 (-32..-40) → Reactor hall
-  //   (-40..-54) → Control room (-54..-64) → WIN.
+  // Flow (player walks toward -z). Everything from Reception onward is authored
+  // in its original coordinates and shifted by L1Z():
+  //
+  //   Room A (move/look/first shot) ─door─► TRAINING HUB ──┬─ west door ► JUMP ROOM
+  //                                                         │   (3 hurdles → turn → relay)
+  //                                                         ├─ east door ► SHOOT ROOM
+  //                                                         │   (3 panels: far, high, low)
+  //                                                         └─ south GATE (needs all 4
+  //                                                            panels) ► Reception ► C1 ►
+  //                                                            Laboratory ► … ► Control room
+  //
+  // Hub doors open by shooting the glowing blue panel beside them. Panels in the
+  // jump/shoot rooms are power nodes (group 'train'); the gate opens when all 4
+  // are live. Optional side rooms: Break Room, Equipment Nook, Lab Annex,
+  // Records Vault.
   //
   _buildLevel1() {
     const H = 3;
     const kit = this._kit;
     const m = this._mats;
+    this.labPower = new LabPower();
 
     this._winTriggers = [
-      { x: 0, z: -68.4, radius: 1.7 }, // surface-lift lobby, past the bypass door
+      { x: 0, z: -96, radius: 2.0 }, // control room console
     ];
+    this.navigationBounds = { minX: -22, maxX: 22, minZ: -99, maxZ: 0 };
     this._monsterWaypoints = []; // L1 monster is a scripted cameo (see below)
 
     // Scripted reveal data (Game.js runs the beat; level just supplies it).
     // Repair restores power, ruptures containment and exposes the scientist.
     // Game runs the transformation and emergency bypass sequence.
     this.scriptedReveal = {
-      trigger: { x: 0, z: -22.0, radius: 2.8 },   // entering reveals the repair objective
-      spawn: { x: -5.6, y: 0.65, z: -25.2 },
-      escape: [                                     // flees toward the SE duct
-        { x: -5.6, z: -23.4 },
-        { x: -1.5, z: -23.4 },
-        { x: 3.4, z: -27.5 },
-        { x: 6.5, z: -30.8 },
+      trigger: { x: 0, z: -56, radius: 2.8 },   // fires as the player enters the lab
+      spawn: { x: -5.6, y: 1.4, z: -59.2 },      // the scientist's console seat
+      escape: [                                          // flees toward the SE duct
+        { x: 2.5, z: -61.5 },
+        { x: 6.5, z: -64.8 },
+      ],
+      patrol: [                                          // settles into a prowl loop
+        { x: 4, z: -56 },
+        { x: -4, z: -55 },
+        { x: 0, z: -60 },
       ],
     };
     this.npcAnchors = {
-      scientist: { x: -5.6, z: -25.2, face: 'w' },
+      scientist: { x: -5.6, z: -59.2, face: 'w' }, // seated, typing at the console
     };
 
-    // ── Reception (x -5..5, z 0..-10) ─────────────────────────────────────
-    kit.floorSlab(10.6, 10.45, 0, -4.93, { lines: [{ axis: 'z', len: 8, color: 'accent' }] });
-    kit.ceilingSlab(10.6, 10.45, 0, H, -4.93, {
+    // Training hub first (z 0 … -TRAIN_LEN), then the real facility, then the
+    // optional side rooms that branch off it.
+    this._buildTrainingWing();
+
+// ── Reception (x -5..5, z 0..-10) ─────────────────────────────────────
+    kit.floorSlab(10.6, 10.45, 0, -38.93, { lines: [{ axis: 'z', len: 8, color: 'accent' }] });
+    kit.ceilingSlab(10.6, 10.45, 0, H, -38.93, {
       lamps: [
         { x: -2.4, z: 2.0, light: true, intensity: 0.8 },
         { x: 2.4, z: -2.2 },
       ],
     });
-    kit.wallRun(10.6, H, 0.3, 0, H / 2, 0.15);                 // north end wall
-    kit.wallRun(0.3, H, 10.45, -5.15, H / 2, -4.93);           // west
-    kit.wallRun(0.3, H, 10.45, 5.15, H / 2, -4.93);            // east
+    // North wall: opening to the training wing (x -1.3..1.3).
+    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, -33.85);
+    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, -33.85);
+    kit.doorway(2.6, 2.6, 0, 1.3, -33.85, 's');
+    kit.wallRun(0.3, H, 10.45, -5.15, H / 2, -38.93);           // west
+    // East wall: opening to the Break Room (optional side room).
+    this._gappedSideWall(5.15, -33.7, -44.3, -41.2, 2.4, H);
     // South wall with a door-sized arch (x -1.3..1.3).
-    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, -10.15);
-    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, -10.15);
-    kit.doorway(2.6, 2.6, 0, 1.3, -10.15, 's');
-    kit.sign(0, 2.4, -0.02, 'n', 'SECTOR A / ENGINEERING', { sub: 'SERVICE CALL 09 — LAB A-2', fg: '#bde9e7', w: 3.4 });
-    kit.sign(0, 2.45, -9.97, 's', 'LAB A-2 / AUXILIARY POWER', { sub: 'MAINTENANCE REQUEST — FOLLOW BLUE LINE', fg: '#ffc57c', w: 3.0 });
-    kit.consoleDesk(-3.6, -5.0, 'e', { w: 1.8, monitors: 1 });
-    kit.crateStack(4.0, -3.2, { w: 1.2, h: 1.2, d: 0.8, rotY: 0.3 });
-    kit.crate(4.3, -6.0, { s: 0.7, rotY: 0.4 });
-    kit.fuseBox(-4.94, 1.7, -8.5, 'e');
-    kit.extinguisher(-4.94, 1.2, -3.0);
-    kit.floorDecal(3.2, -5.0, 'stripes', { size: 1.2 });
-    // Station status board greeting the arriving shift engineer.
-    kit.wallScreen(4.93, 1.9, -4.6, 'w', { w: 2.2, h: 1.2 });
-    // Mission directive board beside the reception's south exit: the in-world
-    // copy of the objective, so the goal is readable on the wall, not only HUD.
-    this.goalBoard = kit.goalBoard(-3.2, 1.95, -9.94, 's', {
-      tag: 'SECTOR A / LEVEL 01',
-    });
+    kit.wallRun(4.0, H, 0.3, -3.3, H / 2, -44.15);
+    kit.wallRun(4.0, H, 0.3, 3.3, H / 2, -44.15);
+    kit.doorway(2.6, 2.6, 0, 1.3, -44.15, 's');
+    kit.sign(-3.3, 2.3, -43.97, 's', 'RECEPTION', { sub: 'SECTOR A', fg: '#7fe7ff' });
+    kit.sign(3.3, 2.3, -43.97, 's', 'BREACH PROTOCOL', { sub: 'FOLLOW THE EXIT MARKERS', fg: '#7fe7ff' });
+    kit.consoleDesk(-3.6, -39, 'e', { w: 1.8, monitors: 1 });
+    kit.crateStack(4.0, -37.2, { w: 1.2, h: 1.2, d: 0.8, rotY: 0.3 });
+    kit.crate(4.3, -38.7, { s: 0.7, rotY: 0.4 });   // moved off the Break Room doorway
+    kit.fuseBox(-4.94, 1.7, -42.5, 'e');
+    kit.extinguisher(-4.94, 1.2, -37);
+    kit.floorDecal(3.2, -39, 'stripes', { size: 1.2 });
 
     // ── Corridor C1 (x -2..2, z -10..-20) ────────────────────────────────
-    kit.floorSlab(4.3, 10.0, 0, -15.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
-    kit.ceilingSlab(4.3, 10.0, 0, H, -15.15, {
+    kit.floorSlab(4.3, 10.0, 0, -49.15, { lines: [{ axis: 'z', len: 8.5, color: 'accent' }] });
+    kit.ceilingSlab(4.3, 10.0, 0, H, -49.15, {
       lamps: [
         { x: 0, z: 2.4, light: true, intensity: 0.7 },
         { x: 0, z: -2.4 },
       ],
     });
-    kit.wallRun(0.3, H, 10.3, -2.15, H / 2, -15.15);
-    kit.wallRun(0.3, H, 10.3, 2.15, H / 2, -15.15);
-    kit.pipeRun('z', 9.5, -1.95, 2.55, -15.15, { count: 2, r: 0.06 });
-    kit.cableTray('z', 9.5, 1.95, 2.6, -15.15);
-    kit.sign(0, 2.3, -19.97, 's', 'A-2 / CULTURE RESEARCH', { sub: 'AUXILIARY POWER OFFLINE', fg: '#ffc57c', w: 2.4 });
-    kit.fuseBox(-1.94, 1.6, -12.5, 'e');
-    kit.ventGrille(-1.95, 2.2, -17.5, 'e', { w: 0.8, h: 0.5 });
-    kit.gaugeCluster(-1.96, 1.6, -14.2, 'e');
+    this._gappedSideWall(-2.15, -44, -54.3, -49, 2.4, H); // west: Equipment Nook
+    this._gappedSideWall(2.15, -44, -54.3, -49, 2.4, H);  // east: Records Vault (door)
+    kit.pipeRun('z', 9.5, -1.95, 2.55, -49.15, { count: 2, r: 0.06 });
+    kit.cableTray('z', 9.5, 1.95, 2.6, -49.15);
+    kit.sign(0, 2.3, -53.97, 's', 'LAB A-2 ▸', { sub: 'BIOHAZARD LEVEL 2', fg: '#7fe7ff' });
+    kit.fuseBox(-1.94, 1.6, -46.5, 'e');
+    kit.ventGrille(-1.95, 2.2, -51.5, 'e', { w: 0.8, h: 0.5 });
 
     // ── Laboratory (x -9..9, z -20..-32) ─────────────────────────────────
-    kit.floorSlab(18.6, 12.0, 0, -26.15, {
+    kit.floorSlab(18.6, 12.0, 0, -60.15, {
       lines: [{ axis: 'z', len: 10, color: 'accent' }],
     });
-    kit.ceilingSlab(18.6, 12.0, 0, H, -26.15, {
+    kit.ceilingSlab(18.6, 12.0, 0, H, -60.15, {
+      circuit: this.labPower,
       lamps: [
         { x: -4.5, z: 4.0, light: true, intensity: 0.9 },
         { x: 4.5, z: 4.0 },
@@ -1355,70 +1845,94 @@ export default class LevelManager {
       ],
     });
     // North wall (corridor mouth) + south wall (door 'l1-lab').
-    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -20.15);
-    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -20.15);
-    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -32.15);
-    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -32.15);
-    kit.wallRun(0.3, H, 12.3, -9.15, H / 2, -26.15);          // west
-    kit.wallRun(0.3, H, 12.3, 9.15, H / 2, -26.15);           // east
-    kit.doorway(2.6, 2.6, 0, 1.3, -20.15, 's');
+    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -54.15);
+    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -54.15);
+    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -66.15);
+    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -66.15);
+    kit.wallRun(0.3, H, 12.3, -9.15, H / 2, -60.15);          // west
+    this._gappedSideWall(9.15, -54, -66.3, -59, 2.4, H);   // east: Lab Annex
+    kit.doorway(2.6, 2.6, 0, 1.3, -54.15, 's');
     // The tutorial door: shoot the conduit beside it.
-    kit.doorway(2.6, 2.6, 0, 1.3, -32.15, 's');
-    this._createDoor('l1-lab', 2.6, 2.6, 0, 1.3, -32.15, 0, m.metalDark);
-    const l1Conduit = this._shootableTarget(0.65, 0.45, -1.1, 1.3, -24.7, 'conduit', 0);
+    kit.doorway(2.6, 2.6, 0, 1.3, -66.15, 's');
+    this._createDoor('l1-lab', 2.6, 2.6, 0, 1.3, -66.15, 0, m.metalDark);
+    const l1Conduit = this._shootableTarget(0.65, 0.45, -1.1, 1.3, -58.7, 'conduit', 0);
     l1Conduit.material.color.setHex(0xffb65b);
     l1Conduit.material.emissive.setHex(0xff9839);
     l1Conduit.userData.storyAction = 'restore-lab-power';
-    kit.box(m.metalDark, 0.85, 1.6, 0.38, -1.1, 0.8, -24.88, { physics: true });
-    kit.sign(-1.1, 1.92, -24.67, 's', 'AMBER RELAY', { sub: 'PULSE TO RESTORE POWER', fg: '#ffc57c', w: 1.45, h: 0.45 });
-    kit.sign(0, 2.55, -31.97, 's', 'CONTROL ROOM ▸', { sub: 'EMERGENCY BYPASS — SEALED', fg: '#a9e9c4', w: 2.4 });
+    kit.box(m.metalDark, 0.85, 1.6, 0.38, -1.1, 0.8, -58.88, { physics: true });
+    kit.sign(-1.1, 1.92, -58.67, 's', 'AMBER RELAY', { sub: 'PULSE TO RESTORE POWER', fg: '#ffc57c', w: 1.45, h: 0.45 });
+    kit.sign(0, 2.55, -65.97, 's', 'CONTROL ROOM ▸', { sub: 'EMERGENCY BYPASS — SEALED', fg: '#a9e9c4', w: 2.4 });
 
     // Focal props: containment tube + scientist console + benches.
-    this.labChamber = new LabChamber(this.scene, -3.6, -26.2);
-    const chamberBody = this.physics.createBox(0, 1.15, 1.4, 1.15, new CANNON.Vec3(-3.6, 1.4, -26.2));
+    this.labChamber = new LabChamber(this.scene, -3.6, -60.2);
+    const chamberBody = this.physics.createBox(0, 1.15, 1.4, 1.15, new CANNON.Vec3(-3.6, 1.4, -60.2));
     this._track(null, chamberBody);
-    kit.consoleDesk(-6.8, -25.2, 'e', { w: 1.8, monitors: 2 });
-    kit.chair(-5.6, -25.2, 'w');
-    kit.sign(-3.6, 2.7, -31.94, 's', '09 / CONTAINMENT BAY', { sub: 'AUTOMATIC CULTURE RESUMPTION ENABLED', fg: '#bde9e7', w: 3.8, h: 0.5 });
-    kit.floorDecal(-3.6, -26.2, 'stripes', { size: 3.5, color: '#d5a04f' });
-    kit.labBench(5.6, -23.5, 'w', { len: 2.6 });
-    kit.labBench(5.6, -27.5, 'w', { len: 2.6 });
-    kit.shelfUnit(-8.2, -22.0, 'e', { w: 1.5 });
-    kit.cabinet(-8.2, -29.2, 'e');
-    kit.wallScreen(-8.93, 1.9, -26.0, 'e', { w: 2.4, h: 1.3 });
-    kit.wallScreen(-8.93, 1.9, -23.4, 'e', { w: 1.2, h: 1.3, alt: true, dotMat: m.emergencyRed });
-    kit.canister(-5.8, -30.5);
-    kit.canister(-5.4, -30.2);
-    kit.crate(-7.5, -30.6, { s: 0.7 });
-    kit.crateStack(-7.8, -21.2, { w: 1.4, h: 1.4, d: 0.9 });
-    kit.barrel(8.2, -30.5);
-    kit.barrel(7.6, -30.8);
-    kit.floorDecal(3.0, -25.0, 'dashes', { size: 2.0 });
+    kit.consoleDesk(-6.8, -59.2, 'e', { w: 1.8, monitors: 2, circuit: this.labPower });
+    kit.chair(-5.6, -59.2, 'w');
+    kit.sign(-3.6, 2.7, -65.94, 's', '09 / CONTAINMENT BAY', { sub: 'AUTOMATIC CULTURE RESUMPTION ENABLED', fg: '#bde9e7', w: 3.8, h: 0.5 });
+    kit.floorDecal(-3.6, -60.2, 'stripes', { size: 3.5, color: '#d5a04f' });
+    kit.labBench(5.6, -57.5, 'w', { len: 2.6 });
+    kit.labBench(5.6, -61.5, 'w', { len: 2.6 });
+    kit.shelfUnit(-8.2, -56, 'e', { w: 1.5 });
+    kit.cabinet(-8.2, -63.2, 'e');
+    kit.wallScreen(-8.93, 1.9, -60, 'e', { w: 2.4, h: 1.3, circuit: this.labPower });
+    kit.wallScreen(-8.93, 1.9, -57.4, 'e', { w: 1.2, h: 1.3, alt: true, dotMat: m.emergencyRed, circuit: this.labPower });
+    kit.lamp(-1.1, -58.7, { y: 2.45, color: 'amber', intensity: 0.7 });
+    kit.sign(0, 2.45, -54.34, 'n', 'LAB A-2 / POWER FAULT', { sub: 'BACKUP LIGHTS ONLY — PULSE AMBER RELAY', fg: '#ffc57c', w: 3.6, h: 0.5 });
+    kit.canister(-5.8, -64.5);
+    kit.canister(-5.4, -64.2);
+    kit.crate(-7.5, -64.6, { s: 0.7 });
+    kit.crateStack(-7.8, -55.2, { w: 1.4, h: 1.4, d: 0.9 });
+    kit.barrel(8.2, -64.5);
+    kit.barrel(7.6, -64.8);
+    kit.debrisPile(-8.0, -61.6, { s: 0.8, seed: 11 });
+    kit.floorDecal(3.0, -59, 'dashes', { size: 2.0 });
     // Ventilation duct along the south wall — the creature escapes here.
-    kit.duct('x', 18.3, 0, 2.8, -31.7, { grilles: [-6.5, 6.5] });
-    kit.ventGrille(6.5, 2.6, -31.94, 's', { w: 0.9, h: 0.6 });
+    kit.duct('x', 18.3, 0, 2.8, -65.7, { grilles: [-6.5, 6.5] });
+    kit.ventGrille(6.5, 2.6, -65.94, 's', { w: 0.9, h: 0.6 });
+    // Lingering smoke leak from the damaged duct grille.
+    this._createSteamVent(
+      'l1-lab-leak',
+      6.5, 2.15, -65.7,
+      {
+        count: 24, rate: 0.08, rise: 0.3, drift: 0.25,
+        lifeSpan: 2.8, alpha: 0.35,
+      }
+    );
+    // Breakable pipes along the creature's escape path (smashed during reveal).
+    // Pipe 1: east wall vertical run (creature smashes as it bursts out).
+    const pipe1Segs = kit.breakablePipeRun('z', 7.0, 8.5, 2.5, -60.5, { count: 2, r: 0.06 });
+    this._addBreakablePipe(pipe1Segs, { x: 8.5, y: 2.5, z: -60.5 });
+    // Pipe 2: crossing near the creature's flee waypoint.
+    const pipe2Segs = kit.breakablePipeRun('x', 4.0, 3.0, 2.4, -62, { count: 2, r: 0.06 });
+    this._addBreakablePipe(pipe2Segs, { x: 3.0, y: 2.4, z: -62 });
+    // Pipe 3: south wall near the duct (final smash before escape).
+    const pipe3Segs = kit.breakablePipeRun('x', 5.0, 5.0, 2.6, -65.3, { count: 2, r: 0.07 });
+    this._addBreakablePipe(pipe3Segs, { x: 5.0, y: 2.6, z: -65.3 });
     // Alarm beacon near containment (the scripted beat's visual anchor).
-    kit.lamp(-7.6, -27.5, { y: 2.6, color: 'red', light: false });
-    kit.sign(-8.95, 2.35, -28.4, 'e', 'BIO-CONTAINMENT', { sub: 'AUTHORISED STAFF ONLY', fg: '#ffd27f', w: 2.0 });
+    kit.lamp(-7.6, -61.5, { y: 2.6, color: 'red', light: false });
+    this._scorchDecal(-5.0, 0, -62.4, 1.6, 0.4);
+    // Red emergency spotlight on the lab ceiling — flickers when the monster emerges.
+    this._labRedSpot = this._flickerLight(0, 2.9, -60, 0xff2200, 0.0, 12);
+    this._labRedSpot.intensity = 0; // starts off, activated when monster appears
     // Dust hanging in the lab's overhead light.
-    this._dustMotes(70, 0, -26, 6.5, 0.3, 2.7);
+    this._dustMotes(70, 0, -60, 6.5, 0.3, 2.7);
 
     // ── Maintenance C2 (x -2..2, z -32..-40) ─────────────────────────────
-    kit.floorSlab(4.3, 8.0, 0, -36.15, { lines: [{ axis: 'z', len: 6.5, color: 'accent' }] });
-    kit.ceilingSlab(4.3, 8.0, 0, H, -36.15, {
+    kit.floorSlab(4.3, 8.0, 0, -70.15, { lines: [{ axis: 'z', len: 6.5, color: 'accent' }] });
+    kit.ceilingSlab(4.3, 8.0, 0, H, -70.15, {
       lamps: [{ x: 0, z: 0, light: true, intensity: 0.7 }],
     });
-    kit.wallRun(0.3, H, 8.3, -2.15, H / 2, -36.15);
-    kit.wallRun(0.3, H, 8.3, 2.15, H / 2, -36.15);
-    kit.pipeRun('z', 7.5, -1.95, 2.5, -36.15, { count: 3, r: 0.06 });
-    kit.cableTray('z', 7.5, 1.95, 2.55, -36.15);
-    kit.fuseBox(1.94, 1.6, -34.0, 'w');
-    kit.floorDecal(0, -33.2, 'stripes', { size: 1.0 });
-    kit.valveWheel(1.95, 1.6, -37.8, 'w');
+    kit.wallRun(0.3, H, 8.3, -2.15, H / 2, -70.15);
+    kit.wallRun(0.3, H, 8.3, 2.15, H / 2, -70.15);
+    kit.pipeRun('z', 7.5, -1.95, 2.5, -70.15, { count: 3, r: 0.06 });
+    kit.cableTray('z', 7.5, 1.95, 2.55, -70.15);
+    kit.fuseBox(1.94, 1.6, -68, 'w');
+    kit.floorDecal(0, -67.2, 'stripes', { size: 1.0 });
 
     // ── Reactor hall (x -10..10, z -40..-54) ─────────────────────────────
-    kit.floorSlab(20.6, 14.0, 0, -47.15, { trim: true });
-    kit.ceilingSlab(20.6, 14.0, 0, H, -47.15, {
+    kit.floorSlab(20.6, 14.0, 0, -81.15, { trim: true });
+    kit.ceilingSlab(20.6, 14.0, 0, H, -81.15, {
       lamps: [
         { x: -6, z: 5, light: true, intensity: 0.85 },
         { x: 6, z: 5 },
@@ -1426,194 +1940,148 @@ export default class LevelManager {
         { x: 6, z: -5, light: true, intensity: 0.85 },
       ],
     });
-    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, -40.15);
-    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, -40.15);
-    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, -54.15);
-    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, -54.15);
-    kit.wallRun(0.3, H, 14.3, -10.15, H / 2, -47.15);         // west
-    kit.wallRun(0.3, H, 14.3, 10.15, H / 2, -47.15);          // east
-    kit.doorway(2.6, 2.6, 0, 1.3, -40.15, 's');
-    kit.doorway(2.6, 2.6, 0, 1.3, -54.15, 's');
-    kit.sign(0, 2.4, -39.97, 's', 'REACTOR HALL ▸', { fg: '#ffd27f' });
-    kit.sign(0, 2.5, -40.32, 'n', 'REACTOR HALL', { sub: 'AUTHORISED PERSONNEL ONLY', fg: '#ffd27f' });
+    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, -74.15);
+    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, -74.15);
+    kit.wallRun(9.0, H, 0.3, -5.8, H / 2, -88.15);
+    kit.wallRun(9.0, H, 0.3, 5.8, H / 2, -88.15);
+    kit.wallRun(0.3, H, 14.3, -10.15, H / 2, -81.15);         // west
+    kit.wallRun(0.3, H, 14.3, 10.15, H / 2, -81.15);          // east
+    kit.doorway(2.6, 2.6, 0, 1.3, -74.15, 's');
+    kit.doorway(2.6, 2.6, 0, 1.3, -88.15, 's');
+    kit.sign(0, 2.4, -73.97, 's', 'REACTOR HALL ▸', { fg: '#ffd27f' });
+    kit.sign(0, 2.5, -74.32, 'n', 'REACTOR HALL', { sub: 'AUTHORISED PERSONNEL ONLY', fg: '#ffd27f' });
     // Focal reactor core (top stays clear of the 3 m ceiling).
-    kit.reactorCore(0, -47.0, { r: 1.5, h: 2.4 });
-    for (const [cx, cz] of [[-6.5, -43.5], [6.5, -43.5], [-6.5, -50.5], [6.5, -50.5]]) {
+    kit.reactorCore(0, -81, { r: 1.5, h: 2.4 });
+    for (const [cx, cz] of [[-6.5, -77.5], [6.5, -77.5], [-6.5, -84.5], [6.5, -84.5]]) {
       kit.column(cx, cz, { h: H, r: 0.26 });
     }
-    kit.railing('x', 7.2, 0, 0, -43.6);
-    kit.railing('x', 7.2, 0, 0, -50.4);
-    kit.railing('z', 6.8, -3.6, 0, -47.0);
-    kit.railing('z', 6.8, 3.6, 0, -47.0);
-    kit.pipeRun('x', 20, 0, 2.55, -41.9, { count: 3 });
-    kit.pipeRun('x', 20, 0, 2.55, -52.4, { count: 2 });
-    kit.wallScreen(9.93, 2.0, -44.0, 'w', { w: 2.8, h: 1.4 });
-    kit.generator(-8.3, -50.8, 'e');
-    kit.generator(8.3, -43.2, 'w');
-    kit.crateStack(6.5, -51.6, { w: 1.5, h: 1.5, d: 0.9, rotY: -0.2 });
-    kit.barrel(-9.0, -44.0);
-    kit.barrel(9.0, -51.0);
-    kit.canister(-9.2, -47.4);
-    kit.canister(9.2, -46.8);
-    kit.floorDecal(-3.4, -44.0, 'stripes', { size: 1.2 });
-    kit.floorDecal(3.4, -50.2, 'stripes', { size: 1.2 });
-    kit.floorLine(0, -44.0, 7, { axis: 'x', color: 'warn' });
-    this._scorchDecal(-5.5, 0, -45.2, 1.3);
-    this._scorchDecal(5.0, 0, -49.0, 1.1);
+    kit.pipeRun('x', 20, 0, 2.55, -75.9, { count: 3 });
+    kit.pipeRun('x', 20, 0, 2.55, -86.4, { count: 2 });
+    kit.wallScreen(9.93, 2.0, -78, 'w', { w: 2.8, h: 1.4 });
+    kit.generator(-8.3, -84.8, 'e');
+    kit.generator(8.3, -77.2, 'w');
+    kit.crateStack(6.5, -85.6, { w: 1.5, h: 1.5, d: 0.9, rotY: -0.2 });
+    kit.barrel(-9.0, -78);
+    kit.barrel(9.0, -85);
+    kit.canister(-9.2, -81.4);
+    kit.canister(9.2, -80.8);
+    kit.floorDecal(-3.4, -78, 'stripes', { size: 1.2 });
+    kit.floorDecal(3.4, -84.2, 'stripes', { size: 1.2 });
+    kit.floorLine(0, -78, 7, { axis: 'x', color: 'warn' });
+    this._scorchDecal(-5.5, 0, -79.2, 1.3);
+    this._scorchDecal(5.0, 0, -83, 1.1);
     // Dust around the reactor core.
-    this._dustMotes(60, 0, -47, 6.5, 0.4, 2.7);
+    this._dustMotes(60, 0, -81, 6.5, 0.4, 2.7);
 
     // ── Reactor-plant equipment (the working station) ────────────────────
     // Overhead crane rail spanning the hall above the core.
-    kit.craneRail('x', 16, 0, 2.72, -47.0, { trolley: -4.5 });
+    kit.craneRail('x', 16, 0, 2.72, -81, { trolley: -4.5 });
     // Coolant pumps flanking the hall (feed / return loops).
-    kit.coolantPump(-8.2, -45.4, 'e');
-    kit.coolantPump(8.0, -50.8, 'w');
+    kit.coolantPump(-8.2, -79.4, 'e');
+    kit.coolantPump(8.0, -84.8, 'w');
     // Steam generator on the east wall.
-    kit.steamGenerator(7.3, -47.6, 'z');
+    kit.steamGenerator(7.3, -81.6, 'z');
     // Coolant tank on the west wall.
-    kit.coolantTank(-8.8, -48.6);
-    // Control-rod drive bank beside the core, inside the shield ring.
-    kit.controlRodDrives(2.2, -47.0);
+    kit.coolantTank(-8.8, -82.6);
+    // Control-rod drive bank beside the core.
+    kit.controlRodDrives(2.2, -81);
     // Spent-fuel transfer rack in the south-west corner.
-    kit.fuelRack(-6.9, -52.6, 'n');
+    kit.fuelRack(-6.9, -86.6, 'n');
     // Instrumentation: wall gauge banks + radiation monitors.
-    kit.gaugeCluster(-9.96, 1.7, -44.5, 'e');
-    kit.gaugeCluster(9.96, 1.7, -49.5, 'w');
-    kit.radiationMonitor(-3.9, -41.4);
-    kit.radiationMonitor(3.9, -53.0);
+    kit.gaugeCluster(-9.96, 1.7, -78.5, 'e');
+    kit.gaugeCluster(9.96, 1.7, -83.5, 'w');
+    kit.radiationMonitor(-5.4, -75.4);
+    kit.radiationMonitor(3.9, -87);
 
-    // ── Reactor hall dressing — shield ring, turbine line, coolant loop ──
-    // Concrete biological-shield ring standing inside the railing pen.
-    kit.reactorContainmentRing(0, -47.0, { r: 3.0, count: 13 });
+    // Reactor hall dressing; the decorative barricade was removed.
     // Turbine line in the north-west bay (plinth is the collider).
-    kit.turbineHousing(-7.4, -42.2, 'z');
+    kit.turbineHousing(-7.4, -76.2, 'z');
     // Coolant cross-feeds dropping between the overhead runs + isolation.
-    kit.pipeRun('z', 2.8, -6.4, 2.45, -43.7, { count: 2, r: 0.09 });
-    kit.pipeRun('z', 2.8, 6.4, 2.45, -50.5, { count: 2, r: 0.09 });
-    kit.valveWheel(-9.85, 1.6, -43.6, 'e');
-    kit.valveWheel(9.85, 1.6, -51.6, 'w');
+    kit.pipeRun('z', 2.8, -6.4, 2.45, -77.7, { count: 2, r: 0.09 });
+    kit.pipeRun('z', 2.8, 6.4, 2.45, -84.5, { count: 2, r: 0.09 });
+    kit.valveWheel(-9.85, 1.6, -77.6, 'e');
+    kit.valveWheel(9.85, 1.6, -85.6, 'w');
     // Hazard striping + warning signage at the hall thresholds and walls.
-    kit.floorDecal(-1.9, -40.9, 'stripes', { size: 1.0 });
-    kit.floorDecal(1.9, -40.9, 'stripes', { size: 1.0 });
-    kit.sign(-9.98, 2.3, -47.0, 'e', 'CAUTION / RADIATION AREA', { sub: 'DOSIMETERS REQUIRED', fg: '#ffd27f', w: 2.4 });
-    kit.sign(9.98, 2.3, -47.0, 'w', 'HIGH VOLTAGE / COOLANT LOOP', { sub: 'ISOLATE BEFORE WORK', fg: '#ffd27f', w: 2.6 });
+    kit.floorDecal(-1.9, -74.9, 'stripes', { size: 1.0 });
+    kit.floorDecal(1.9, -74.9, 'stripes', { size: 1.0 });
+    kit.sign(-9.98, 2.3, -81, 'e', 'CAUTION / RADIATION AREA', { sub: 'DOSIMETERS REQUIRED', fg: '#ffd27f', w: 2.4 });
+    kit.sign(9.98, 2.3, -81, 'w', 'HIGH VOLTAGE / COOLANT LOOP', { sub: 'ISOLATE BEFORE WORK', fg: '#ffd27f', w: 2.6 });
     // Ambient steam: turbine gland + coolant pump discharge.
-    this._createSteamVent('l1-steam-1', -7.4, 2.05, -41.7, { count: 10, rate: 0.16, rise: 0.4, alpha: 0.3, lifeSpan: 1.1, drift: 0.08 });
-    this._createSteamVent('l1-steam-2', 8.0, 1.7, -50.6, { count: 8, rate: 0.22, rise: 0.35, alpha: 0.26, lifeSpan: 1.0, drift: 0.08 });
+    this._createSteamVent('l1-steam-1', -7.4, 2.05, -75.7, { count: 10, rate: 0.16, rise: 0.4, alpha: 0.3, lifeSpan: 1.1, drift: 0.08 });
+    this._createSteamVent('l1-steam-2', 8.0, 1.7, -84.6, { count: 8, rate: 0.22, rise: 0.35, alpha: 0.26, lifeSpan: 1.0, drift: 0.08 });
 
     // ── Control room (x -5..5, z -54..-64) ───────────────────────────────
-    kit.floorSlab(10.6, 10.0, 0, -59.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
-    kit.ceilingSlab(10.6, 10.0, 0, H, -59.15, {
+    kit.floorSlab(10.6, 10.0, 0, -93.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
+    kit.ceilingSlab(10.6, 10.0, 0, H, -93.15, {
       lamps: [
         { x: -2.6, z: 2.0, light: true, intensity: 0.8 },
         { x: 2.6, z: -2.0, light: true, intensity: 0.8 },
       ],
     });
-    kit.wallRun(0.3, H, 10.3, -5.15, H / 2, -59.15);
-    kit.wallRun(0.3, H, 10.3, 5.15, H / 2, -59.15);
-    kit.wallRun(3.65, H, 0.3, -3.325, H / 2, -64.15);        // south wall, bypass gap
-    kit.wallRun(3.65, H, 0.3, 3.325, H / 2, -64.15);
-    kit.doorway(3.0, 2.8, 0, 1.4, -64.15, 's');
-    kit.sign(0, 2.6, -54.32, 'n', 'CONTROL ROOM', { fg: '#7fe7ff' });
-    // Consoles sit off the exit lane: two banks on the west side.
-    kit.consoleDesk(-2.8, -62.6, 'e', { w: 2.6, monitors: 2 });
-    kit.chair(-1.75, -61.5, 'e');
-    kit.chair(-1.75, -63.4, 'e');
-    kit.consoleDesk(-2.8, -57.4, 'e', { w: 2.0, monitors: 1 });
-    kit.chair(-1.75, -57.4, 'e');
-    kit.wallScreen(4.93, 2.1, -62.6, 'w', { w: 2.8, h: 1.3 });
-    kit.serverRack(-4.6, -55.8, 'e');
-    kit.serverRack(4.6, -55.8, 'w');
-    kit.cabinet(-4.6, -60.0, 'e');
-    kit.shelfUnit(4.6, -60.0, 'w', { w: 1.4, h: 1.8 });
-    kit.fuseBox(-4.94, 1.7, -58.0, 'e');
-    kit.extinguisher(4.94, 1.2, -56.0);
-    kit.debrisPile(-4.2, -63.4, { s: 0.7, seed: 21 });
-    kit.floorDecal(0, -60.4, 'stripes', { size: 1.4, color: '#5cff8a' });
-    kit.floorDecal(0, -63.1, 'dashes', { size: 1.2 });
-    // Annunciator fascias flanking the exit door + side instrumentation.
-    kit.annunciatorBoard(-2.9, 2.15, -63.95, 's');
-    kit.annunciatorBoard(2.9, 2.15, -63.95, 's');
-    kit.gaugeCluster(-4.94, 1.9, -61.6, 'e');
-    kit.gaugeCluster(4.94, 1.9, -56.8, 'w');
+    kit.wallRun(0.3, H, 10.3, -5.15, H / 2, -93.15);
+    kit.wallRun(0.3, H, 10.3, 5.15, H / 2, -93.15);
+    kit.wallRun(10.6, H, 0.3, 0, H / 2, -98.15);              // south end wall
+    kit.sign(0, 2.6, -88.32, 'n', 'CONTROL ROOM', { fg: '#7fe7ff' });
+    kit.consoleDesk(0, -96.6, 'n', { w: 3.2, monitors: 3 });
+    kit.chair(-0.7, -95.3, 'n');
+    kit.chair(0.7, -95.3, 'n');
+    kit.wallScreen(0, 2.2, -97.93, 's', { w: 3.4, h: 1.5 });
+    kit.serverRack(-4.6, -89.8, 'e');
+    kit.serverRack(4.6, -89.8, 'w');
+    kit.cabinet(-4.6, -94, 'e');
+    kit.shelfUnit(4.6, -94, 'w', { w: 1.4, h: 1.8 });
+    kit.fuseBox(-4.94, 1.7, -92, 'e');
+    kit.extinguisher(4.94, 1.2, -90);
+    kit.debrisPile(-2.6, -97.2, { s: 0.7, seed: 21 });
+    kit.floorDecal(0, -94.4, 'stripes', { size: 1.4, color: '#5cff8a' });
 
-    // ── Bypass airlock door 'l1-exit' — the level's final passage ────────
-    // The run ends here: the player presses E at the door to release it, then
-    // walks through into the surface-lift lobby where the win zone sits.
-    this._createDoor('l1-exit', 3.0, 2.8, 0, 1.4, -64.15, 0, m.hazard);
-    kit.sign(0, 2.75, -63.97, 's', 'BYPASS AIRLOCK ▸', { sub: 'PRESS  E  TO RELEASE / SURFACE LIFT BEYOND', fg: '#ffd08a', w: 3.2, h: 0.6 });
-    kit.floorLine(0, -63.4, 1.5, { color: 'exit' });
-
-    // ── Surface-lift lobby (x -5..5, z -64..-71) — WIN ───────────────────
-    kit.floorSlab(10.6, 6.7, 0, -67.5, { lines: [{ axis: 'z', len: 5.4, color: 'exit' }] });
-    kit.ceilingSlab(10.6, 6.7, 0, H, -67.5, {
-      lamps: [
-        { x: -2.6, z: -1.5, light: true, intensity: 0.85 },
-        { x: 2.6, z: 1.5, light: true, intensity: 0.85 },
-      ],
-    });
-    kit.wallRun(0.3, H, 6.8, -5.15, H / 2, -67.6);
-    kit.wallRun(0.3, H, 6.8, 5.15, H / 2, -67.6);
-    kit.wallRun(10.6, H, 0.3, 0, H / 2, -70.95);             // south end
-    // The lift itself: heavy hazard-striped doors in the end wall.
-    kit.box(m.metalDark, 5.2, 3.4, 0.22, 0, 1.7, -70.78, { cast: false });
-    kit.box(m.hazard, 2.5, 3.0, 0.06, -1.28, 1.5, -70.65, { cast: false });
-    kit.box(m.hazard, 2.5, 3.0, 0.06, 1.28, 1.5, -70.65, { cast: false });
-    kit.box(m.accent, 0.1, 2.6, 0.09, 0, 1.5, -70.62, { cast: false });
-    kit.sign(0, 3.35, -70.6, 's', 'SURFACE LIFT / 01', { sub: 'TRANSFER TO SUB-LEVEL 2 LOCKOUT', fg: '#8bebbd', w: 3.2, h: 0.7 });
-    this._exitBeacon(0, -68.4, { radius: 1.7 });
-    // Housekeeping around the lift: pallets, pipework, fire point, boards.
-    kit.crateStack(3.6, -69.6, { w: 1.4, h: 1.4, d: 0.9, rotY: -0.25 });
-    kit.crate(-4.0, -66.2, { s: 0.8, rotY: 0.3 });
-    kit.barrel(-4.4, -68.6);
-    kit.barrel(-3.8, -69.0);
-    kit.canister(4.2, -65.6);
-    kit.fallenPanel(2.4, 0.3, -66.4, { rx: 0.35, ry: 0.7 });
-    kit.debrisPile(-2.2, -70.0, { s: 0.9, seed: 22 });
-    kit.pipeRun('z', 6.2, -4.9, 2.55, -67.6, { count: 3, r: 0.07 });
-    kit.cableTray('z', 6.2, 4.9, 2.5, -67.6);
-    kit.gaugeCluster(-4.94, 1.9, -68.8, 'e');
-    kit.fuseBox(4.94, 1.7, -66.8, 'w');
-    kit.extinguisher(4.94, 1.2, -69.0);
-    kit.annunciatorBoard(-4.94, 2.15, -66.2, 'e');
-    kit.floorDecal(0, -65.6, 'stripes', { size: 1.3, color: '#5cff8a' });
-    kit.floorLine(0, -69.6, 2.4, { color: 'exit' });
-    this._createSteamVent('l1-steam-3', 4.2, 2.05, -69.8, { count: 8, rate: 0.2, rise: 0.35, alpha: 0.24, lifeSpan: 1.0, drift: 0.08 });
-    this._flickerLight(-2.8, 2.55, -66.4, 0xaad4ff, 0.9, 7);
-    this._dustMotes(45, 0, -67.5, 4.5, 0.3, 2.7);
+    // Optional side rooms (lore, health pickups, relay puzzle).
+    this._buildLevel1SideRooms();
 
     // ── Walking staff — the station is alive before the breach ───────────
     // Patrol loops stay on walkable floor, clear of props and doorways;
-    // evacuateWalkers() (Game.js, mutation alarm) sends them all running.
+    // The alarm interrupts work; the creature's release sends everyone running.
+    // Opening room: crew are visible immediately, before any training door opens.
+    this._addWalker('security', [{ x: 2.8, z: -6.5 }, { x: 2.8, z: -3 }], { speed: 0.8 });
+    this._addWalker('tech', [{ x: -2.9, z: -6.5 }, { x: -2.9, z: -4.3 }], { speed: 0.75 });
+    // Instructors circulate through the training hub without blocking the relays.
+    this._addWalker('supervisor', [{ x: -4, z: -14.5 }, { x: -4, z: -23 }]);
+    this._addWalker('tech', [{ x: 4, z: -23 }, { x: 4, z: -14.5 }]);
     // Reception: escort pacing the waiting area.
     this._addWalker('coat', [
-      { x: 2.4, z: -7.2 }, { x: -1.6, z: -7.2 },
-      { x: -1.6, z: -2.6 }, { x: 2.4, z: -2.6 },
+      { x: 2.4, z: -41.2 }, { x: -1.6, z: -41.2 },
+      { x: -1.6, z: -36.6 }, { x: 2.4, z: -36.6 },
     ]);
     // Reception: scientist escorting visitors across the entrance lane.
     this._addWalker('coat', [
       { x: -1.9, z: -2.0 }, { x: -1.9, z: -6.4 },
       { x: 0.9, z: -6.4 }, { x: 0.9, z: -2.0 },
     ]);
+    // Reception: security guard walking the entrance lane by the desk.
+    this._addWalker('security', [
+      { x: -1.9, z: -36 }, { x: -1.9, z: -40.4 },
+      { x: 0.9, z: -40.4 }, { x: 0.9, z: -36 },
+    ]);
     // Corridor C1: tech shuttling between reception and the lab.
-    this._addWalker('tech', [{ x: 0.7, z: -11.5 }, { x: 0.7, z: -18.5 }]);
+    this._addWalker('tech', [{ x: 0.7, z: -45.5 }, { x: 0.7, z: -52.5 }]);
     // Laboratory: researcher on rounds past the benches.
     this._addWalker('coat', [
-      { x: 3.2, z: -22.5 }, { x: 3.2, z: -29.5 },
-      { x: -0.5, z: -29.5 }, { x: -0.5, z: -22.5 },
+      { x: 3.2, z: -56.5 }, { x: 3.2, z: -63.5 },
+      { x: -0.5, z: -63.5 }, { x: -0.5, z: -56.5 },
     ]);
+    this._addWalker('security', [{ x: 1.8, z: -55.5 }, { x: 1.8, z: -60.5 }]);
+    this._addWalker('tech', [{ x: -6.5, z: -55.8 }, { x: -4.8, z: -55.8 }]);
     // Reactor hall: supervisor inspecting the coolant loop (ring route).
     this._addWalker('supervisor', [
-      { x: -5.2, z: -42.8 }, { x: 5.2, z: -42.8 },
-      { x: 5.2, z: -52.2 }, { x: -5.2, z: -52.2 },
+      { x: -5.2, z: -76.8 }, { x: 5.2, z: -76.8 },
+      { x: 5.2, z: -86.2 }, { x: -5.2, z: -86.2 },
     ], { speed: 0.95 });
     // Reactor hall: tech walking the west pipe run.
-    this._addWalker('tech', [{ x: -5.8, z: -43.2 }, { x: -5.8, z: -51.8 }]);
+    this._addWalker('tech', [{ x: -5.8, z: -77.2 }, { x: -5.8, z: -85.8 }]);
     // Control room: operator pacing between the consoles.
     this._addWalker('tech', [
-      { x: 2.2, z: -56.5 }, { x: 2.2, z: -59.5 },
-      { x: -2.2, z: -59.5 }, { x: -2.2, z: -56.5 },
+      { x: 2.2, z: -90.5 }, { x: 2.2, z: -93.5 },
+      { x: -2.2, z: -93.5 }, { x: -2.2, z: -90.5 },
     ]);
 
     // Green evacuation-route guides, revealed once the creature flees.
@@ -1622,7 +2090,7 @@ export default class LevelManager {
     for (const [x, z, length, horizontal] of [[0.5, -28.3, 5.8], [0.5, -36.2, 7],
       [-1.85, -40.5, 4.7, true], [-4.2, -46.5, 12], [-2.1, -52.4, 4.2, true], [0, -53.8, 3], [0, -59.3, 8]]) {
       const guide = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? length : 0.09, 0.025, horizontal ? 0.09 : length), routeMaterial);
-      guide.position.set(x, 0.035, z);
+      guide.position.set(x, 0.035, z - TRAIN_LEN);
       guide.visible = false;
       guide.userData.ownsGeometry = true;
       guide.userData.ownsMaterial = this.labRoute.length === 0;
@@ -1630,19 +2098,268 @@ export default class LevelManager {
       this._track(guide);
       this.labRoute.push(guide);
     }
-    kit.sign(-3.8, 2.0, -40.34, 's', 'CONTROL ROOM ◂', { sub: 'KEEP LEFT OF REACTOR', fg: '#9cebc1', w: 2.2 });
-    kit.sign(0, 2.35, -53.97, 's', 'CONTROL / EVACUATION', { sub: 'EMERGENCY EXIT RELEASE', fg: '#9cebc1', w: 2.6 });
+    kit.sign(-3.8, 2.0, -74.34, 's', 'CONTROL ROOM ◂', { sub: 'KEEP LEFT OF REACTOR', fg: '#9cebc1', w: 2.2 });
+    kit.sign(0, 2.35, -87.97, 's', 'CONTROL / EVACUATION', { sub: 'EMERGENCY EXIT RELEASE', fg: '#9cebc1', w: 2.6 });
 
     // ── Fog ───────────────────────────────────────────────────────────────
+    // No fog in Level 1: keep the colour (background) but push the range far
+    // beyond anything visible, so Game.js's Fog setup still works.
     this.fogColor = 0x070b12;
-    this.fogNear = 18;
-    this.fogFar = 75;
+    this.fogNear = 2000;
+    this.fogFar = 4000;
+  }
+
+  // ── Level 1 training hub (z 0 … -TRAIN_LEN) ─────────────────────────────
+  //
+  // Mandatory: the gate to Reception stays sealed until the jump room's relay
+  // and all three shoot-room panels are live (4 power nodes, group 'train').
+  //
+  _buildTrainingWing() {
+    const H = 3;
+    const kit = this._kit;
+    const m = this._mats;
+    const K = L1_KEYS;
+    const nb = { noBeaconLight: true };
+
+    // ── Room A: move / look / first shot (x -4..4, z 0..-8) ──────────────
+    kit.floorSlab(8.6, 8.3, 0, -4.0, { lines: [{ axis: 'z', len: 6, color: 'accent' }] });
+    kit.ceilingSlab(8.6, 8.3, 0, H, -4.0, {
+      lamps: [
+        { x: -2, z: 2, light: true, intensity: 0.8 },
+        { x: 2, z: -2 },
+      ],
+    });
+    kit.wallRun(8.6, H, 0.3, 0, H / 2, 0.15);                  // north
+    kit.wallRun(0.3, H, 8.3, -4.15, H / 2, -4.15);             // west
+    kit.wallRun(0.3, H, 8.3, 4.15, H / 2, -4.15);              // east
+    kit.wallRun(3.0, H, 0.3, -2.8, H / 2, -8.15);              // south (door)
+    kit.wallRun(3.0, H, 0.3, 2.8, H / 2, -8.15);
+    kit.doorway(2.6, 2.6, 0, 1.3, -8.15, 's');
+    this._createDoor('tr-a', 2.6, 2.6, 0, 1.3, -8.15, 0, m.metalDark, nb);
+    const aConduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, -7.96, 'conduit', 0);
+    aConduit.userData.doorId = 'tr-a';
+    kit.sign(0, 2.3, -0.02, 'n', 'TRAINING WING', { sub: 'NO RISK HERE', fg: '#7fe7ff' });
+    kit.sign(-2.8, 2.4, -7.97, 's', `${K.move} — MOVE`, { sub: `${K.look} — LOOK AROUND`, fg: '#7fe7ff' });
+    kit.sign(2.8, 2.6, -7.97, 's', `${K.fire} — FIRE`, { sub: 'SHOOT THE GLOWING PANEL', fg: '#ffd27f' });
+    kit.crate(-1.8, -2.4, { s: 0.9, rotY: 0.2 });
+    kit.crate(1.8, -4.4, { s: 0.9, rotY: -0.3 });
+    kit.crate(-1.4, -6.3, { s: 0.9, rotY: 0.1 });
+    kit.floorDecal(0, -1.7, 'stripes', { size: 1.6, color: '#5cff8a' }); // spawn pad
+    kit.floorDecal(0.4, -3.4, 'dashes', { size: 1.2 });
+    kit.floorDecal(-0.2, -5.4, 'dashes', { size: 1.2 });
+    kit.floorDecal(0.2, -7.2, 'dashes', { size: 1.2 });
+
+    // ── Link corridor (x -2..2, z -8..-12) ───────────────────────────────
+    kit.floorSlab(4.3, 4.0, 0, -10.15, {});
+    kit.ceilingSlab(4.3, 4.0, 0, H, -10.15, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(0.3, H, 3.7, -2.15, H / 2, -10.15);
+    kit.wallRun(0.3, H, 3.7, 2.15, H / 2, -10.15);
+    kit.pipeRun('z', 3.6, -1.95, 2.55, -10.15, { count: 2, r: 0.06 });
+
+    // ── Training hub (x -9..9, z -12..-26) ───────────────────────────────
+    kit.floorSlab(18.6, 14.0, 0, -19.15, { trim: true });
+    kit.ceilingSlab(18.6, 14.0, 0, H, -19.15, {
+      lamps: [
+        { x: -4, z: 3.0, light: true, intensity: 0.9 },
+        { x: 4, z: -3.0 },
+      ],
+    });
+    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -12.15);             // north (entry gap)
+    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -12.15);
+    kit.doorway(2.6, 2.6, 0, 1.3, -12.15, 's');
+    kit.wallRun(8.0, H, 0.3, -5.3, H / 2, -26.15);             // south (gate)
+    kit.wallRun(8.0, H, 0.3, 5.3, H / 2, -26.15);
+    kit.doorway(2.6, 2.6, 0, 1.3, -26.15, 's');
+    this._createDoor('tr-gate', 2.6, 2.6, 0, 1.3, -26.15, 0, m.metalDark, {
+      needPower: ['tr-relay-jump', 'tr-relay-1', 'tr-relay-2', 'tr-relay-3'],
+      noBeaconLight: true,
+    });
+    this._gappedSideWall(-9.15, -12.0, -26.3, -19.15, 2.4, H);   // west: jump room
+    this._gappedSideWall(9.15, -12.0, -26.3, -19.15, 2.4, H);    // east: shoot room
+    this._createDoor('tr-jump', 2.4, 2.5, -9.15, 1.25, -19.15, Math.PI / 2, m.metalDark, nb);
+    this._createDoor('tr-range', 2.4, 2.5, 9.15, 1.25, -19.15, Math.PI / 2, m.metalDark, nb);
+    const jc = this._shootableTarget(0.55, 0.4, -8.96, 1.9, -17.2, 'conduit', Math.PI / 2);
+    jc.userData.doorId = 'tr-jump';
+    const rc = this._shootableTarget(0.55, 0.4, 8.96, 1.9, -17.2, 'conduit', -Math.PI / 2);
+    rc.userData.doorId = 'tr-range';
+    kit.sign(-5.3, 2.4, -12.32, 'n', 'TRAINING HUB', { sub: 'FINISH BOTH ROOMS', fg: '#7fe7ff' });
+    kit.sign(5.3, 2.4, -12.32, 'n', 'GATE: BOTH ROOMS', { sub: 'JUMP RELAY + 3 DUMMIES', fg: '#ffd27f' });
+    kit.sign(-5.3, 2.4, -25.97, 's', 'JUMP ROOM ◂', { sub: 'WEST — SHOOT THE PANEL', fg: '#7fe7ff' });
+    kit.sign(5.3, 2.4, -25.97, 's', 'SHOOT ROOM ▸', { sub: 'EAST — MONSTER TARGET PRACTICE', fg: '#7fe7ff' });
+    kit.column(0, -19.15, { h: H, r: 0.45 });
+    kit.crate(-5.5, -14.6, { s: 0.8, rotY: 0.3 });
+    kit.crate(5.5, -24.0, { s: 0.8, rotY: -0.2 });
+    kit.floorDecal(0, -22.5, 'stripes', { size: 1.4 });
+    // Optional extra practice: two valves that shut off their steam vents.
+    this._trainingValve('tr-valve-a', -1, -9.0, 1.2, -14.4);
+    this._trainingValve('tr-valve-b', 1, 9.0, 1.2, -23.9);
+
+    // ── Jump room (west): hurdles, then around a corner to the relay ────
+    // Hall x -9.3..-19.3, z -16.15..-22.15. The hurdles span the full width,
+    // and the relay is out of sight in the chamber past them.
+    kit.floorSlab(9.85, 6.0, -14.225, -19.15, { lines: [{ axis: 'x', len: 7, color: 'accent' }] });
+    kit.ceilingSlab(9.85, 6.0, -14.225, H, -19.15, {
+      lamps: [{ x: -3, z: 0, light: true, intensity: 0.8 }],
+    });
+    kit.wallRun(10.0, H, 0.3, -14.3, H / 2, -16.15);           // north
+    kit.wallRun(6.9, H, 0.3, -12.75, H / 2, -22.15);           // south (chamber gap)
+    kit.wallRun(0.5, H, 0.3, -19.05, H / 2, -22.15);
+    kit.doorway(2.6, 2.6, -17.5, 1.3, -22.15, 's');
+    kit.wallRun(0.3, H, 10.8, -19.15, H / 2, -21.4);           // west end (hall + chamber)
+    for (const hx of [-11.5, -13.5, -15.5]) {
+      kit.box(m.metalDark, 0.4, HURDLE_H, 5.7, hx, HURDLE_H / 2, -19.15, { physics: true });
+      kit.floorDecal(hx + 0.9, -19.15, 'stripes', { size: 1.0 });
+    }
+    kit.sign(-12.5, 2.4, -16.32, 'n', `${K.jump} — JUMP`, { sub: 'CLEAR EVERY HURDLE', fg: '#ffd27f' });
+    // Chamber (x -15.3..-19.15, z -22.15..-26.65)
+    kit.floorSlab(3.85, 4.5, -17.225, -24.4, {});
+    kit.ceilingSlab(3.85, 4.5, -17.225, H, -24.4, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(0.3, H, 4.5, -15.3, H / 2, -24.4);             // east
+    kit.wallRun(4.15, H, 0.3, -17.225, H / 2, -26.65);         // south end
+    kit.sign(-17.2, 2.6, -26.47, 's', 'SHOOT THE PANEL', { sub: 'TO COMPLETE THIS ROOM', fg: '#ffd27f' });
+    this._addPowerNode('tr-relay-jump', -17.5, 1.4, -26.44, 0, { halo: false, group: 'train' });
+
+    // ── Shoot room (east): three panels — far, high, low ─────────────────
+    // x 9.3..19.3, z -14.15..-24.15.
+    kit.floorSlab(9.85, 10.0, 14.225, -19.15, { lines: [{ axis: 'x', len: 8, color: 'accent' }] });
+    kit.ceilingSlab(9.85, 10.0, 14.225, H, -19.15, {
+      lamps: [{ x: 0, z: 0, light: true, intensity: 0.9 }],
+    });
+    kit.wallRun(10.0, H, 0.3, 14.3, H / 2, -14.15);            // north
+    kit.wallRun(10.0, H, 0.3, 14.3, H / 2, -24.15);            // south
+    kit.wallRun(0.3, H, 10.3, 19.15, H / 2, -19.15);           // east end
+    kit.sign(11.5, 2.4, -14.32, 'n', 'MONSTER TARGET PRACTICE', { sub: 'RIGHT MOUSE / Z: AIM · CLICK / F: FIRE', fg: '#ffd27f', w: 3.4 });
+    this.shootingLesson = new ShootingLesson();
+    for (const [index, z] of [-16.4, -19.15, -21.9].entries()) {
+      const id = `tr-relay-${index + 1}`;
+      const dummy = new TrainingDummy(id);
+      dummy.group.position.set(17.2, 0, z);
+      this.scene.add(dummy.group);
+      this.trainingDummies.push(dummy);
+      this.shootables.push(...dummy.targets);
+      this._powerNodes.push({ id, mesh: dummy.target, led: dummy.led, lit: false, lights: [], doorIds: [], group: 'train', dummy });
+      const body = this.physics.createBox(0, 0.85, 1.1, 0.85, new CANNON.Vec3(17.05, 1.1, z));
+      this._track(null, body);
+      kit.sign(18.96, 2.35, z, 'w', `DUMMY 0${index + 1}`, { sub: 'CYAN: READY / GREEN: HIT', w: 2, h: 0.4, fg: '#7fe7ff' });
+    }
+    kit.floorLine(11.3, -19.15, 7.4, { axis: 'z', color: 'warn' });
+
+    // ── Gate corridor (x -2..2, z -26..-34) → Reception ──────────────────
+    kit.floorSlab(4.3, 7.55, 0, -29.925, {});
+    kit.ceilingSlab(4.3, 7.55, 0, H, -29.925, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(0.3, H, 7.4, -2.15, H / 2, -29.925);
+    kit.wallRun(0.3, H, 7.4, 2.15, H / 2, -29.925);
+    kit.pipeRun('z', 7.2, -1.95, 2.55, -29.925, { count: 2, r: 0.06 });
+    kit.cableTray('z', 7.2, 1.95, 2.6, -29.925);
+    kit.floorLine(0, -27.5, 2.6, { axis: 'x', color: 'exit' });
+  }
+
+  /**
+   * One optional practice valve: a steam vent plus a shootable valve on a hub
+   * wall. side -1 = west wall, +1 = east wall; wallIn = the wall's inner face x.
+   */
+  _trainingValve(id, side, wallIn, y, z) {
+    const kit = this._kit;
+    kit.valveWheel(wallIn - 0.1 * side, y, z, side < 0 ? 'e' : 'w');
+    const target = this._shootableTarget(0.4, 0.3, wallIn - 0.06 * side, y, z, 'hazard',
+      side < 0 ? Math.PI / 2 : -Math.PI / 2);
+    target.userData.ventId = id;
+    this._createSteamVent(id, wallIn - 1.5 * side, 0.35, z, { count: 10 });
+  }
+
+  // ── Level 1 optional side rooms ─────────────────────────────────────────
+  //
+  // Positions are in the original route coordinates (via L1Z). Openings were
+  // cut into the route walls by _gappedSideWall in _buildLevel1.
+  //
+  _buildLevel1SideRooms() {
+    const H = 3;
+    const kit = this._kit;
+    const m = this._mats;
+
+    // ── Break Room (east of Reception; x 5.3..11.3, z -4.65..-9.75) ──────
+    // Always lit. Lore + a health pickup as the "you explored" reward.
+    kit.floorSlab(5.85, 5.1, 8.225, -41.2, { lines: [{ axis: 'x', len: 4, color: 'accent' }] });
+    kit.ceilingSlab(5.85, 5.1, 8.225, H, -41.2, {
+      lamps: [{ x: 0, z: 0, light: true, intensity: 0.6 }],
+    });
+    kit.wallRun(6.0, H, 0.3, 8.3, H / 2, -38.65);          // north
+    kit.wallRun(6.0, H, 0.3, 8.3, H / 2, -43.75);          // south
+    kit.wallRun(0.3, H, 5.4, 11.15, H / 2, -41.2);         // east end
+    kit.sign(8.3, 2.4, -38.65 - 0.17, 'n', 'NOTE TO NIGHT STAFF', { sub: 'B-7 IS RESTLESS TONIGHT', fg: '#ffd27f' });
+    kit.sign(8.3, 2.4, -43.75 + 0.18, 's', 'BREAK ROOM', { sub: 'VAULT POWER: RELAYS A + B', fg: '#7fe7ff' });
+    kit.wallScreen(10.93, 1.9, -41.2, 'w', { w: 2.0, h: 1.2 });
+    kit.labBench(7.4, -40, 'w', { len: 1.8 });
+    kit.cabinet(6.6, -43.1, 'n');
+    kit.shelfUnit(10.2, -43.1, 'n', { w: 1.4, h: 1.8 });
+    kit.crate(6.2, -39.3, { s: 0.7, rotY: 0.3 });
+    kit.barrel(10.6, -39.3);
+    kit.extinguisher(10.9, 1.2, -39.1);
+    this._addPickup('l1-health-lounge', 'health', 9.3, -41.6, { amount: 25 });
+
+    // ── Equipment Nook (west of C1; x -2.3..-6.3, z -12.9..-17.1) ────────
+    // Dark until Relay A is shot; the relay panel glows red so it can be found.
+    const nookLight = this._powerLight(-4.2, 2.5, -49, 0xbfe6ff, 0.9, 8);
+    kit.floorSlab(3.85, 4.2, -4.225, -49, {});
+    kit.ceilingSlab(3.85, 4.2, -4.225, H, -49, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(4.0, H, 0.3, -4.3, H / 2, -46.9);          // north
+    kit.wallRun(4.0, H, 0.3, -4.3, H / 2, -51.1);          // south
+    kit.wallRun(0.3, H, 4.5, -6.15, H / 2, -49);         // west end
+    kit.sign(-4.3, 2.3, -51.1 + 0.18, 's', 'RELAY A — OFFLINE', { sub: 'SHOOT THE PANEL', fg: '#ff8f7f' });
+    kit.crate(-3.5, -47.6, { s: 0.7, rotY: 0.4 });
+    kit.barrel(-3.3, -50.6);
+    kit.canister(-5.6, -47.5);
+    kit.debrisPile(-5.5, -50.5, { s: 0.6, seed: 51 });
+    this._addPowerNode('l1-relay-a', -5.94, 1.4, -49, Math.PI / 2, {
+      lights: [nookLight], doorIds: ['l1-vault'], halo: false,
+    });
+
+    // ── Lab Annex (east of the Laboratory; x 9.3..14.3, z -22.7..-27.3) ──
+    // Dark until Relay B is shot. Also holds a health pickup.
+    const annexLight = this._powerLight(11.7, 2.5, -59, 0xbfe6ff, 0.9, 8);
+    const vaultLight = this._powerLight(5.3, 2.5, -49, 0xffd9a0, 0.9, 8);
+    kit.floorSlab(4.85, 4.6, 11.725, -59, {});
+    kit.ceilingSlab(4.85, 4.6, 11.725, H, -59, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(5.0, H, 0.3, 11.8, H / 2, -56.7);          // north
+    kit.wallRun(5.0, H, 0.3, 11.8, H / 2, -61.3);          // south
+    kit.wallRun(0.3, H, 5.0, 14.15, H / 2, -59);         // east end
+    kit.sign(11.7, 2.4, -61.3 + 0.18, 's', 'RELAY B — OFFLINE', { sub: 'VAULT NEEDS BOTH RELAYS', fg: '#ff8f7f' });
+    kit.shelfUnit(11.9, -60.9, 'n', { w: 1.4, h: 1.8 });
+    kit.cabinet(10.3, -60.9, 'n');
+    kit.crateStack(13.2, -57.6, { w: 1.2, h: 1.2, d: 0.8, rotY: 0.2 });
+    kit.canister(10.0, -57.3);
+    kit.barrel(10.1, -60.2);
+    this._addPickup('l1-health-annex', 'health', 11.4, -58.4, { amount: 25 });
+    this._addPowerNode('l1-relay-b', 13.94, 1.4, -59, -Math.PI / 2, {
+      lights: [annexLight, vaultLight], doorIds: ['l1-vault'], halo: false,
+    });
+
+    // ── Records Vault (east of C1; x 2.3..8.3, z -12.45..-17.55) ─────────
+    // Door opens only when Relay A and Relay B are both live.
+    kit.floorSlab(6.0, 5.1, 5.3, -49, {});
+    kit.ceilingSlab(6.0, 5.1, 5.3, H, -49, { lamps: [{ x: 0, z: 0 }] });
+    kit.wallRun(6.0, H, 0.3, 5.3, H / 2, -46.45);          // north
+    kit.wallRun(6.0, H, 0.3, 5.3, H / 2, -51.55);          // south
+    kit.wallRun(0.3, H, 5.4, 8.15, H / 2, -49);          // east end
+    this._createDoor('l1-vault', 2.4, 2.5, 2.15, 1.25, -49, Math.PI / 2, m.metalDark, {
+      needPower: ['l1-relay-a', 'l1-relay-b'],
+    });
+    kit.sign(5.3, 2.3, -51.55 + 0.18, 's', 'LOG 07 — DR. MOKOENA', { sub: 'IT WAS NEVER MEANT TO WAKE', fg: '#ffd27f' });
+    kit.sign(5.3, 2.3, -46.45 - 0.17, 'n', 'FINAL ENTRY', { sub: 'IF YOU READ THIS, RUN', fg: '#ff8f7f' });
+    kit.serverRack(7.6, -47.4, 'w');
+    kit.serverRack(7.6, -50.6, 'w');
+    kit.wallScreen(7.93, 2.0, -49, 'w', { w: 2.2, h: 1.2 });
+    kit.cabinet(3.4, -50.9, 'n');
+    kit.shelfUnit(5.4, -50.9, 'n', { w: 1.4, h: 1.8 });
+    kit.crate(3.6, -47.2, { s: 0.7, rotY: 0.2 });
+    this._addPickup('l1-health-vault', 'health', 5.6, -48.6, { amount: 50 });
+    this._dustMotes(30, 5.3, -49, 2.4, 0.3, 2.6);
   }
 
   // ── Level 2 — The Hunt (damaged facility, amber palette) ────────────────
   //
   // Flow (player walks toward -z):
-  //   Staging (0..-8; security sidearm locker = the L2 gun pickup) → door
+  //   Staging (0..-8; pulse tool already equipped) → door
   //   'l2-entry' (shoot conduit) → corridor C1 with fan (-8..-18; a fallen
   //   scientist marks the breach's first victim) → Crew quarters (-18..-30;
   //   lockers/bunks = hiding cover, a security casualty by the scorch) →
@@ -1651,6 +2368,7 @@ export default class LevelManager {
   //   (-58..-64) → WIN. Stealth-first: tall props feed the occluder list.
   //
   _buildLevel2() {
+    this.archiveCircuit = new LabPower();
     const H = 3;
     const kit = this._kit;
     const m = this._mats;
@@ -1682,7 +2400,9 @@ export default class LevelManager {
     kit.wallRun(3.0, H, 0.3, -2.8, H / 2, -8.15);              // south (door gap)
     kit.wallRun(3.0, H, 0.3, 2.8, H / 2, -8.15);
     kit.doorway(2.6, 2.6, 0, 1.3, -8.15, 's');
-    this._createDoor('l2-entry', 2.6, 2.6, 0, 1.3, -8.15, 0, m.metalDark);
+    this._createDoor('l2-entry', 2.6, 2.6, 0, 1.3, -8.15, 0, m.metalDark, {
+      locked: true, lockedHint: 'PULSE THE BLUE RELAY TO OPEN',
+    });
     const l2Conduit = this._shootableTarget(0.55, 0.4, 1.7, 1.9, -7.96, 'conduit', 0);
     l2Conduit.userData.doorId = 'l2-entry';
     kit.sign(1.7, 2.35, -7.88, 's', 'DOOR OVERRIDE', { sub: 'PULSE BLUE RELAY', fg: '#8ce7eb', w: 1.5, h: 0.4 });
@@ -1696,14 +2416,8 @@ export default class LevelManager {
     kit.debrisPile(2.3, -1.9, { s: 0.9, seed: 31 });
     kit.fallenPanel(-2.2, 0.3, -6.2, { rx: 0.32, ry: 0.5 });
     kit.floorDecal(-1.0, -5.0, 'dashes', { size: 1.6 });
-    // Security weapons locker — the pulse sidearm pickup. Game.js gates
-    // firing on levels.weaponPickup until the player takes it (E prompt).
-    const locker = kit.weaponsLocker(-3.82, 1.35, -5.8, 'e');
-    this.weaponPickup = {
-      x: -3.4, z: -5.8, radius: 1.6,
-      mesh: locker.gun, light: locker.light, taken: false,
-    };
-    kit.sign(-3.98, 2.12, -5.8, 'e', 'SECURITY / SIDEARM LOCKER', { sub: 'SIGNED OUT UNDER LOCKDOWN ORDER 6-11', fg: '#8bebbd', w: 1.9, h: 0.45 });
+    kit.lockerBank(-3.82, -5.8, 'e', { count: 1 });
+    kit.sign(-3.98, 2.45, -5.8, 'e', 'ENGINEERING / STORAGE', { sub: 'PULSE TOOL READY — LMB / F TO FIRE', fg: '#8bebbd', w: 1.9, h: 0.45 });
     // Mission directive board on the staging-bay east wall, facing the spawn.
     this.goalBoard = kit.goalBoard(4.02, 1.85, -4.0, 'w', {
       head: 'SECTOR DIRECTIVE', tag: 'SECTOR B / LEVEL 02',
@@ -1814,7 +2528,9 @@ export default class LevelManager {
       ],
     });
     kit.wallRun(0.3, H, 12.3, -16.15, H / 2, -24.15);         // west outer
-    kit.wallRun(8.3, H, 0.3, -12.15, H / 2, -18.15);          // north
+    kit.wallRun(2.8, H, 0.3, -14.9, H / 2, -18.15);
+    kit.wallRun(2.8, H, 0.3, -9.4, H / 2, -18.15);
+    kit.doorway(2.4, 2.6, -12.15, 1.3, -18.15, 'n');
     kit.wallRun(8.3, H, 0.3, -12.15, H / 2, -30.15);          // south
     kit.sign(-15.9, 2.2, -24.0, 'e', 'MEDICAL BAY / TRIAGE', { sub: 'ISOLATION PROTOCOL IN EFFECT', fg: '#9feac0', w: 2.8, h: 0.6 });
     // Cots along the west wall; prep bench and storage on the far side.
@@ -1871,11 +2587,14 @@ export default class LevelManager {
     v3.userData.ventId = 'l2-vent-3';
     kit.sign(-1.92, 1.9, -36.6, 'e', 'PRESSURE / 02', { sub: 'PULSE AMBER VALVE', fg: '#ffd199', w: 1.3, h: 0.5 });
     kit.doorway(2.6, 2.6, 0, 1.3, -40.15, 's');
-    this._createDoor('l2-pressure', 2.6, 2.6, 0, 1.3, -40.15, 0, m.metalDark);
-    kit.sign(0, 2.45, -39.96, 's', 'PRESSURE INTERLOCK', { sub: 'ISOLATE BOTH AMBER VALVES TO RELEASE', fg: '#ffc179', w: 2.5, h: 0.55 });
+    this._createDoor('l2-pressure', 2.6, 2.6, 0, 1.3, -40.15, 0, m.metalDark, {
+      locked: true, lockedHint: 'PULSE BOTH AMBER VALVES TO OPEN',
+    });
+    kit.sign(0, 2.45, -39.96, 's', 'PRESSURE INTERLOCK', { sub: 'RESCUE SCIENTISTS + ISOLATE BOTH VALVES', fg: '#ffc179', w: 2.5, h: 0.55 });
     // Sparking conduit (falling sparks) + heat-haze zones (Kutloano's shader).
     this._createSteamVent('l2-sparks-1', 1.55, 1.9, -34.4, {
       color: 0xffcc66, rate: 0.25, rise: -0.5, lifeSpan: 0.5, count: 8, drift: 0.05, alpha: 0.8,
+      smoke: false,
     });
     this._hazeZone(2.8, 2.2, 2.4, 0.9, 1.1, -33.4);
     this._hazeZone(2.8, 2.2, 2.4, -0.9, 1.1, -36.4);
@@ -1931,6 +2650,7 @@ export default class LevelManager {
     this._scorchDecal(-4.0, 0, -49.0, 1.2);
     this._createSteamVent('l2-sparks-2', -4.9, 2.1, -44.0, {
       color: 0xffcc66, rate: 0.3, rise: -0.55, lifeSpan: 0.45, count: 8, drift: 0.05, alpha: 0.8,
+      smoke: false,
     });
     // Flicker bulb in the rack maze's far corner + hanging dust.
     this._flickerLight(-6.5, 2.55, -50.5, 0xffaa66, 0.8, 6);
@@ -1973,6 +2693,7 @@ export default class LevelManager {
     // The control desk that ran Sector B before the breach - now abandoned.
     kit.floorSlab(8.3, 10.3, 12.15, -45.15, { lines: [{ axis: 'z', len: 7, color: 'warn', at: -1.7 }] });
     kit.ceilingSlab(8.3, 10.3, 12.15, H, -45.15, {
+      circuit: this.archiveCircuit,
       lamps: [
         { x: -2.6, z: 3.0, light: true, intensity: 0.65 },
         { x: 2.6, z: -3.0, light: true, intensity: 0.65 },
@@ -1981,7 +2702,7 @@ export default class LevelManager {
     kit.wallRun(0.3, H, 10.3, 16.15, H / 2, -45.15);          // east outer
     kit.wallRun(8.3, H, 0.3, 12.15, H / 2, -40.15);           // north
     kit.wallRun(8.3, H, 0.3, 12.15, H / 2, -50.15);           // south
-    kit.sign(15.9, 2.2, -44.2, 'w', 'SHIFT OFFICE / CONTROL', { sub: 'LOG ARCHIVE', fg: '#cfe0ea', w: 2.6, h: 0.55 });
+    kit.sign(12.15, 2.3, -40.34, 'n', 'EXPERIMENT / LOG ARCHIVE', { sub: 'POWER RELAY + EVIDENCE TERMINAL', fg: '#cfe0ea', w: 3.0, h: 0.55 });
     kit.officeDesk(14.4, -42.4, 'w');
     kit.officeDesk(14.4, -45.0, 'w', { alt: true });
     kit.chair(13.4, -42.4, 'w');
@@ -1989,7 +2710,8 @@ export default class LevelManager {
     kit.lockerBank(12.0, -49.7, 'n', { count: 3, h: 2.05 });
     kit.cabinet(8.35, -49.5, 'e');
     kit.shelfUnit(11.2, -49.6, 'n', { w: 1.4, h: 1.9 });
-    kit.wallScreen(15.93, 2.05, -46.4, 'w', { w: 2.6, h: 1.4, alt: true });
+    kit.wallScreen(15.93, 2.05, -46.4, 'w', { w: 1.0, h: 1.2, alt: true, circuit: this.archiveCircuit });
+    kit.lamp(11.5, -46, { y: 2.7, color: 'amber', intensity: 0.5 });
     kit.noticeBoard(15.9, 1.7, -42.8, 'w', { seed: 64, w: 1.4, h: 0.9 });
     kit.gaugeCluster(15.96, 1.7, -47.8, 'w');
     kit.fuseBox(12.4, 1.8, -40.34, 'n');
@@ -2046,6 +2768,7 @@ export default class LevelManager {
     kit.sign(-5.2, 2.05, -24.03, 's', 'FIRST AID / COVER', { sub: 'GREEN CASE RESTORES 35 HEALTH', fg: '#9feac0', w: 1.9, h: 0.45 });
 
     // ── Fog ──────────────────────────────────────────────────────────────
+    this.expansion = new HuntExpansion(this);
     this.fogColor = 0x140a04;
     this.fogNear = 10;
     this.fogFar = 50;
@@ -2088,7 +2811,7 @@ export default class LevelManager {
     kit.wallRun(0.3, H, 10.3, -2.15, H / 2, -5.15);
     kit.wallRun(0.3, H, 10.3, 2.15, H / 2, -5.15);
     kit.doorway(4.0, 3.4, 0, 1.7, -10.15, 's');
-    kit.sign(0, 2.95, -9.96, 's', 'SURFACE SEAL / ENTITY LOCK', { sub: 'CHEST + SHOULDERS / PULSE CYAN NODES', fg: '#92e1e8', w: 3.6, h: 0.6 });
+    kit.sign(0, 2.95, -9.96, 's', 'EMERGENCY POWER / TWO GENERATORS', { sub: 'WEST PUMP GALLERY + EAST OBSERVATION', fg: '#92e1e8', w: 3.6, h: 0.6 });
     kit.sign(0, 3.0, -0.01, 'n', 'CONTAINMENT ARENA ▸', { sub: 'FAILSAFE ARMED', fg: '#ff8f7f' });
     kit.hangingPipe(-1.6, 3.4, -4.0, { tilt: 0.7 });
     kit.debrisPile(1.3, -7.5, { s: 0.8, seed: 41 });
@@ -2145,6 +2868,12 @@ export default class LevelManager {
     kit.fallenPanel(-3.0, 0.4, -17.0, { rx: 0.4, ry: -0.8 });
     kit.hangingPipe(1.8, 3.2, -30.0, { tilt: 0.75, len: 2.6 });
     kit.hangingPipe(-1.6, 3.4, -21.0, { tilt: -0.7 });
+    this._createSteamVent('l3-arena-smoke-north', -1.6, 1.8, -21.0, {
+      count: 20, rate: 0.16, lifeSpan: 3.0, rise: 0.35, drift: 0.3, alpha: 0.38, color: 0xa9b5c0,
+    });
+    this._createSteamVent('l3-arena-smoke-south', 1.8, 1.6, -30.0, {
+      count: 20, rate: 0.16, lifeSpan: 3.0, rise: 0.38, drift: 0.3, alpha: 0.38, color: 0xa9b5c0,
+    });
     // Red emergency guide lines + hazard floor marks.
     kit.floorLine(-12.6, -26, 28, { axis: 'z', color: 'emer' });
     kit.floorLine(12.6, -26, 28, { axis: 'z', color: 'emer' });
@@ -2249,78 +2978,13 @@ export default class LevelManager {
 
     // ── Sealed failsafe door 'l3-exit' (opened by Game.js on boss death) ──
     kit.doorway(4.0, 3.4, 0, 1.7, -42.15, 's');
-    this._exitDoor = this._createDoor('l3-exit', 4.0, 3.4, 0, 1.7, -42.15, 0, m.hazard);
+    this._exitDoor = this._createDoor('l3-exit', 4.0, 3.4, 0, 1.7, -42.15, 0, m.hazard, { locked: true, lockedHint: 'START BOTH GENERATORS, THEN DEFEAT THE ENTITY' });
     kit.sign(0, 3.5, -41.97, 's', 'SURFACE EXIT / BIOLOGICAL LOCK', { sub: 'NEUTRALIZE ENTITY TO RELEASE EVACUATION', fg: '#ffad87', w: 3.6, h: 0.6 });
 
     // ── Escape corridor (x -3..3, z -42..-52) — clear sprint lane ───────
-    kit.floorSlab(6.3, 10.0, 0, -47.15, { lines: [{ axis: 'z', len: 8, color: 'exit' }] });
-    kit.ceilingSlab(6.3, 10.0, 0, H, -47.15, { lamps: [{ x: 0, z: 0, color: 'red' }] });
-    kit.wallRun(0.3, H, 10.3, -3.15, H / 2, -47.15);
-    kit.wallRun(0.3, H, 10.3, 3.15, H / 2, -47.15);
-    kit.pipeRun('z', 9.5, -2.95, 2.6, -47.15, { count: 2, r: 0.06 });
-    kit.debrisPile(-2.4, -46.2, { s: 0.9, seed: 44 });
-    kit.debrisPile(2.4, -50.4, { s: 0.8, seed: 45 });
-    kit.fallenPanel(-2.2, 0.35, -48.5, { rx: 0.5, ry: -0.4 });
-    kit.hangingPipe(2.7, 3.3, -50.0, { tilt: 0.7 });
-    this._scorchDecal(0.5, 0, -44.0, 1.3);
-    kit.gaugeCluster(2.94, 1.7, -46.0, 'w');
-    kit.fuseBox(-2.94, 1.7, -48.0, 'e');
-
-    // ── Exit room (x -4..4, z -52..-58) — WIN ────────────────────────────
-    kit.floorSlab(8.6, 6.0, 0, -55.15, { lines: [{ axis: 'z', len: 5, color: 'exit' }] });
-    kit.ceilingSlab(8.6, 6.0, 0, H, -55.15, {
-      lamps: [{ x: 0, z: 0, color: 'red', light: true, intensity: 0.7 }],
-    });
-    kit.wallRun(2.3, H, 0.3, -3.15, H / 2, -52.15);
-    kit.wallRun(2.3, H, 0.3, 3.15, H / 2, -52.15);
-    kit.wallRun(8.6, H, 0.3, 0, H / 2, -58.15);               // south end
-    kit.wallRun(0.3, H, 6.3, -4.15, H / 2, -55.15);           // west
-    kit.wallRun(0.3, H, 6.3, 4.15, H / 2, -55.15);            // east
-    kit.doorway(4.0, 3.4, 0, 1.7, -52.15, 's');
-    this._exitBeacon(0, -57.0, { radius: 1.7 });
-    kit.sign(0, 3.2, -57.98, 's', 'EMERGENCY EXIT', { sub: 'SURFACE ACCESS', fg: '#5cff8a' });
-    kit.wallScreen(3.93, 2.2, -55.0, 'w', { w: 2.4, h: 1.2 });
-    kit.debrisPile(2.5, -56.5, { s: 1.1, seed: 46 });
-    kit.fallenPanel(-2.0, 0.4, -53.5, { rx: 0.5, ry: 0.6 });
-    kit.hangingPipe(-1.8, 3.3, -55.0, { tilt: 0.6 });
-    kit.extinguisher(-3.94, 1.2, -53.0);
-    kit.pipeManifold(-3.9, 1.9, -53.6, 'e', { len: 1.4, valves: 2 });
-    const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x8af0bd, toneMapped: false });
-    for (const [z, length] of [[-26, 30], [-49, 16]]) {
-      const guide = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.02, length), routeMaterial);
-      guide.position.set(0, 0.04, z);
-      guide.visible = false;
-      guide.userData.ownsGeometry = true;
-      guide.userData.ownsMaterial = this.escapeRoute.length === 0;
-      this.scene.add(guide);
-      this._track(guide);
-      this.escapeRoute.push(guide);
-    }
-    // Animated alert lines marking the evacuation lane — centre of the escape
-    // corridor and the exit room, marching toward the surface exit.
-    this._createAlertLine(0, -47, 10, { axis: 'z', color: 0x5cff8a, speed: 0.9, pulseRate: 2.2 });
-    this._createAlertLine(-2.6, -47, 10, { axis: 'z', speed: 0.6, opacity: 0.55 });
-    this._createAlertLine(2.6, -47, 10, { axis: 'z', speed: 0.6, opacity: 0.55 });
-    this._createAlertLine(0, -55, 5.5, { axis: 'z', color: 0x5cff8a, speed: 0.9, pulseRate: 2.2 });
-
-    // ── Dissolve targets (Kutloano's shader fades these during collapse) ──
     this._dissolveWalls = [];
-    const dissolveChunk = (w, h, d, x, y, z) => {
-      const c = kit.box(m.wallDark, w, h, d, x, y, z, { physics: false });
-      this._dissolveWalls.push(c);
-    };
-    // Sagging ceiling slabs along the escape corridor.
-    for (const dz of [-43.5, -45.5, -47.5, -49.5, -51.5]) {
-      dissolveChunk(6.0, 0.4, 1.8, 0, 3.8, dz);
-    }
-    // Bulging wall panels (flush with the walls).
-    for (const dz of [-44.5, -49.5]) {
-      dissolveChunk(0.35, 3.0, 3.0, -3.15, 1.7, dz);
-      dissolveChunk(0.35, 3.0, 3.0, 3.15, 1.7, dz);
-    }
-    // Exit-room ceiling about to come down.
-    dissolveChunk(4.0, 0.4, 2.4, 0, 3.8, -54.6);
-    dissolveChunk(4.0, 0.4, 2.4, 0, 3.8, -57.0);
+    buildEscapeRoute(this);
+    this.expansion = new CollapseExpansion(this);
 
     // ── Burning wreckage — the arena and its side rooms are on fire ──────
     this._createFire('l3-fire-arena', 0.5, 0.2, -26.0, { scale: 1.5, flames: 14, smoke: 24, intensity: 1.5, range: 14 });

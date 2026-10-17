@@ -129,10 +129,12 @@ export default class MonsterAI {
     this._modelScale = 1.28;
     this.model.scale.setScalar(this._modelScale);
     this._modelYOffset = 0.55 * (this._modelScale - 1);
-    const aura = new THREE.PointLight(0xff2a14, 7, 9, 1.8);
+    // Keep this light outside the hidden model. Adding it to the visible light
+    // inventory at the reveal would recompile every lit material mid-game.
+    const aura = new THREE.PointLight(0xff2a14, 0, 9, 1.8);
     this._aura = aura;
     aura.position.set(0, 1.7, 0.3);
-    this.model.add(aura);
+    scene.add(aura);
 
     this.model.visible = false;
     scene.add(this.model);
@@ -140,6 +142,12 @@ export default class MonsterAI {
       new THREE.MeshBasicMaterial({ color: 0xffcf71, transparent: true, opacity: 0.8, toneMapped: false }));
     this._chargeGuide.visible = false;
     scene.add(this._chargeGuide);
+    this._sweepGuide = new THREE.Mesh(new THREE.RingGeometry(4.35, 4.55, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffbd68, transparent: true, opacity: 0.8, side: THREE.DoubleSide, toneMapped: false }));
+    this._sweepGuide.rotation.x = -Math.PI / 2;
+    this._sweepGuide.visible = false;
+    this._lastSweep = -1;
+    scene.add(this._sweepGuide);
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -157,6 +165,8 @@ export default class MonsterAI {
   spawn(x, y, z) {
     this.body.position.set(x, y, z);
     this.body.velocity.setZero();
+    this.body.aabbNeedsUpdate = true;
+    this.physicsWorld.world.broadphase.dirty = true;
     this.state = State.PATROL;
     this._waypointIndex = 0;
     this._attackTimer = 0;
@@ -177,6 +187,8 @@ export default class MonsterAI {
     this._distToPlayer = Infinity;
     this.awareness?.reset();
     this.boss?.reset();
+    this._lastSweep = -1;
+    this._sweepGuide.visible = false;
     this._chargeGuide.visible = false;
     this._bodyMat.emissive.setHex(0x000000);
     // Reset weak points.
@@ -190,7 +202,17 @@ export default class MonsterAI {
   setActive(active) {
     this.isActive = active;
     this.model.visible = active;
-    if (!active) this._chargeGuide.visible = false;
+    if (active && this._aura.intensity === 0) this._aura.intensity = 7;
+    if (!active) this._aura.intensity = 0;
+    this.body.collisionFilterMask = active ? -1 : 0;
+    if (active) this.body.wakeUp();
+    else {
+      this.body.velocity.setZero();
+      this.body.sleep();
+    }
+    this.body.aabbNeedsUpdate = true;
+    this.physicsWorld.world.broadphase.dirty = true;
+    if (!active) { this._chargeGuide.visible = false; this._sweepGuide.visible = false; }
   }
 
   /** Set the patrol route (array of {x, y, z}). */
@@ -204,7 +226,7 @@ export default class MonsterAI {
    * @param {THREE.Mesh} wpMesh the weak point mesh that was hit
    */
   damageWeakPoint(wpMesh) {
-    if (wpMesh.userData.destroyed) return;
+    if (wpMesh.userData.destroyed || (this.boss && !this.boss.vulnerable)) return false;
     wpMesh.userData.destroyed = true;
     wpMesh.visible = false;
     this._health--;
@@ -214,6 +236,7 @@ export default class MonsterAI {
     this._phaseDamageBonus += this.boss ? 4 : 5;
     this._phaseAttackBonus += this.boss ? 0.15 : 0.3;
     this.boss?.stagger();
+    if (this.boss) this.boss.phase = 3 - this._health;
     this._chargeGuide.visible = false;
 
     // Hit flash — the body glows red for a moment so the hit reads clearly.
@@ -232,6 +255,7 @@ export default class MonsterAI {
       this._dying = true;
       this._deathTimer = this._deathDuration;
     }
+    return true;
   }
 
   /**
@@ -243,7 +267,7 @@ export default class MonsterAI {
    * @returns {THREE.Mesh|null} the node ruptured by this hit, if any
    */
   damageBody(amount = 1) {
-    if (this.state === State.DEAD || this._dying) return null;
+    if (this.state === State.DEAD || this._dying || (this.boss && !this.boss.vulnerable)) return null;
 
     // Shorter, dimmer flash than a node burst — a body hit still reads.
     this._hitFlashTimer = 0.18;
@@ -329,6 +353,7 @@ export default class MonsterAI {
     // this the monster just pops out of existence — reads as "nothing happened".
     if (this._dying) {
       this._chargeGuide.visible = false;
+      this._sweepGuide.visible = false;
       this._deathTimer -= dt;
       const t = 1 - Math.max(0, this._deathTimer) / this._deathDuration;
       this.model.rotation.x = t * Math.PI * 0.45; // topple backward
@@ -345,6 +370,7 @@ export default class MonsterAI {
       if (this._deathTimer <= 0) {
         this._dying = false;
         this.model.visible = false;
+        this._aura.intensity = 0;
         this.model.rotation.x = 0; // reset for the next spawn
         // Teleport the physics body out of play — otherwise an invisible
         // sphere blocks the player's path during the escape sequence.
@@ -498,6 +524,7 @@ export default class MonsterAI {
     // update the model's world matrices explicitly — otherwise the ray
     // tests against the monster's position from the PREVIOUS frame.
     this.model.updateMatrixWorld(true);
+    this._aura.position.set(0, 1.7, 0.3).applyMatrix4(this.model.matrixWorld);
   }
 
   // ── State behaviours ──────────────────────────────────────────────────────
@@ -550,6 +577,12 @@ export default class MonsterAI {
 
   _doBossMovement(dt, dx, dz, dist) {
     const boss = this.boss;
+    this._sweepGuide.visible = boss.stage === 'sweepWindup' || boss.stage === 'sweep';
+    this._sweepGuide.position.set(this.body.position.x, 0.065, this.body.position.z);
+    if (boss.stage === 'sweep' && this._lastSweep !== boss.attacks) {
+      this._lastSweep = boss.attacks;
+      if (dist < 4.5 && this._canSeePlayer) this._emit('attack', this.attackDamage + this._phaseDamageBonus);
+    }
     const warning = boss.stage === 'windup';
     this._chargeGuide.visible = warning;
     if (warning) {
@@ -559,9 +592,9 @@ export default class MonsterAI {
       this._chargeGuide.scale.z = Math.hypot(x, z);
       this._chargeGuide.rotation.y = Math.atan2(x, z);
     }
-    this._aura.color.setHex(warning ? 0xffb84f : boss.stage === 'recover' ? 0x71c9dc : 0xff2a14);
+    this._aura.color.setHex(warning ? 0xffb84f : boss.vulnerable ? 0x71c9dc : 0xff2a14);
     this._aura.intensity = warning ? 8 : boss.stage === 'recover' ? 3 : 5;
-    if (['waiting', 'windup', 'recover'].includes(boss.stage)) {
+    if (['waiting', 'windup', 'recover', 'sweepWindup', 'sweep'].includes(boss.stage)) {
       this.body.velocity.x = this.body.velocity.z = 0;
       return;
     }
@@ -660,7 +693,11 @@ export default class MonsterAI {
 
   /** Clean up GPU resources and physics body. */
   dispose() {
+    this.scene.remove(this._aura);
     this.scene.remove(this._chargeGuide);
+    this.scene.remove(this._sweepGuide);
+    this._sweepGuide.geometry.dispose();
+    this._sweepGuide.material.dispose();
     this._chargeGuide.geometry.dispose();
     this._chargeGuide.material.dispose();
     this.scene.remove(this.model);

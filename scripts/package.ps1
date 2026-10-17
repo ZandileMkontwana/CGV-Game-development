@@ -1,4 +1,12 @@
+param(
+    [string]$ArchiveName = 'CodeCrafters.zip'
+)
+
 $ErrorActionPreference = 'Stop'
+if ([System.IO.Path]::GetFileName($ArchiveName) -ne $ArchiveName -or
+    $ArchiveName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$') {
+    throw 'ArchiveName must be a ZIP filename without directories or spaces.'
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $projectRoot
 try {
@@ -10,7 +18,7 @@ try {
     }
     $outputDirectory = Join-Path $projectRoot 'submission'
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-    $archivePath = Join-Path $outputDirectory 'containment-breach.zip'
+    $archivePath = Join-Path $outputDirectory $ArchiveName
     # Store forward-slash entries so the package extracts correctly on Ubuntu.
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem

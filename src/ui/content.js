@@ -1,7 +1,7 @@
 export const LEVEL_BRIEFINGS = {
   1: { title: 'I — THE EXPERIMENT', objective: 'You are the engineer on shift. Restore auxiliary power in Lab A-2 using the amber relay.' },
-  2: { title: 'II — THE HUNT', objective: 'The Lab A-2 culture went wrong — something is loose in Sector B and the staff never made it out. Take the pulse sidearm from the staging-bay security locker, pulse the blue door relay, and follow the evacuation route to core access.' },
-  3: { title: 'III — THE COLLAPSE', objective: 'The entity locks the surface seal. Destroy its cyan chest and shoulder nodes. Sidestep the amber charge warning, then follow the green escape route.' },
+  2: { title: 'II — THE HUNT', objective: 'Two scientists are trapped in medical, west of crew quarters. Pulse their rescue relay and escort them north to the green refuge. Isolate both pressure valves, restore power to the east archive, and pulse its evidence terminal. Stay inside the glowing archive floor outline until the download reaches 100%, then escape to core access. Left click or F fires your pulse tool.' },
+  3: { title: 'III — THE COLLAPSE', objective: 'The entity is already hunting. Start both emergency generators in the west pump gallery and east observation booth to disable its node shields. Avoid the moving pump arm and live electrical floor. Dodge its amber charge line and sweep ring; cyan nodes open during recovery once power is restored. Defeat it, then follow green lights through the maintenance bypass to the surface within 90 seconds.' },
 };
 
 // Facility P.A. captions. There is NO spoken dialogue in the game — AudioManager
