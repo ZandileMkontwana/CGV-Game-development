@@ -127,7 +127,7 @@ export default class Game {
     this.input = new InputManager(this.renderer.domElement);
     this.physics = new PhysicsWorld();
     this.camera = new CameraController(this.scene, this.input);
-    this.player = new PlayerController(this.scene, this.physics, this.input, this.loadingManager);
+    this.player = new PlayerController(this.scene, this.physics, this.input, this.loadingManager, this.audio);
     this.gameState = new GameState();
     this.levels = new LevelManager(this.scene, this.physics);
     this.shaders = new ShaderManager(this.scene);

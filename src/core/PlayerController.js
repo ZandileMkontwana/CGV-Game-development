@@ -25,9 +25,11 @@ export default class PlayerController {
    * @param {THREE.Scene} scene
    * @param {import('./PhysicsWorld.js').default} physicsWorld
    * @param {InputManager} input
+   * @param {import('../audio/AudioManager.js').default|null} [audio]
    */
-  constructor(scene, physicsWorld, input, loadingManager) {
+  constructor(scene, physicsWorld, input, loadingManager, audio = null) {
     this.input = input;
+    this.audio = audio;
     this.physicsWorld = physicsWorld;
 
     // --- Configuration ------------------------------------------------------
@@ -197,6 +199,7 @@ export default class PlayerController {
     if (keys['Space'] && this.grounded) {
       this.body.velocity.y = this.jumpImpulse;
       this._groundTime = -10; // consume the coyote window — no double jumps
+      if (this.audio) this.audio.play('jump');
     }
 
     // --- Animation state for the character model ---------------------------

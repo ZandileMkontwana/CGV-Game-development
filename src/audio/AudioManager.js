@@ -66,6 +66,7 @@ export default class AudioManager {
     this._footstep = null;  // { buffer, segments[] } recorded step sample
     this._doorSample = null; // { buffer, range } recorded door-open sample
     this._pulseShotSample = null; // { buffer, range } recorded pulse-shot sample
+    this._jumpSample = null; // { buffer, range } recorded jump sample
     this._suspense = null;   // { buffer } level-start / menu suspense track
     this._suspenseSrc = null;
     this._suspenseWanted = false; // requested before the sample finished decoding
@@ -153,6 +154,7 @@ export default class AudioManager {
     this._loadFootstepSample();
     this._loadDoorSample();
     this._loadPulseShotSample();
+    this._loadJumpSample();
     this._loadSuspenseSample();
     this._loadLevel1Ambience();
     this._loadAnnouncementClips();
@@ -301,6 +303,7 @@ export default class AudioManager {
     if (!this._unlocked || this.muted) return;
     switch (name) {
       case 'pulseShot': this._pulseShot(); break;
+      case 'jump': this._jump(); break;
       case 'pulseHit': this._spark(); this._chirp(2400, 1700, 0.07, 0.14); break;
       case 'pulseMiss': this._whoosh(); break;
       case 'spark': this._spark(); break;
@@ -1028,6 +1031,31 @@ export default class AudioManager {
     this._burst({ dur: 0.09, vol: 0.18, type: 'highpass', freq: 1400 });
   }
 
+  _jump() {
+    const js = this._jumpSample;
+    if (js) {
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = js.buffer;
+      src.playbackRate.value = 0.96 + Math.random() * 0.08;
+      const g = this._gain(MIN_GAIN);
+      const t = ctx.currentTime;
+      const playDur = Math.min(js.range.duration, 0.45);
+      const dur = playDur / src.playbackRate.value;
+      g.gain.setValueAtTime(MIN_GAIN, t);
+      g.gain.exponentialRampToValueAtTime(0.85, t + 0.01);
+      g.gain.setValueAtTime(0.85, t + Math.max(0.03, dur - 0.04));
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+      src.connect(g).connect(this.master);
+      src.start(t, js.range.offset, playDur);
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      return;
+    }
+    // Synthesized fallback: a soft thump + low chirp.
+    this._chirp(180, 90, 0.06, 0.22, 'sine');
+    this._burst({ dur: 0.12, vol: 0.15, type: 'lowpass', freq: 250 });
+  }
+
   _spark() {
     this._burst({ dur: 0.09, vol: 0.4, type: 'bandpass', freq: 3200 + Math.random() * 900, q: 6 });
   }
@@ -1432,6 +1460,17 @@ export default class AudioManager {
       const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
       this._pulseShotSample = { buffer: audio, range: this._trimRange(audio) };
     } catch (e) { /* keep the synthesized pulse shot */ }
+  }
+
+  /** Fetch + decode the jump sample, trimming silence from both ends. */
+  async _loadJumpSample() {
+    if (!this.ctx || this._jumpSample) return;
+    try {
+      const res = await fetch('/assets/audio/player/jump.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._jumpSample = { buffer: audio, range: this._trimRange(audio) };
+    } catch (e) { /* keep the synthesized jump */ }
   }
 
   /** Play the recorded door-open take, loud and pitch-jittered slightly. */
