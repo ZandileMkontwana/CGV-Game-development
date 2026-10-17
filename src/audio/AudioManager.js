@@ -65,6 +65,7 @@ export default class AudioManager {
     this._dist = null;      // cached waveshaper curve
     this._footstep = null;  // { buffer, segments[] } recorded step sample
     this._doorSample = null; // { buffer, range } recorded door-open sample
+    this._pulseShotSample = null; // { buffer, range } recorded pulse-shot sample
     this._suspense = null;   // { buffer } level-start / menu suspense track
     this._suspenseSrc = null;
     this._suspenseWanted = false; // requested before the sample finished decoding
@@ -151,6 +152,7 @@ export default class AudioManager {
     this._unlocked = true;
     this._loadFootstepSample();
     this._loadDoorSample();
+    this._loadPulseShotSample();
     this._loadSuspenseSample();
     this._loadLevel1Ambience();
     this._loadAnnouncementClips();
@@ -1002,6 +1004,26 @@ export default class AudioManager {
   // ── Voices ───────────────────────────────────────────────────────────────
 
   _pulseShot() {
+    const ps = this._pulseShotSample;
+    if (ps) {
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = ps.buffer;
+      src.playbackRate.value = 0.97 + Math.random() * 0.06;
+      const g = this._gain(MIN_GAIN);
+      const t = ctx.currentTime;
+      const playDur = Math.min(ps.range.duration, 0.5);
+      const dur = playDur / src.playbackRate.value;
+      g.gain.setValueAtTime(MIN_GAIN, t);
+      g.gain.exponentialRampToValueAtTime(0.65, t + 0.01);
+      g.gain.setValueAtTime(0.65, t + Math.max(0.03, dur - 0.05));
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+      src.connect(g).connect(this.master);
+      src.start(t, ps.range.offset, playDur);
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      return;
+    }
+    // Synthesized fallback if the recorded sample is unavailable.
     this._chirp(1500, 320, 0.16, 0.45, 'sine');
     this._burst({ dur: 0.09, vol: 0.18, type: 'highpass', freq: 1400 });
   }
@@ -1399,6 +1421,17 @@ export default class AudioManager {
       const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
       this._doorSample = { buffer: audio, range: this._trimRange(audio) };
     } catch (e) { /* keep the synthesized door */ }
+  }
+
+  /** Fetch + decode the pulse-shot sample, trimming silence from both ends. */
+  async _loadPulseShotSample() {
+    if (!this.ctx || this._pulseShotSample) return;
+    try {
+      const res = await fetch('/assets/audio/player/pulse_shot.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._pulseShotSample = { buffer: audio, range: this._trimRange(audio) };
+    } catch (e) { /* keep the synthesized pulse shot */ }
   }
 
   /** Play the recorded door-open take, loud and pitch-jittered slightly. */
