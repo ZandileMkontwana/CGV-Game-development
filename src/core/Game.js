@@ -555,11 +555,13 @@ export default class Game {
         // restart); entering from a menu always starts the campaign at 1.
         // Fresh gameplay entry also silences any lingering escape alarm.
         this.audio.stopEasAlarm();
+        this.audio.stopL1Alarm();
         this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
+        this.audio.stopL1Alarm();
         this._loadLevel(this.gameState.currentLevel);
         this._transitionNeedsRender = true;
       }
@@ -584,14 +586,16 @@ export default class Game {
         this.audio.stopRumble();
         this.audio.stopChaos();
         this.audio.stopEasAlarm();
+        this.audio.stopL1Alarm();
         this.audio.stopFireEmitters();
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
         this.audio.stopAmbient();
         this.audio.stopRumble();
-        // The run is over — silence the escape alarm.
+        // The run is over — silence the escape alarm and any Level-1 red alert.
         this.audio.stopEasAlarm();
+        this.audio.stopL1Alarm();
         // Victory keeps the collapse chaos running under the ending; only
         // returning to the menu finally silences it.
         if (newState === 'menu') {
@@ -1266,7 +1270,7 @@ export default class Game {
       this._mutateLight.position.set(reveal.spawn.x, 1.3, reveal.spawn.z);
       this._mutateLight.intensity = 2;
       this.camera.shake(0.25);
-      this.audio.play('alarm');
+      this.audio.playL1Alarm();
       this.levels.alertWalkers();
       this._announce('breach');
       this._setObjective('CONTAINMENT FAILURE / STAY CLEAR OF THE CHAMBER');

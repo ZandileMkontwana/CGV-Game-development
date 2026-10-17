@@ -19,6 +19,8 @@
  *                          Level-3 reactor failure
  *   playEasAlarm()         looping recorded EAS alarm from the collapse
  *                          countdown until the game ends (stopEasAlarm() to fade)
+ *   playL1Alarm()          looping recorded red-alert buzzer from the Level-1
+ *                          containment breach until the level ends (stopL1Alarm)
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
  *   setGameState(state)    'menu' plays the thriller title theme; the
@@ -83,6 +85,12 @@ export default class AudioManager {
     this._easAlarmSrc = null;    // currently looping alarm source
     this._easAlarmGain = null;   // its gain node (for the fade-out)
     this._easAlarmOn = false;
+    this._l1Alarm = null;        // { buffer } recorded L1 red-alert buzzer loop
+    this._l1AlarmFailed = false;
+    this._l1AlarmWanted = false; // loop requested before the sample decoded
+    this._l1AlarmSrc = null;     // currently looping alarm source
+    this._l1AlarmGain = null;    // its gain node (for the fade-out)
+    this._l1AlarmOn = false;
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
@@ -160,6 +168,7 @@ export default class AudioManager {
     this._loadAnnouncementClips();
     this._loadExplosionSample();
     this._loadEasAlarmSample();
+    this._loadL1AlarmSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -1656,6 +1665,70 @@ export default class AudioManager {
         this.playEasAlarm();
       }
     } catch (e) { this._easAlarmFailed = true; }
+  }
+
+  /**
+   * Loop the recorded red-alert buzzer from the Level-1 containment breach
+   * until the player wins, dies, or leaves the level.
+   */
+  playL1Alarm(vol = 0.5) {
+    if (!this._unlocked || this.muted || this._l1AlarmOn) return;
+    if (!this._l1Alarm) {
+      if (!this._l1AlarmFailed) this._l1AlarmWanted = true;
+      return;
+    }
+    this._l1AlarmWanted = false;
+    this._l1AlarmOn = true;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this._l1Alarm.buffer;
+    src.loop = true;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.6);   // fade in
+    src.connect(g).connect(this.master);
+    src.start(t);
+    this._l1AlarmSrc = src;
+    this._l1AlarmGain = g;
+  }
+
+  /** Fade out and stop the looping Level-1 red-alert buzzer. */
+  stopL1Alarm(fade = 1.2) {
+    const src = this._l1AlarmSrc;
+    const g = this._l1AlarmGain;
+    this._l1AlarmOn = false;
+    this._l1AlarmWanted = false;
+    this._l1AlarmSrc = null;
+    this._l1AlarmGain = null;
+    if (!src) return;
+    const t = this.ctx.currentTime;
+    try {
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(g.gain.value, MIN_GAIN), t);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + Math.max(0, fade));
+      src.stop(t + Math.max(0, fade) + 0.05);
+    } catch (e) { /* already stopped */ }
+    setTimeout(() => {
+      try { src.disconnect(); } catch (e) { /* noop */ }
+      try { g.disconnect(); } catch (e) { /* noop */ }
+    }, (Math.max(0, fade) + 0.1) * 1000);
+  }
+
+  /** Fetch + decode the recorded Level-1 red-alert buzzer loop. */
+  async _loadL1AlarmSample() {
+    if (!this.ctx || this._l1Alarm || this._l1AlarmFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/l1_red_alert.mp3');
+      if (!res.ok) { this._l1AlarmFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._l1Alarm = { buffer: audio };
+      // A loop requested while the sample was still decoding starts now.
+      if (this._l1AlarmWanted && this._playing) {
+        this._l1AlarmWanted = false;
+        this.playL1Alarm();
+      }
+    } catch (e) { this._l1AlarmFailed = true; }
   }
 
   /**
