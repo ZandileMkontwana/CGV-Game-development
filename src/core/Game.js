@@ -561,14 +561,12 @@ export default class Game {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
         this._loadLevel(this.gameState.currentLevel);
-        // The suspense cue covers only the stage-switch overlay.
-        this.audio.playSuspense();
         this._transitionNeedsRender = true;
       }
-      // The suspense cue is a menu / stage-switch sting only — it must never
-      // bleed into actual gameplay, so cut it the moment play resumes.
+      // The suspense cue plays on the home screen and during the pre-level
+      // briefing overlay; it must never bleed into actual gameplay, so it is
+      // stopped when the briefing is dismissed.
       if (newState === 'playing') {
-        this.audio.stopSuspense(0.4);
         // The recorded emergency-intercom broadcast opens Level 3 the instant
         // gameplay begins (not during the transition). Skipped on pause-resume.
         if (this.gameState.currentLevel === 3 && oldState !== 'paused') {
@@ -1490,6 +1488,7 @@ export default class Game {
     const data = this._briefings[levelNum];
     if (!data || !this._briefingOverlay) return;
     this._briefingActive = true;
+    this.audio.playSuspense();
     if (this._briefingLevel) this._briefingLevel.textContent = `LEVEL ${levelNum}`;
     if (this._briefingTitle) this._briefingTitle.textContent = data.title;
     if (this._briefingNarrative) {
@@ -1519,6 +1518,7 @@ export default class Game {
     if (!this._briefingActive) return;
     this._briefingActive = false;
     if (this._briefingOverlay) this._briefingOverlay.style.display = 'none';
+    this.audio.stopSuspense(0.4);
     this.renderer.domElement.requestPointerLock?.();
   }
 
