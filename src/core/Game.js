@@ -569,8 +569,8 @@ export default class Game {
         this._transitionNeedsRender = true;
       }
       // The suspense cue plays on the home screen, during level transitions,
-      // and during the pre-level briefing overlay; it must never bleed into
-      // actual gameplay, so it is stopped when the briefing is dismissed.
+      // during the pre-level briefing overlay, and as the background track for
+      // Level 1 gameplay; it is stopped when leaving Level 1 or on game over.
       if (newState === 'playing') {
         // The recorded emergency-intercom broadcast opens Level 3 the instant
         // gameplay begins (not during the transition). Skipped on pause-resume.
@@ -591,11 +591,13 @@ export default class Game {
         this.audio.stopEasAlarm();
         this.audio.stopL1Alarm();
         this.audio.stopFireBed();
+        this.audio.stopSuspense(0.6);
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
         this.audio.stopAmbient();
         this.audio.stopRumble();
+        this.audio.stopSuspense(0.6);
         // The run is over — silence the escape alarm and any Level-1 red alert.
         this.audio.stopEasAlarm();
         this.audio.stopL1Alarm();
@@ -1524,7 +1526,9 @@ export default class Game {
     if (!this._briefingActive) return;
     this._briefingActive = false;
     if (this._briefingOverlay) this._briefingOverlay.style.display = 'none';
-    this.audio.stopSuspense(0.4);
+    // The home/theme cue also runs as Level-1 gameplay background; stop it
+    // for every other level once the briefing closes.
+    if (this.gameState.currentLevel !== 1) this.audio.stopSuspense(0.4);
     this.renderer.domElement.requestPointerLock?.();
   }
 
