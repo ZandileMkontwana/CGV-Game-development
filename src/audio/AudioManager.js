@@ -9,7 +9,7 @@
  * Event interface (called from Game.js — keep names stable):
  *   play('pulseShot' | 'pulseHit' | 'pulseMiss' | 'doorOpen' | 'ventHiss' |
  *        'spark' | 'growl' | 'roar' | 'spotted' | 'attack' | 'transform' |
- *        'death' | 'alarm' | 'beep' | 'creak' | 'clang' | 'collapse' |
+ *        'death' | 'beep' | 'creak' | 'clang' | 'collapse' |
  *        'win' | 'gameover', opt?)
  *   playAlert(name)        synthesized P.A. cue (dispatch | power | bypass |
  *                          breach | failsafe | demolition): calm chimes for
@@ -343,7 +343,6 @@ export default class AudioManager {
       case 'attack': this._impact(); break;
       case 'transform': this._transform(); break;
       case 'death': this._death(); break;
-      case 'alarm': this._alarm(); break;
       case 'beep': this._beep(opt === true); break;
       case 'creak': this._creak(); break;
       case 'clang': this._clang(); break;
@@ -1247,16 +1246,6 @@ export default class AudioManager {
     o.connect(f).connect(g).connect(this.master);
     o.start(t);
     o.stop(t + dur + 0.05);
-  }
-
-  /** Two-tone klaxon, four cycles. */
-  _alarm() {
-    const t = this.ctx.currentTime;
-    for (let i = 0; i < 4; i++) {
-      const w = t + i * 0.42;
-      this._chirp(690, 690, 0.3, 0.16, 'square', w);
-      this._chirp(520, 520, 0.18, 0.13, 'square', w + 0.21);
-    }
   }
 
   _beep(urgent, when) {
