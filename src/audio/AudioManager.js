@@ -9,12 +9,18 @@
  * Event interface (called from Game.js — keep names stable):
  *   play('pulseShot' | 'pulseHit' | 'pulseMiss' | 'doorOpen' | 'ventHiss' |
  *        'spark' | 'growl' | 'roar' | 'spotted' | 'attack' | 'transform' |
- *        'death' | 'alarm' | 'beep' | 'creak' | 'clang' | 'collapse' |
+ *        'death' | 'beep' | 'creak' | 'clang' | 'collapse' |
  *        'win' | 'gameover', opt?)
  *   playAlert(name)        synthesized P.A. cue (dispatch | power | bypass |
  *                          breach | failsafe | demolition): calm chimes for
  *                          routine calls, klaxon sirens + reactor power-down
  *                          for a lockdown.
+ *   playExplosion()        one-shot recorded nuclear-detonation cue for the
+ *                          Level-3 reactor failure
+ *   playEasAlarm()         looping recorded EAS alarm from the collapse
+ *                          countdown until the game ends (stopEasAlarm() to fade)
+ *   playL1Alarm()          looping recorded red-alert buzzer from the Level-1
+ *                          containment breach until the level ends (stopL1Alarm)
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
  *   setGameState(state)    'menu' plays the thriller title theme; the
@@ -30,6 +36,9 @@
  */
 
 const MIN_GAIN = 0.0001;
+// Seconds skipped past the home/menu theme's intro (plus the silence-trimmed
+// lead-in) so it starts the instant the app is first interacted with.
+const SUSPENSE_HEAD_TRIM = 2.5;
 const CALM_NOTES = [329.63, 392, 493.88, 440, 392, 329.63, 293.66, 392];
 const HUNT_NOTES = [220, 233.08, 220, 207.65];
 const BOSS_NOTES = [130.81, 155.56, 146.83, 110];
@@ -56,9 +65,38 @@ export default class AudioManager {
     this._mode = 'menu';    // currently built bed: 'menu' | 1 | 2 | 3 | null
     this._noise = null;
     this._dist = null;      // cached waveshaper curve
+    this._footstep = null;  // { buffer, segments[] } recorded step sample
+    this._doorSample = null; // { buffer, range } recorded door-open sample
+    this._pulseShotSample = null; // { buffer, range } recorded pulse-shot sample
+    this._jumpSample = null; // { buffer, range } recorded jump sample
+    this._suspense = null;   // { buffer } level-start / menu suspense track
+    this._suspenseSrc = null;
+    this._suspenseWanted = false; // requested before the sample finished decoding
+    this._suspenseFailed = false; // sample unavailable → use the synth fallback
+    this._l1Ambience = null; // { buffer } recorded Level-1 machinery ambience loop
+    this._paClips = {};      // name → { buffer } recorded P.A. announcement clips
+    this._paWanted = null;   // requested clip sequence, replayed once decoded
+    this._explosion = null;      // { buffer } recorded Level-3 nuclear-detonation cue
+    this._explosionFailed = false;
+    this._explosionWanted = false; // requested before the sample finished decoding
+    this._easAlarm = null;       // { buffer } recorded EAS alarm for the escape
+    this._easAlarmFailed = false;
+    this._easAlarmWanted = false; // loop requested before the sample decoded
+    this._easAlarmSrc = null;    // currently looping alarm source
+    this._easAlarmGain = null;   // its gain node (for the fade-out)
+    this._easAlarmOn = false;
+    this._l1Alarm = null;        // { buffer } recorded L1 red-alert buzzer loop
+    this._l1AlarmFailed = false;
+    this._l1AlarmWanted = false; // loop requested before the sample decoded
+    this._l1AlarmSrc = null;     // currently looping alarm source
+    this._l1AlarmGain = null;    // its gain node (for the fade-out)
+    this._l1AlarmOn = false;
 
     this._bed = null;       // { gain, filter, nodes[], base }
     this._rumble = null;    // { src, lfo, g } collapse loop
+    this._chaosBed = null;  // { gain, nodes[] } Level-3 collapse chaos bed
+    this._chaosOn = false;  // is the chaos layer running?
+    this._chaosT = { boom: 3, machine: 2, scream: 5, rumble: 4 };
     this._duckTO = 0;
 
     // Per-frame schedulers (seconds until next event).
@@ -119,9 +157,19 @@ export default class AudioManager {
     this._noise = buf;
 
     this._unlocked = true;
+    this._loadFootstepSample();
+    this._loadDoorSample();
+    this._loadPulseShotSample();
+    this._loadJumpSample();
+    this._loadSuspenseSample();
+    this._loadLevel1Ambience();
+    this._loadAnnouncementClips();
+    this._loadExplosionSample();
+    this._loadEasAlarmSample();
+    this._loadL1AlarmSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
-    else if (this._menuActive) this._startMenuBed();
+    else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
   }
 
   setVolume(value) {
@@ -169,8 +217,12 @@ export default class AudioManager {
     this._syncContextState();
     // Swap the title theme in for the menu and the level score for gameplay.
     if (this._unlocked) {
-      if (this._menuActive) this._startMenuBed();
-      else if (this._playing && this._mode !== this._level) this._startBed(this._level);
+      if (this._menuActive) {
+        this._startMenuBed();
+        this.playSuspense();      // the home screen shares the same cue
+      } else if (this._playing && this._mode !== this._level) {
+        this._startBed(this._level);
+      }
     }
   }
 
@@ -205,11 +257,9 @@ export default class AudioManager {
     const now = this.ctx.currentTime;
     if (now >= this._scoreTime) {
       if (this._level === 1) {
-        // Calm lab: a slow, consonant major-ish motif — nothing threatening.
-        const note = CALM_NOTES[this._scoreStep % CALM_NOTES.length];
-        this._scoreNote(note, 2.8, 0.18);
-        this._scoreNote(note * 1.5, 2.6, 0.055);
-        this._scoreTime = now + 2.4;
+        // Level 1 carries only the recorded machinery ambience — no score
+        // motif layered over it.
+        this._scoreTime = now + 3;
       } else if (this._level === 2) {
         // Suspense: a minor-second cluster with an icy high shimmer.
         const note = HUNT_NOTES[this._scoreStep % HUNT_NOTES.length];
@@ -260,6 +310,7 @@ export default class AudioManager {
     if (!this._unlocked || this.muted) return;
     switch (name) {
       case 'pulseShot': this._pulseShot(); break;
+      case 'jump': this._jump(); break;
       case 'pulseHit': this._spark(); this._chirp(2400, 1700, 0.07, 0.14); break;
       case 'pulseMiss': this._whoosh(); break;
       case 'spark': this._spark(); break;
@@ -283,7 +334,6 @@ export default class AudioManager {
       case 'attack': this._impact(); break;
       case 'transform': this._transform(); break;
       case 'death': this._death(); break;
-      case 'alarm': this._alarm(); break;
       case 'beep': this._beep(opt === true); break;
       case 'creak': this._creak(); break;
       case 'clang': this._clang(); break;
@@ -322,6 +372,7 @@ export default class AudioManager {
          monsterDist, hiding, monsterMoving = chasing) {
     if (!this._unlocked || this.muted) return;
     this._updateScore();
+    this._updateChaos(dt);
 
     // Footsteps — cadence from walk/sprint, only while grounded.
     if (moving && grounded) {
@@ -446,6 +497,9 @@ export default class AudioManager {
 
   stopAmbient() {
     this._stopBed(1.2);
+    this.stopSuspense(1.2);
+    // NOTE: the chaos layer is intentionally NOT stopped here — it carries
+    // through the ending. It is stopped explicitly on gameover / menu.
     this.setBreathing(false, 0);
     this.setRecharge(false);
   }
@@ -471,6 +525,24 @@ export default class AudioManager {
     const t = ctx.currentTime;
     const isMenu = mode === 'menu';
     const level = isMenu ? 0 : mode;
+
+    // Level 1 uses the recorded industrial-machinery ambience when available —
+    // a looping bed that replaces the synthesized lab hum for that level.
+    if (level === 1 && this._l1Ambience) {
+      const src = ctx.createBufferSource();
+      src.buffer = this._l1Ambience.buffer;
+      src.loop = true;
+      const gain = this._gain(MIN_GAIN);
+      src.connect(gain).connect(this.music || this.master);
+      src.start(t);
+      const bed = { gain, filter: null, nodes: [src], base: 0.5 };
+      gain.gain.setValueAtTime(MIN_GAIN, t);
+      gain.gain.exponentialRampToValueAtTime(bed.base, t + 2.0);
+      this._mode = mode;
+      this._bed = bed;
+      return;
+    }
+
     const filter = this._filter('lowpass',
       isMenu ? 560 : level === 2 ? 720 : level === 3 ? 900 : 650, 0.6);
     const gain = this._gain(MIN_GAIN);
@@ -628,6 +700,163 @@ export default class AudioManager {
     try { r.lfo.stop(t + 1.5); } catch (e) { /* already stopped */ }
   }
 
+  // ── Level-3 collapse chaos ───────────────────────────────────────────────
+
+  /** Start the collapse chaos: a rumble bed plus randomized events. */
+  startChaos() {
+    if (!this._unlocked || this._chaosOn) return;
+    this._chaosOn = true;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+
+    const bedGain = this._gain(MIN_GAIN);
+    bedGain.connect(this.master);
+
+    // Deep structural rumble under everything.
+    const rumbleSrc = this._noiseSource(true);
+    const rumbleF = this._filter('lowpass', 80, 0.9);
+    const rumbleG = this._gain(0.5);
+    rumbleSrc.connect(rumbleF).connect(rumbleG).connect(bedGain);
+
+    rumbleSrc.start(t);
+    bedGain.gain.setValueAtTime(MIN_GAIN, t);
+    bedGain.gain.exponentialRampToValueAtTime(0.9, t + 2.5);
+
+    this._chaosBed = { gain: bedGain, nodes: [rumbleSrc, rumbleG] };
+    this._chaosT = { boom: 2.5, machine: 2, scream: 5, rumble: 4 };
+  }
+
+  /** Fade out and tear down the chaos bed. */
+  stopChaos() {
+    this._chaosOn = false;
+    const bed = this._chaosBed;
+    if (!bed) return;
+    this._chaosBed = null;
+    const t = this.ctx.currentTime;
+    const g = bed.gain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(Math.max(g.value, MIN_GAIN), t);
+    g.exponentialRampToValueAtTime(MIN_GAIN, t + 1.5);
+    setTimeout(() => {
+      for (const n of bed.nodes) {
+        try { if (n.stop) n.stop(); } catch (e) { /* already stopped */ }
+        try { n.disconnect(); } catch (e) { /* noop */ }
+      }
+      try { bed.gain.disconnect(); } catch (e) { /* noop */ }
+    }, 1700);
+  }
+
+  /** Per-frame random chaos events while the collapse rages. */
+  _updateChaos(dt) {
+    if (!this._chaosOn) return;
+    const T = this._chaosT;
+    T.boom -= dt;
+    if (T.boom <= 0) { this._boom(); T.boom = 4 + Math.random() * 7; }
+    T.machine -= dt;
+    if (T.machine <= 0) { this._machineFail(); T.machine = 3 + Math.random() * 6; }
+    T.scream -= dt;
+    if (T.scream <= 0) { this._scream(); T.scream = 6 + Math.random() * 9; }
+    T.rumble -= dt;
+    if (T.rumble <= 0) { this._distantRumble(); T.rumble = 6 + Math.random() * 10; }
+  }
+
+  /**
+   * Keep the collapse chaos alive through the ending. The victory screen and
+   * credits are DOM overlays and the main loop stops advancing gameplay, so
+   * this is called directly from Game's frame loop to keep the random events
+   * (explosions, machinery failures, screams) firing underneath them.
+   */
+  updateEnding(dt) {
+    if (!this._chaosOn) return;
+    this._updateChaos(dt);
+  }
+
+  /** Park the Web Audio listener on the camera so panned sounds read correctly. */
+  updateListener(pos, fwd) {
+    const L = this.ctx && this.ctx.listener;
+    if (!L) return;
+    const t = this.ctx.currentTime;
+    if (L.positionX) {
+      L.positionX.setTargetAtTime(pos.x, t, 0.03);
+      L.positionY.setTargetAtTime(pos.y, t, 0.03);
+      L.positionZ.setTargetAtTime(pos.z, t, 0.03);
+      L.forwardX.setTargetAtTime(fwd.x, t, 0.03);
+      L.forwardY.setTargetAtTime(fwd.y, t, 0.03);
+      L.forwardZ.setTargetAtTime(fwd.z, t, 0.03);
+      L.upX.setValueAtTime(0, t);
+      L.upY.setValueAtTime(1, t);
+      L.upZ.setValueAtTime(0, t);
+    } else {
+      L.setPosition(pos.x, pos.y, pos.z);
+      L.setOrientation(fwd.x, fwd.y, fwd.z, 0, 1, 0);
+    }
+  }
+
+  /** Distant explosion: sub-bass boom, pressure crackle, debris tail. */
+  _boom() {
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(120, t);
+    o.frequency.exponentialRampToValueAtTime(28, t + 0.7);
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.7, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 1.2);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + 1.25);
+    this._burst({ dur: 0.5, vol: 0.22, type: 'lowpass', freq: 900, f1: 200, attack: 0.01 });
+    this._burst({ dur: 1.1, vol: 0.1, type: 'bandpass', freq: 2600, q: 1.2, attack: 0.05 });
+    this.duck(0.35, 700);
+  }
+
+  /** Machinery tearing apart: metal shriek, sparks, hydraulic hiss. */
+  _machineFail() {
+    const base = 180 + Math.random() * 260;
+    this._chirp(base, base * 0.35, 0.9, 0.16, 'sawtooth');
+    this._chirp(base * 1.5, base * 0.5, 0.7, 0.1, 'square');
+    for (let i = 0; i < 4; i++) {
+      setTimeout(() => this._spark(), i * 70 + Math.random() * 60);
+    }
+    this._burst({ dur: 1.4, vol: 0.13, type: 'highpass', freq: 2200, attack: 0.15 });
+  }
+
+  /** Panicked human scream — voiced formant swells, not a pure tone. */
+  _scream() {
+    const base = 380 + Math.random() * 260;
+    const t = this.ctx.currentTime;
+    for (const mult of [1, 2, 3]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(base * mult * 1.15, t);
+      o.frequency.exponentialRampToValueAtTime(base * mult * 0.82, t + 1.0);
+      const f = this._filter('bandpass', 900 * mult, 6);
+      const g = this._gain(MIN_GAIN);
+      g.gain.setValueAtTime(MIN_GAIN, t);
+      g.gain.exponentialRampToValueAtTime(0.05 / mult, t + 0.12);
+      g.gain.setValueAtTime(0.05 / mult, t + 0.7);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 1.1);
+      o.connect(f).connect(g).connect(this.master);
+      o.start(t);
+      o.stop(t + 1.15);
+    }
+  }
+
+  /** A far-off collapse / bomber swollen through a lowpass. */
+  _distantRumble() {
+    const t = this.ctx.currentTime;
+    const src = this._noiseSource(false);
+    const f = this._filter('lowpass', 120, 0.8);
+    const g = this._gain(MIN_GAIN);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t + 1.2);
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 3.0);
+    src.connect(f).connect(g).connect(this.master);
+    src.start(t, Math.random() * 1.5);
+    src.stop(t + 3.1);
+  }
+
   // ── Low-level voice builders ─────────────────────────────────────────────
 
   _gain(v) { const g = this.ctx.createGain(); g.gain.value = v; return g; }
@@ -694,8 +923,58 @@ export default class AudioManager {
   // ── Voices ───────────────────────────────────────────────────────────────
 
   _pulseShot() {
+    const ps = this._pulseShotSample;
+    if (ps) {
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = ps.buffer;
+      src.playbackRate.value = 0.97 + Math.random() * 0.06;
+      const g = this._gain(MIN_GAIN);
+      const t = ctx.currentTime;
+      const playDur = Math.min(ps.range.duration, 0.5);
+      const dur = playDur / src.playbackRate.value;
+      g.gain.setValueAtTime(MIN_GAIN, t);
+      g.gain.exponentialRampToValueAtTime(0.65, t + 0.01);
+      g.gain.setValueAtTime(0.65, t + Math.max(0.03, dur - 0.05));
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+      src.connect(g).connect(this.master);
+      src.start(t, ps.range.offset, playDur);
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      return;
+    }
+    // Synthesized fallback if the recorded sample is unavailable.
     this._chirp(1500, 320, 0.16, 0.45, 'sine');
     this._burst({ dur: 0.09, vol: 0.18, type: 'highpass', freq: 1400 });
+  }
+
+  _jump() {
+    const js = this._jumpSample;
+    if (js) {
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = js.buffer;
+      src.playbackRate.value = 0.96 + Math.random() * 0.08;
+      const g = this._gain(MIN_GAIN);
+      const t = ctx.currentTime;
+      const playDur = Math.min(js.range.duration, 0.45);
+      const dur = playDur / src.playbackRate.value;
+      const attack = 0.005;
+      const release = 0.02;
+      const peak = 1.0;
+      // Thumps are very short; keep attack/release from overlapping.
+      const releaseStart = Math.max(t + attack + 0.005, t + dur - release);
+      g.gain.setValueAtTime(MIN_GAIN, t);
+      g.gain.exponentialRampToValueAtTime(peak, t + attack);
+      g.gain.setValueAtTime(peak, releaseStart);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur + 0.005);
+      src.connect(g).connect(this.master);
+      src.start(t, js.range.offset, playDur);
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      return;
+    }
+    // Synthesized fallback: a louder thump + low chirp.
+    this._chirp(160, 80, 0.08, 0.28, 'sine');
+    this._burst({ dur: 0.14, vol: 0.35, type: 'lowpass', freq: 220 });
   }
 
   _spark() {
@@ -754,6 +1033,7 @@ export default class AudioManager {
   }
 
   _door() {
+    if (this._doorSample) { this._playDoor(); return; }
     const t = this.ctx.currentTime;
     const o = this.ctx.createOscillator();
     o.type = 'sawtooth';
@@ -884,16 +1164,6 @@ export default class AudioManager {
     o.stop(t + dur + 0.05);
   }
 
-  /** Two-tone klaxon, four cycles. */
-  _alarm() {
-    const t = this.ctx.currentTime;
-    for (let i = 0; i < 4; i++) {
-      const w = t + i * 0.42;
-      this._chirp(690, 690, 0.3, 0.16, 'square', w);
-      this._chirp(520, 520, 0.18, 0.13, 'square', w + 0.21);
-    }
-  }
-
   _beep(urgent, when) {
     this._chirp(
       urgent ? 1180 : 860, urgent ? 1180 : 860,
@@ -943,17 +1213,538 @@ export default class AudioManager {
   }
 
   _step(sprint) {
+    // Humanise every footfall: the impact volume and pitch are jittered so no
+    // two steps are identical. Under the main impact sit three optional layers
+    // — a bright grit tick (the sole breaking contact), a soft scuff drag, and
+    // a short resonant tail (the deck ringing underfoot on metal floors).
+    const vol = (sprint ? 0.15 : 0.1) * (0.82 + Math.random() * 0.36);
     const metal = this._level === 1;
-    this._burst({
-      dur: 0.1,
-      vol: sprint ? 0.15 : 0.1,
-      type: 'lowpass',
-      freq: (metal ? 700 : 240) + Math.random() * 120,
-      attack: 0.004,
-    });
-    if (metal || Math.random() < 0.4) {
-      this._burst({ dur: 0.03, vol: 0.04, type: 'bandpass', freq: 2400 + Math.random() * 900, q: 2 });
+    // A small per-step stereo bias keeps steps from sounding dead-centre.
+    const panner = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+    let dest = this.master;
+    if (panner) {
+      panner.pan.value = (Math.random() - 0.5) * 0.35;
+      panner.connect(this.master);
+      dest = panner;
     }
+    // Recorded take takes priority; falls back to the synthesized step until
+    // the sample has finished decoding (or if it is missing).
+    const played = this._playFootstep(sprint ? 0.85 : 0.68, dest);
+    // Body thud grounds the step — skipped when a full take already supplies it.
+    if (!played) {
+      this._burst({
+        dur: 0.1, vol, type: 'lowpass',
+        freq: (metal ? 700 : 240) + Math.random() * 160,
+        attack: 0.004, destination: dest,
+      });
+    }
+    // Grit tick: always present on metal, occasional on softer floors.
+    if (metal || Math.random() < 0.5) {
+      this._burst({
+        dur: 0.03, vol: vol * (played ? 0.3 : 0.35), type: 'bandpass',
+        freq: 2200 + Math.random() * 1400, q: 2, destination: dest,
+      });
+    }
+    // Scuff: a friction drag trailing the step (~40% of steps).
+    if (Math.random() < 0.4) {
+      this._burst({
+        dur: 0.06, vol: vol * 0.22, type: 'bandpass',
+        freq: 1400 + Math.random() * 800, q: 0.7, attack: 0.012, destination: dest,
+      });
+    }
+    // Resonant tail: the deck ringing underfoot.
+    if (metal) {
+      this._chirp(190 + Math.random() * 70, 95, 0.18, vol * 0.12, 'sine', undefined, dest);
+    }
+  }
+
+  /**
+   * Play one pre-cut footstep take from the loaded sample. A random take is
+   * chosen and pitch-jittered so repeated steps never sound identical.
+   * @param {number} vol   gain of the take
+   * @param {AudioNode} [dest] optional destination (lets the caller pan it)
+   * @returns {boolean} true if a recorded take played.
+   */
+  _playFootstep(vol, dest) {
+    const fs = this._footstep;
+    if (!fs || !fs.segments.length) return false;
+    const ctx = this.ctx;
+    const seg = fs.segments[(Math.random() * fs.segments.length) | 0];
+    const rate = 0.9 + Math.random() * 0.18; // wide per-step pitch jitter
+    const src = ctx.createBufferSource();
+    src.buffer = fs.buffer;
+    src.playbackRate.value = rate;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    const dur = seg.duration / rate;
+    // Short fades hide any residual click at the cut edges.
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+    g.gain.setValueAtTime(vol, t + Math.max(0.02, dur - 0.04));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(dest || this.master);
+    src.start(t, seg.offset, seg.duration);
+    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+    return true;
+  }
+
+  /** Fetch + decode the footstep sample, then cut it into individual takes. */
+  async _loadFootstepSample() {
+    if (!this.ctx || this._footstep) return;
+    try {
+      const res = await fetch('/assets/audio/player/footstep_hard_floor.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._footstep = { buffer: audio, segments: this._extractStepSegments(audio) };
+    } catch (e) { /* keep the synthesized fallback */ }
+  }
+
+  /** Split a footstep recording into single takes by scanning its RMS envelope. */
+  _extractStepSegments(buffer) {
+    const data = buffer.getChannelData(0);
+    const rate = buffer.sampleRate;
+    const win = Math.max(1, Math.floor(rate * 0.01));       // 10 ms windows
+    const n = Math.min(Math.floor(data.length / win), 4000); // analyse <= 40 s
+    const env = new Float32Array(n);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const base = i * win;
+      for (let j = 0; j < win; j++) { const s = data[base + j]; sum += s * s; }
+      const rms = Math.sqrt(sum / win);
+      env[i] = rms;
+      if (rms > peak) peak = rms;
+    }
+    const fallback = [{ offset: 0, duration: buffer.duration }];
+    if (peak <= 0) return fallback;
+    const hi = peak * 0.30;       // onset threshold
+    const lo = peak * 0.06;       // decay threshold
+    const gap = 9;                // windows below `lo` that end a take (~90 ms)
+    const minSeg = 0.14;          // keep the natural tail; never clip a step
+    const maxSeg = 0.5;
+    const minWin = Math.ceil(minSeg * rate / win);
+    const maxWin = Math.ceil(maxSeg * rate / win);
+    const segs = [];
+    let i = 0;
+    while (i < n && segs.length < 16) {
+      while (i < n && env[i] <= hi) i++;
+      if (i >= n) break;
+      const start = i;
+      let below = 0;
+      while (i < n && below <= gap) {
+        if (env[i] <= lo) below++; else below = 0;
+        i++;
+      }
+      const s = Math.max(0, start - 2);                 // 20 ms pre-roll keeps the attack
+      let e = Math.min(n, i - below + 3);               // ~30 ms tail keeps the decay
+      if (e - s < minWin) e = Math.min(n, s + minWin);  // never clip a step short
+      if (e - s > maxWin) e = s + maxWin;
+      if (e - s >= 3) {
+        const offset = (s * win) / rate;
+        segs.push({ offset, duration: Math.min(((e - s) * win) / rate, buffer.duration - offset) });
+      }
+    }
+    // Drop takes that start too close together — an over-split of one step.
+    for (let k = segs.length - 1; k > 0; k--) {
+      if (segs[k].offset - segs[k - 1].offset < minSeg) segs.splice(k, 1);
+    }
+    return segs.length ? segs : fallback;
+  }
+
+  /** Fetch + decode the door sample, trimming silence from both ends. */
+  async _loadDoorSample() {
+    if (!this.ctx || this._doorSample) return;
+    try {
+      const res = await fetch('/assets/audio/environment/metal_door_open.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._doorSample = { buffer: audio, range: this._trimRange(audio) };
+    } catch (e) { /* keep the synthesized door */ }
+  }
+
+  /** Fetch + decode the pulse-shot sample, trimming silence from both ends. */
+  async _loadPulseShotSample() {
+    if (!this.ctx || this._pulseShotSample) return;
+    try {
+      const res = await fetch('/assets/audio/player/pulse_shot.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._pulseShotSample = { buffer: audio, range: this._trimRange(audio) };
+    } catch (e) { /* keep the synthesized pulse shot */ }
+  }
+
+  /** Fetch + decode the jump sample, trimming silence from both ends. */
+  async _loadJumpSample() {
+    if (!this.ctx || this._jumpSample) return;
+    try {
+      const res = await fetch('/assets/audio/player/jump.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._jumpSample = { buffer: audio, range: this._trimRange(audio) };
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('jump sample failed to load:', e);
+    }
+  }
+
+  /** Play the recorded door-open take, loud and pitch-jittered slightly. */
+  _playDoor() {
+    const ds = this._doorSample;
+    if (!ds) return;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = ds.buffer;
+    src.playbackRate.value = 0.97 + Math.random() * 0.06;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    // The source file is a ~31 s recording; play only the door-open event.
+    const playDur = Math.min(ds.range.duration, 4.0);
+    const dur = playDur / src.playbackRate.value;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.95, t + 0.02);
+    g.gain.setValueAtTime(0.95, t + Math.max(0.05, dur - 0.2));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.master);
+    src.start(t, ds.range.offset, playDur);
+    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+  }
+
+  /** First/last non-silent window of a recording — drops lead-in and tail. */
+  _trimRange(buffer) {
+    const data = buffer.getChannelData(0);
+    const rate = buffer.sampleRate;
+    const win = Math.max(1, Math.floor(rate * 0.01));   // 10 ms windows
+    const n = Math.floor(data.length / win);
+    const env = new Float32Array(n);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      const base = i * win;
+      for (let j = 0; j < win; j++) { const s = data[base + j]; sum += s * s; }
+      const rms = Math.sqrt(sum / win);
+      env[i] = rms;
+      if (rms > peak) peak = rms;
+    }
+    if (peak <= 0) return { offset: 0, duration: buffer.duration };
+    const thr = peak * 0.05;
+    let a = 0; while (a < n && env[a] <= thr) a++;
+    let b = n - 1; while (b > a && env[b] <= thr) b--;
+    const offset = Math.max(0, ((a - 2) * win) / rate);
+    const end = Math.min(buffer.duration, ((b + 3) * win) / rate);
+    return { offset, duration: Math.max(0.05, end - offset) };
+  }
+
+  /** Fetch + decode the recorded P.A. announcement clips, keyed by name. */
+  async _loadAnnouncementClips() {
+    if (!this.ctx) return;
+    const clips = {
+      depressurize: '/assets/audio/announcements/depressurize.mp3',
+      sectorIsolated: '/assets/audio/announcements/sector_isolated.mp3',
+      sectorIsolatedL1: '/assets/audio/announcements/sector_isolated_l1.mp3',
+      emergencyIntercom: '/assets/audio/announcements/emergency_intercom.mp3',
+    };
+    for (const [name, url] of Object.entries(clips)) {
+      if (this._paClips[name]) continue;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        this._paClips[name] = { buffer: await this.ctx.decodeAudioData(await res.arrayBuffer()) };
+      } catch (e) { /* skip this clip */ }
+    }
+    // A sequence requested while the clips were still decoding plays now.
+    if (this._paWanted) {
+      const wanted = this._paWanted;
+      this._paWanted = null;
+      this.playClipSequence(wanted);
+    }
+  }
+
+  /**
+   * Play recorded P.A. clips back-to-back through the SFX bus. Returns each
+   * clip's start offset in seconds from now so callers can sync captions.
+   */
+  playClipSequence(names, gap = 0.4, vol = 0.9) {
+    if (!this._unlocked || this.muted) return [];
+    if (!names.some((n) => this._paClips[n])) { this._paWanted = names; return []; }
+    const ctx = this.ctx;
+    const starts = [];
+    let at = ctx.currentTime + 0.1;
+    for (const name of names) {
+      const clip = this._paClips[name];
+      if (!clip) continue;
+      const src = ctx.createBufferSource();
+      src.buffer = clip.buffer;
+      const g = this._gain(MIN_GAIN);
+      const dur = clip.buffer.duration;
+      g.gain.setValueAtTime(MIN_GAIN, at);
+      g.gain.exponentialRampToValueAtTime(vol, at + 0.05);
+      g.gain.setValueAtTime(vol, at + Math.max(0.1, dur - 0.15));
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, at + dur);
+      src.connect(g).connect(this.master);
+      src.start(at);
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      starts.push(at - ctx.currentTime);
+      at += dur + gap;
+    }
+    return starts;
+  }
+
+  /** Fetch + decode the recorded Level-1 machinery ambience loop. */
+  async _loadLevel1Ambience() {
+    if (!this.ctx || this._l1Ambience) return;
+    try {
+      const res = await fetch('/assets/audio/ambience/level1_machinery.mp3');
+      if (!res.ok) return;
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._l1Ambience = { buffer: audio };
+      // Swap it in if Level 1's procedural bed is already sounding.
+      if (this._mode === 1) this._startBed(1);
+    } catch (e) { /* keep the procedural bed */ }
+  }
+
+  /** Fetch + decode the recorded nuclear-detonation cue for Level 3. */
+  async _loadExplosionSample() {
+    if (!this.ctx || this._explosion || this._explosionFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/nuclear_explosion.mp3');
+      if (!res.ok) { this._explosionFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._explosion = { buffer: audio };
+      // A detonation requested while the sample was still decoding fires now.
+      if (this._explosionWanted && this._playing) {
+        this._explosionWanted = false;
+        this.playExplosion();
+      }
+    } catch (e) { this._explosionFailed = true; }
+  }
+
+  /**
+   * Detonate the Level-3 reactor: the recorded nuclear-blast sample fires once
+   * on the SFX bus, ducking the ambience/chaos bed beneath its shockwave.
+   */
+  playExplosion(vol = 1) {
+    if (!this._unlocked || this.muted) return;
+    if (!this._explosion) {
+      // Still decoding — remember the intent; stay silent if the file is missing.
+      if (!this._explosionFailed) this._explosionWanted = true;
+      return;
+    }
+    this._explosionWanted = false;
+    const sample = this._explosion;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = sample.buffer;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    const dur = sample.buffer.duration;
+    // Instant attack (the blast) then a long natural tail, with edge fades.
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.03);
+    g.gain.setValueAtTime(vol, t + Math.max(0.2, dur - 1.0));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.master);
+    src.start(t);
+    // Let the blast dominate: pull the ambience/chaos bed down under it.
+    this.duck(0.7, Math.min(dur, 10) * 1000);
+    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+  }
+
+  /** Fetch + decode the recorded EAS alarm looped through the Level-3 escape. */
+  async _loadEasAlarmSample() {
+    if (!this.ctx || this._easAlarm || this._easAlarmFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/eas_alarm.mp3');
+      if (!res.ok) { this._easAlarmFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._easAlarm = { buffer: audio };
+      // A loop requested while the sample was still decoding starts now.
+      if (this._easAlarmWanted && this._playing) {
+        this._easAlarmWanted = false;
+        this.playEasAlarm();
+      }
+    } catch (e) { this._easAlarmFailed = true; }
+  }
+
+  /**
+   * Loop the recorded red-alert buzzer from the Level-1 containment breach
+   * until the player wins, dies, or leaves the level.
+   */
+  playL1Alarm(vol = 0.5) {
+    if (!this._unlocked || this.muted || this._l1AlarmOn) return;
+    if (!this._l1Alarm) {
+      if (!this._l1AlarmFailed) this._l1AlarmWanted = true;
+      return;
+    }
+    this._l1AlarmWanted = false;
+    this._l1AlarmOn = true;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this._l1Alarm.buffer;
+    src.loop = true;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.6);   // fade in
+    src.connect(g).connect(this.master);
+    src.start(t);
+    this._l1AlarmSrc = src;
+    this._l1AlarmGain = g;
+  }
+
+  /** Fade out and stop the looping Level-1 red-alert buzzer. */
+  stopL1Alarm(fade = 1.2) {
+    const src = this._l1AlarmSrc;
+    const g = this._l1AlarmGain;
+    this._l1AlarmOn = false;
+    this._l1AlarmWanted = false;
+    this._l1AlarmSrc = null;
+    this._l1AlarmGain = null;
+    if (!src) return;
+    const t = this.ctx.currentTime;
+    try {
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(g.gain.value, MIN_GAIN), t);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + Math.max(0, fade));
+      src.stop(t + Math.max(0, fade) + 0.05);
+    } catch (e) { /* already stopped */ }
+    setTimeout(() => {
+      try { src.disconnect(); } catch (e) { /* noop */ }
+      try { g.disconnect(); } catch (e) { /* noop */ }
+    }, (Math.max(0, fade) + 0.1) * 1000);
+  }
+
+  /** Fetch + decode the recorded Level-1 red-alert buzzer loop. */
+  async _loadL1AlarmSample() {
+    if (!this.ctx || this._l1Alarm || this._l1AlarmFailed) return;
+    try {
+      const res = await fetch('/assets/audio/environment/l1_red_alert.mp3');
+      if (!res.ok) { this._l1AlarmFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      this._l1Alarm = { buffer: audio };
+      // A loop requested while the sample was still decoding starts now.
+      if (this._l1AlarmWanted && this._playing) {
+        this._l1AlarmWanted = false;
+        this.playL1Alarm();
+      }
+    } catch (e) { this._l1AlarmFailed = true; }
+  }
+
+  /**
+   * Loop the recorded emergency-alert (EAS) alarm for the whole escape run —
+   * from the failsafe countdown until the player finishes the game.
+   */
+  playEasAlarm(vol = 0.5) {
+    if (!this._unlocked || this.muted || this._easAlarmOn) return;
+    if (!this._easAlarm) {
+      if (!this._easAlarmFailed) this._easAlarmWanted = true;
+      return;
+    }
+    this._easAlarmWanted = false;
+    this._easAlarmOn = true;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this._easAlarm.buffer;
+    src.loop = true;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.6);   // fade in
+    src.connect(g).connect(this.master);
+    src.start(t);
+    this._easAlarmSrc = src;
+    this._easAlarmGain = g;
+  }
+
+  /** Fade out and stop the looping EAS alarm (game won, lost, or menu). */
+  stopEasAlarm(fade = 1.2) {
+    const src = this._easAlarmSrc;
+    const g = this._easAlarmGain;
+    this._easAlarmOn = false;
+    this._easAlarmWanted = false;
+    this._easAlarmSrc = null;
+    this._easAlarmGain = null;
+    if (!src) return;
+    const t = this.ctx.currentTime;
+    try {
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(g.gain.value, MIN_GAIN), t);
+      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + Math.max(0, fade));
+      src.stop(t + Math.max(0, fade) + 0.05);
+    } catch (e) { /* already stopped */ }
+    setTimeout(() => {
+      try { src.disconnect(); } catch (e) { /* noop */ }
+      try { g.disconnect(); } catch (e) { /* noop */ }
+    }, (Math.max(0, fade) + 0.1) * 1000);
+  }
+
+  /** Fetch + decode the level-start / stage-switch suspense track. */
+  async _loadSuspenseSample() {
+    if (!this.ctx || this._suspense || this._suspenseFailed) return;
+    try {
+      const res = await fetch('/assets/audio/music/suspense_intro.mp3');
+      if (!res.ok) { this._suspenseFailed = true; return; }
+      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
+      // Trim the lead-in/tail silence so the home theme starts immediately.
+      this._suspense = { buffer: audio, range: this._trimRange(audio) };
+      // A cue requested while the sample was still decoding starts now.
+      if (this._suspenseWanted && (this._menuActive || this._playing)) {
+        this._suspenseWanted = false;
+        this.playSuspense();
+      }
+    } catch (e) { this._suspenseFailed = true; }
+  }
+
+  /**
+   * Play the suspense cue at the start of a run and on each stage switch.
+   * Restarts if one is already sounding and ducks the ambience beneath it.
+   */
+  playSuspense() {
+    if (!this._unlocked || this.muted) return;
+    if (!this._suspense) {
+      // Still decoding — remember the intent, or fall back if it failed.
+      if (this._suspenseFailed) this._playSuspenseFallback();
+      else this._suspenseWanted = true;
+      return;
+    }
+    this._suspenseWanted = false;
+    this.stopSuspense(0.05);
+    const sample = this._suspense;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = sample.buffer;
+    const g = this._gain(MIN_GAIN);
+    const t = ctx.currentTime;
+    // Skip the (silence-trimmed) lead-in plus a small head cut so the theme is
+    // already sounding the moment playback can start.
+    const range = sample.range;
+    const startAt = Math.min(range.offset + SUSPENSE_HEAD_TRIM, sample.buffer.duration - 1);
+    const dur = Math.max(0.5, range.duration - SUSPENSE_HEAD_TRIM);
+    g.gain.setValueAtTime(MIN_GAIN, t);
+    g.gain.exponentialRampToValueAtTime(0.85, t + 0.12);
+    g.gain.setValueAtTime(0.85, t + Math.max(0.5, dur - 1.5));
+    g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
+    src.connect(g).connect(this.music);
+    src.start(t, startAt, dur);
+    this._suspenseSrc = src;
+    this.duck(0.6, dur * 1000);
+    src.onended = () => {
+      try { src.disconnect(); g.disconnect(); } catch (e) { /* noop */ }
+      if (this._suspenseSrc === src) this._suspenseSrc = null;
+    };
+  }
+
+  /** Fade out the suspense cue (level end, menu, or a new stage switch). */
+  stopSuspense(fade = 0.6) {
+    const src = this._suspenseSrc;
+    if (!src) return;
+    this._suspenseSrc = null;
+    try { src.stop(this.ctx.currentTime + Math.max(0, fade)); } catch (e) { /* already stopped */ }
+  }
+
+  /** Synth stand-in used only if the suspense sample is missing. */
+  _playSuspenseFallback() {
+    this._chirp(110, 82.4, 3.0, 0.22, 'sawtooth');
+    this._chirp(55, 41.2, 3.4, 0.18, 'sine');
   }
 
   /** Double-thump heartbeat. */

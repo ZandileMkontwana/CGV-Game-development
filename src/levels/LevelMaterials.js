@@ -17,6 +17,7 @@
  */
 import * as THREE from 'three';
 import { buildPBRMaps } from '../shaders/textures.js';
+import { applySurfaceShading, applyCrtShading } from '../shaders/SurfaceShading.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Seeded drawing helpers
@@ -689,8 +690,11 @@ export function getThemeMaterials(themeName) {
   const screenTex = screenTexture({ ...t.screen, seed: t.seed + 5, kinds: t.screenKinds });
   const screenTex2 = screenTexture({ ...t.screen, seed: t.seed + 6, kinds: t.screenKinds });
 
-  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.45 : 1.3, roughnessBase: 0.55, roughnessVariance: 0.3 });
-  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 0.6 : 1.8, roughnessBase: themeName === 'lab' ? 0.85 : 0.7, roughnessVariance: themeName === 'lab' ? 0.12 : 0.4 });
+  // Surface relief: stronger bump + more roughness variance makes the panel
+  // seams, rivets and floor grout catch the practical lights (Alien: Isolation
+  // style depth) instead of reading as smooth, flat grey boxes.
+  const wallPBR = buildPBRMaps({ seed: t.seed + 10, repeat: [4, 2], bumpStrength: themeName === 'lab' ? 0.95 : 1.3, roughnessBase: 0.55, roughnessVariance: themeName === 'lab' ? 0.42 : 0.3 });
+  const floorPBR = buildPBRMaps({ seed: t.seed + 20, repeat: floorRepeat, bumpStrength: themeName === 'lab' ? 1.05 : 1.8, roughnessBase: themeName === 'lab' ? 0.82 : 0.7, roughnessVariance: themeName === 'lab' ? 0.22 : 0.4 });
   const propPBR = buildPBRMaps({ seed: t.seed + 30, repeat: [2, 2], bumpStrength: 1.2, roughnessBase: 0.65, roughnessVariance: 0.3 });
 
   const std = (opts) => new THREE.MeshStandardMaterial(opts);
@@ -740,6 +744,24 @@ export function getThemeMaterials(themeName) {
       exit: t.exit, warn: t.warn, emer: t.emer,
     },
   };
+
+  // Procedural grime / wetness / macro variation (see SurfaceShading.js).
+  // Clean lab -> grimy, wet damaged corridors -> burnt emergency level.
+  const surface = ({
+    lab:       { grime: 0.35, wet: 0.0,  contact: 0.45, macro: 0.7 },
+    damaged:   { grime: 0.85, wet: 0.55, contact: 0.6,  macro: 0.9 },
+    emergency: { grime: 0.95, wet: 0.35, contact: 0.6,  macro: 0.9 },
+  })[themeName] || { grime: 0.5, wet: 0, contact: 0.5, macro: 0.8 };
+  for (const key of ['wall', 'wallDark', 'ceil', 'floor', 'concrete']) {
+    applySurfaceShading(mats[key], surface);
+  }
+  for (const key of ['trim', 'beam', 'metal', 'metalDark', 'panel', 'pipe', 'locker', 'crate', 'debris']) {
+    applySurfaceShading(mats[key], { grime: surface.grime * 0.6, wet: 0, contact: 0, macro: 0.35 });
+  }
+
+  // Animated CRT look on every terminal screen.
+  applyCrtShading(mats.screen);
+  applyCrtShading(mats.screenAlt);
 
   _themeCache.set(themeName, mats);
   return mats;

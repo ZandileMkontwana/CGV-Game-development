@@ -15,6 +15,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 
 const GradeShader = {
   uniforms: {
@@ -60,8 +61,9 @@ const GradeShader = {
       // Cold cinematic grade — slight desaturation, cool shadows, contrast.
       float luma = dot(col, vec3(0.299, 0.587, 0.114));
       col = mix(col, vec3(luma), 0.12);
-      col *= vec3(0.96, 1.0, 1.05);
-      col = pow(max(col, 0.0), vec3(1.05));
+      // Split-toning (Alien: Isolation look): cool teal shadows, warm amber highlights.
+      col *= mix(vec3(0.90, 1.0, 1.08), vec3(1.10, 1.0, 0.88), smoothstep(0.08, 0.75, luma));
+      col = pow(max(col, 0.0), vec3(1.09));
 
       // Danger: red pulse creeping in from the screen edges.
       float pulse = 0.5 + 0.5 * sin(uTime * 6.0);
@@ -96,7 +98,13 @@ export default class PostFX {
     this._shadowTime = 0;
     this._warmupFrames = 15;
 
-    this.composer = new EffectComposer(renderer);
+    // `antialias: true` on the canvas does not reach the composer's own buffer,
+    // so give that buffer 4x MSAA — otherwise pipe and door edges shimmer.
+    const msaaTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    this.composer = new EffectComposer(renderer, msaaTarget);
     // Cap the post pipeline below the canvas DPR — bloom + grade at full
     // retina resolution is the single biggest frame-time cost.
     this._maxPixelRatio = Math.min(renderer.getPixelRatio(), 1.5);
@@ -107,6 +115,28 @@ export default class PostFX {
     this.composer.setSize(window.innerWidth, window.innerHeight);
 
     this.composer.addPass(new RenderPass(scene, camera));
+
+    // Ground-truth ambient occlusion: darkens corners, wall/floor joins and the
+    // undersides of pipes and machinery, so equipment looks installed, not floating.
+    this.ao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+    this.ao.updateGtaoMaterial({
+      radius: 0.6,
+      distanceExponent: 1.5,
+      thickness: 1.5,
+      scale: 1.0,
+      samples: 12,
+      distanceFallOff: 1.0,
+    });
+    this.ao.updatePdMaterial({
+      lumaPhi: 10,
+      depthPhi: 2,
+      normalPhi: 3,
+      radius: 6,
+      rings: 2,
+      samples: 12,
+    });
+    this.ao.blendIntensity = 0.9;
+    this.composer.addPass(this.ao);
 
     // Subtle bloom — makes emissive weak points, eyes, tool tips and lamps
     // physically glow instead of looking like flat coloured pixels.
@@ -135,9 +165,12 @@ export default class PostFX {
 
   setLevel(level) {
     const uniforms = this.grade.uniforms;
-    uniforms.uGrain.value = level === 1 ? 0.012 : level === 2 ? 0.025 : 0.03;
+    uniforms.uGrain.value = level === 1 ? 0.016 : level === 2 ? 0.025 : 0.03;
     uniforms.uAberration.value = level === 1 ? 0.0004 : 0.0008;
-    uniforms.uVignette.value = level === 1 ? 0.34 : 0.55;
+    // Level 1 gets a stronger vignette now that its lighting has real
+    // falloff — the frame edge closing in sells the industrial, oppressive
+    // tone without simply darkening the whole image.
+    uniforms.uVignette.value = level === 1 ? 0.44 : 0.55;
   }
 
   /** Prepare hidden reveal effects with the same target as the scene pass. */
@@ -210,6 +243,7 @@ export default class PostFX {
         if (this._degradeLevel === 0) {
           this._degradeLevel = 1;
           this.composer.removePass(this.bloom);
+          this.composer.removePass(this.ao);
         } else if (this._degradeLevel === 1) {
           this._degradeLevel = 2;
           // Throttle shadow maps instead of disabling them: flipping

@@ -18,13 +18,23 @@
  */
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { signMaterial, decalMaterial } from './LevelMaterials.js';
 
 // ── Shared geometry cache ────────────────────────────────────────────────────
 const _geoCache = new Map();
 function boxGeo(w, h, d) {
   const k = `b|${w}|${h}|${d}`;
-  if (!_geoCache.has(k)) _geoCache.set(k, new THREE.BoxGeometry(w, h, d));
+  if (!_geoCache.has(k)) {
+    const minDim = Math.min(w, h, d);
+    const maxDim = Math.max(w, h, d);
+    // Bevel prop-sized boxes so their edges catch the light; big wall/floor
+    // slabs and thin panels stay sharp and cheap. Collision uses w/h/d, not this.
+    const bevel = minDim >= 0.08 && maxDim <= 4 ? Math.min(0.02, minDim * 0.25) : 0;
+    _geoCache.set(k, bevel > 0
+      ? new RoundedBoxGeometry(w, h, d, 2, bevel)
+      : new THREE.BoxGeometry(w, h, d));
+  }
   return _geoCache.get(k);
 }
 function cylGeo(rt, rb, h, seg = 14) {
@@ -240,7 +250,11 @@ export default class LevelKit {
     if (o.light !== false) {
       const c = colorName === 'amber' ? this.mats.colors.warn
         : colorName === 'red' ? this.mats.colors.emer : this.mats.colors.lampLight;
-      const light = new THREE.PointLight(c, o.intensity || 0.9, 11, 2);
+      // Physical light units (three r155+): the authored 0.7–0.9 values only
+      // read as decorative once ambient is present. A gain lifts each fixture
+      // into a real warm pool that spills down the walls, with dark between.
+      const gain = o.gain || 2.8;
+      const light = new THREE.PointLight(c, (o.intensity || 0.9) * gain, o.distance || 12, 2);
       light.userData.flicker = !o.circuit;
       if (o.circuit) o.circuit.addLight(light);
       light.position.set(x, y - 0.35, z);

@@ -7,6 +7,7 @@ import CameraController from './CameraController.js';
 import GameState from './GameState.js';
 import LevelManager from '../levels/LevelManager.js';
 import ShaderManager from '../shaders/ShaderManager.js';
+import { updateCrt } from '../shaders/SurfaceShading.js';
 import { setMaxAnisotropy } from '../shaders/textures.js';
 import UIManager from '../ui/UIManager.js';
 import { PA_ANNOUNCEMENTS } from '../ui/content.js';
@@ -21,7 +22,6 @@ import BossEncounter from './BossEncounter.js';
 import ServerAmbush from './ServerAmbush.js';
 import { ESCAPE_CHECKPOINTS } from './MissionProgress.js';
 import WeaponViewmodel from './WeaponViewmodel.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /**
  * Game — top-level orchestrator.
@@ -31,6 +31,34 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
  * Level content (Person B), shaders (Person C) and UI/sound (Person D)
  * plug into the hooks marked with TODO comments.
  */
+/**
+ * Reflection environment for the metal surfaces: a dark hall lit by rows of
+ * fluorescent strips plus one warm warning panel. (Cube-map idea from the
+ * Textures notes: PMREMGenerator bakes this scene into a prefiltered cube map
+ * that every PBR material samples for reflections.) Values above 1.0 are
+ * deliberate HDR highlights.
+ */
+function buildReactorEnvironment() {
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(
+    new THREE.BoxGeometry(24, 9, 48),
+    new THREE.MeshBasicMaterial({ color: 0x20272e, side: THREE.BackSide })
+  ));
+  const lampMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xe4f0ff).multiplyScalar(14) });
+  for (let z = -20; z <= 20; z += 5) {
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 3), lampMat);
+    lamp.position.set(0, 4.3, z);
+    env.add(lamp);
+  }
+  const warn = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 1.2, 6),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff6a2a).multiplyScalar(4) })
+  );
+  warn.position.set(11.8, 2.0, -6);
+  env.add(warn);
+  return env;
+}
+
 export default class Game {
   constructor(container) {
     // --- Renderer -----------------------------------------------------------
@@ -40,7 +68,9 @@ export default class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    // Filmic curve slightly lifted so the localized practical lamps read as
+    // real bright sources instead of being flattened by the global fill.
+    this.renderer.toneMappingExposure = 1.06;
     // Sharpen floor/wall detail at grazing angles (long-corridor views) —
     // applies to every procedural texture built from here on.
     setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
@@ -64,10 +94,12 @@ export default class Game {
     this.scene.fog = new THREE.Fog(0x0a0a0a, 20, 80);
 
     // Image-based lighting: metals (rifle) and PBR characters render black
-    // and flat without reflections. Kept dim so the horror grade survives.
+    // and flat without reflections. Raised from a barely-there level so the
+    // high-metalness facility surfaces (panels, beams, pipes) pick up real
+    // reflection sheen — the "convincing metal" look, not flat grey boxes.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.25;
+    this.scene.environment = pmrem.fromScene(buildReactorEnvironment(), 0.02).texture;
+    this.scene.environmentIntensity = 0.45;
     pmrem.dispose();
 
     // --- Subsystems ---------------------------------------------------------
@@ -95,7 +127,7 @@ export default class Game {
     this.input = new InputManager(this.renderer.domElement);
     this.physics = new PhysicsWorld();
     this.camera = new CameraController(this.scene, this.input);
-    this.player = new PlayerController(this.scene, this.physics, this.input, this.loadingManager);
+    this.player = new PlayerController(this.scene, this.physics, this.input, this.loadingManager, this.audio);
     this.gameState = new GameState();
     this.levels = new LevelManager(this.scene, this.physics);
     this.shaders = new ShaderManager(this.scene);
@@ -157,9 +189,8 @@ export default class Game {
         trigger: 'spawn', dismiss: 'walk', dismissDist: 4,
       },
       {
-        text: 'SHOOT THE GLOWING CONDUIT TO OPEN THE DOOR',
-        sub: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
-        trigger: 'zone', triggerZ: -3, dismiss: 'event', dismissEvent: 'fired',
+        text: 'LEFT CLICK / F — FIRE THE PULSE TOOL',
+        sub: 'HOLD RMB OR TAP Z TO SCOPE IN · ENERGY RECHARGES ON ITS OWN',
       },
       {
         text: 'GOOD — MOVE THROUGH THE DOOR',
@@ -522,23 +553,55 @@ export default class Game {
           || oldState === 'victory' || reason === 'restart')) {
         // A restart resumes the level the player was on (death retry, pause
         // restart); entering from a menu always starts the campaign at 1.
+        // Fresh gameplay entry also silences any lingering escape alarm.
+        this.audio.stopEasAlarm();
+        this.audio.stopL1Alarm();
         this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
+        this.audio.stopL1Alarm();
+        this.audio.playSuspense();
         this._loadLevel(this.gameState.currentLevel);
         this._transitionNeedsRender = true;
+      }
+      // The suspense cue plays on the home screen, during level transitions,
+      // during the pre-level briefing overlay, and as the background track for
+      // Level 1 gameplay; it is stopped when leaving Level 1 or on game over.
+      if (newState === 'playing') {
+        // The recorded emergency-intercom broadcast opens Level 3 the instant
+        // gameplay begins (not during the transition). Skipped on pause-resume.
+        if (this.gameState.currentLevel === 3 && oldState !== 'paused') {
+          this.audio.playClipSequence(['emergencyIntercom']);
+          this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
+          this.audio.startChaos();
+          // The reactor finally goes critical: detonate as Level 3 opens.
+          this.audio.playExplosion();
+        }
       }
       if (newState === 'gameover') {
         this.audio.play('gameover');
         this.audio.stopAmbient();
         this.audio.stopRumble();
+        this.audio.stopChaos();
+        this.audio.stopEasAlarm();
+        this.audio.stopL1Alarm();
+        this.audio.stopSuspense(0.6);
       }
       if (newState === 'victory' || newState === 'menu') {
         if (newState === 'victory') this.audio.play('win');
         this.audio.stopAmbient();
         this.audio.stopRumble();
+        this.audio.stopSuspense(0.6);
+        // The run is over — silence the escape alarm and any Level-1 red alert.
+        this.audio.stopEasAlarm();
+        this.audio.stopL1Alarm();
+        // Victory keeps the collapse chaos running under the ending; only
+        // returning to the menu finally silences it.
+        if (newState === 'menu') {
+          this.audio.stopChaos();
+        }
       }
       if (newState === 'menu' || newState === 'gameover' || newState === 'victory') {
         // Release the level while a menu or the ending covers the canvas.
@@ -591,6 +654,11 @@ export default class Game {
     // Prepare a new level once behind its transition screen, rather than
     // drawing it continuously while the player waits for the next briefing.
     if (!this.gameState.isPlaying) {
+      // The ending (victory screen + credits) is a DOM overlay over the torn-
+      // down level, but the collapse chaos keeps sounding underneath it.
+      if (this.gameState.state === 'victory' || this.gameState.state === 'credits') {
+        this.audio.updateEnding(dt);
+      }
       if (this.gameState.state === 'levelTransition' && this._transitionNeedsRender) {
         this.camera.update(0, this.player.position);
         this.player.syncModel();
@@ -640,24 +708,31 @@ export default class Game {
       if (this.input.justPressed('KeyZ')) this._adsToggled = !this._adsToggled;
       const aiming = this.input.mouse.rightDown === true || this._adsToggled;
       const crouching = this.input.keys['KeyC'] === true;
+      // Scoped view: aiming an armed weapon in first person pulls the eye to the
+      // optic — heavy zoom + reticle overlay, and the viewmodel is swapped out.
+      const scoped = aiming && this.camera.isFirstPerson && this._weaponReady;
       this.player.setStance(crouching, aiming);
       this.player.update(dt);
       this.physics.step(dt);
       this.player.refreshMovementState();
       this.camera.update(dt, this.player.position, {
         aiming,
+        scoped,
         crouching,
         moving: this.player._charState.moving,
         sprinting: this.player._charState.sprinting,
         grounded: this.player._charState.grounded,
       });
       this.shaders.update(dt);
+      updateCrt(dt);
       this.ui.update(dt);
       if (this.input.justPressed('KeyM')) this.ui.map.toggle();
       this.ui.map.update(dt, this.player.position, this.camera.yawObject.rotation.y);
       this._updateExpansion(dt);
       if (!this.gameState.isPlaying) { this.input.endFrame(); return; }
       this.levels.update(dt); // animate doors, steam vents, rotating hazards
+      this.camera.camera.getWorldPosition(this._camPosVec);
+      this.camera.camera.getWorldDirection(this._fwdVec);
       if (this.gameState.currentLevel === 2) this._updateServerAmbush(dt);
       this._updateHealthPacks(dt);
 
@@ -672,13 +747,15 @@ export default class Game {
 
       // First-person rifle: sway/bob/ADS driven by the same stance state,
       // hidden in third person so it doesn't float beside the body. Also
-      // hidden when the weapon is stowed.
-      this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady);
+      // hidden while unarmed (Level 2 before the security-locker pickup) and
+      // while scoped (the optic overlay replaces the viewmodel).
+      this.weapon.setVisible(this.camera.isFirstPerson && this._weaponReady && !scoped);
       this.weapon.update(dt, {
         moving: this.player._charState.moving,
         sprinting: this.player._charState.sprinting,
         aiming,
       });
+      this.ui.setScoped(scoped);
 
       // Procedural soundscape: footsteps, heartbeat, growls, distant creaks,
       // the creature's own heavy footfalls, and muffled breath while hiding.
@@ -918,9 +995,9 @@ export default class Game {
     this._baseObjective = objectives[levelNum] || '';
     this._setObjective(this._baseObjective);
     if (levelNum === 1) this._announce('dispatch');
-    // Level 2 opens with the 'breach' PA inside its staged briefing
-    // (_l2Opening); the failsafe/demolition chain now starts at Level 3.
-    if (levelNum === 3) this._announce('failsafe');
+    // Level 2's recorded sector briefing runs from _l2Opening; Level 3's
+    // emergency-intercom broadcast is fired the moment its gameplay actually
+    // begins (see the state-change handler), not under the transition overlay.
 
     // 10. Level 1 runs the contextual tutorial (zone/event-gated hints).
     if (levelNum === 1) {
@@ -942,14 +1019,37 @@ export default class Game {
     // 11. Show the pre-level briefing overlay (blocks input until dismissed).
     this._showBriefing(levelNum);
 
-    // 11. Level 2 runs the breach briefing: the PA confirms what happened in
-    //     Lab A-2, then the instructions point at the blue door relay. Beats
-    //     only advance during 'playing' so the black transition hides none.
+    // 11. Level 2 opens on the recorded sector briefing: the depressurization
+    //     alert, then the reactor-isolation announcement; the isolation line
+    //     replays once mid-level. The instructions then point at the security
+    //     locker. Beats only advance during 'playing' so the black transition
+    //     hides none of them.
     this._l2Opening = levelNum === 2 ? {
       t: 0, step: 0,
       beats: [
-        { at: 1.2, run: () => this._announce('breach') },
-        { at: 7.5, run: () => this.ui.showAnnouncement('Medical distress signal detected west of crew quarters. Two survivors need an escort to refuge.') },
+        { at: 0.3, run: () => {
+          const starts = this.audio.playClipSequence(['depressurize', 'sectorIsolated']);
+          this.ui.showAnnouncement(PA_ANNOUNCEMENTS.depressurize.text);
+          // Swap the caption over when the isolation announcement begins.
+          if (starts[1] != null) {
+            setTimeout(() => this.ui.showAnnouncement(PA_ANNOUNCEMENTS.sectorIsolated.text),
+              starts[1] * 1000);
+          }
+        } },
+        { at: 7.5, run: () => this.ui.showTutorial({
+          text: 'THE LAB A-2 CULTURE WENT WRONG — SOMETHING IS LOOSE IN SECTOR B',
+          sub: 'It hunts by sight and sound. Keep your distance, stay behind solid cover.',
+        }) },
+        { at: 14.5, run: () => this.ui.showTutorial({
+          text: 'ARM YOURSELF — SECURITY LOCKER, STAGING BAY WEST WALL',
+          sub: 'Walk up to the open locker and press E to take the pulse sidearm.',
+        }) },
+        { at: 21.0, run: () => this.ui.showTutorial(null) },
+        { at: 50.0, run: () => {
+          // Mid-level: the sector announces re-isolation over the hunt.
+          this.audio.playClipSequence(['sectorIsolated']);
+          this.ui.showAnnouncement(PA_ANNOUNCEMENTS.sectorIsolated.text);
+        } },
       ],
     } : null;
     this._rangeTutorialVisible = false;
@@ -979,9 +1079,10 @@ export default class Game {
   }
 
   /**
-   * Level 2 opening — the breach briefing. Staged text beats run while the
-   * player keeps control: the PA confirms the containment breach, then the
-   * instructions point at the blue door relay. Cleared once all beats fire.
+   * Level 2 opening — the sector briefing. The recorded depressurization alert
+   * and reactor-isolation announcement play first (and the isolation line
+   * replays mid-level), then the instructions point at the security locker.
+   * Staged beats run while the player keeps control; cleared once all fire.
    */
   _updateL2Opening(dt) {
     const seq = this._l2Opening;
@@ -1166,7 +1267,7 @@ export default class Game {
       this._mutateLight.position.set(reveal.spawn.x, 1.3, reveal.spawn.z);
       this._mutateLight.intensity = 2;
       this.camera.shake(0.25);
-      this.audio.play('alarm');
+      this.audio.playL1Alarm();
       this.levels.alertWalkers();
       this._announce('breach');
       this._setObjective('CONTAINMENT FAILURE / STAY CLEAR OF THE CHAMBER');
@@ -1187,6 +1288,8 @@ export default class Game {
       this.monster.model.scale.setScalar(0.6 * this.monster._modelScale);
       this.monster.model.rotation.y = Math.atan2(this.player.position.x - reveal.spawn.x, this.player.position.z - reveal.spawn.z);
       this.audio.play('roar');
+      this.audio.playClipSequence(['sectorIsolatedL1']);
+      this.ui.showAnnouncement(PA_ANNOUNCEMENTS.sectorIsolated.text);
       this.audio.duck(0.65);
       this.camera.shake(0.45);
     } else if (phase === 'flee') {
@@ -1388,6 +1491,7 @@ export default class Game {
     const data = this._briefings[levelNum];
     if (!data || !this._briefingOverlay) return;
     this._briefingActive = true;
+    this.audio.playSuspense();
     if (this._briefingLevel) this._briefingLevel.textContent = `LEVEL ${levelNum}`;
     if (this._briefingTitle) this._briefingTitle.textContent = data.title;
     if (this._briefingNarrative) {
@@ -1417,6 +1521,9 @@ export default class Game {
     if (!this._briefingActive) return;
     this._briefingActive = false;
     if (this._briefingOverlay) this._briefingOverlay.style.display = 'none';
+    // The home/theme cue also runs as Level-1 gameplay background; stop it
+    // for every other level once the briefing closes.
+    if (this.gameState.currentLevel !== 1) this.audio.stopSuspense(0.4);
     this.renderer.domElement.requestPointerLock?.();
   }
 
@@ -1673,7 +1780,9 @@ export default class Game {
 
     // Show the collapse timer HUD.
     this.ui.setCountdown(this._collapseTime, true);
-    this._announce('demolition');
+    // Caption only — the recorded EAS alarm (playEasAlarm below) is the sole
+    // alarm for the escape; the synthesized demolition klaxon is not used.
+    this.ui.showAnnouncement(PA_ANNOUNCEMENTS.demolition.text);
 
     // Screen shake for dramatic effect.
     this.camera.shake(0.5);
@@ -1681,6 +1790,8 @@ export default class Game {
     // Collapse ambience: sustained structural rumble + flickering lights.
     this.audio.play('collapse');
     this.audio.duck(0.65);
+    // The EAS alarm loops from the countdown until the game ends.
+    this.audio.playEasAlarm();
     this.levels.collapseMode = true; // fixtures now stutter constantly
     this._lastBeepSec = -1;
 

@@ -115,6 +115,71 @@ function scorchTexture() {
   _scorchTex = new THREE.CanvasTexture(c);
   return _scorchTex;
 }
+let _sootTex = null;
+function sootTexture() {
+  if (_sootTex) return _sootTex;
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const x = c.getContext('2d');
+  // Soot plume: dense blotches near the base thinning upward, so it reads as
+  // a fire that blackened the surface above it rather than a flat circle.
+  for (let i = 0; i < 60; i++) {
+    const bx = 64 + (Math.random() - 0.5) * 74;
+    const by = S - Math.random() * S;
+    const br = 6 + Math.random() * 26;
+    const g = x.createRadialGradient(bx, by, 0, bx, by, br);
+    const a = 0.10 + 0.30 * Math.random() * (1 - (by / S) * 0.7);
+    g.addColorStop(0, `rgba(10,7,5,${a.toFixed(3)})`);
+    g.addColorStop(1, 'rgba(10,7,5,0)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, S, S);
+  }
+  // Vertical smears add streaking detail.
+  for (let i = 0; i < 22; i++) {
+    const bx = 64 + (Math.random() - 0.5) * 84;
+    const g = x.createLinearGradient(0, S, 0, 0);
+    g.addColorStop(0, 'rgba(8,5,3,0.28)');
+    g.addColorStop(1, 'rgba(8,5,3,0)');
+    x.fillStyle = g;
+    x.fillRect(bx - 1.5, 0, 3, S);
+  }
+  _sootTex = new THREE.CanvasTexture(c);
+  return _sootTex;
+}
+
+let _alertLineTex = null;
+/**
+ * Tileable strip of bright dashes on a faint painted base. Scrolling the
+ * texture's offset makes the dashes march along a guide line — the running
+ * "emergency lights" look. Kept as a template; each line clones it so it can
+ * set its own repeat without disturbing the others.
+ */
+function alertLineTexture() {
+  if (_alertLineTex) return _alertLineTex;
+  const W = 128, Hh = 16;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = Hh;
+  const x = c.getContext('2d');
+  // Faint uniform base keeps the guideline readable between pulses.
+  x.fillStyle = 'rgba(255,255,255,0.10)';
+  x.fillRect(0, 0, W, Hh);
+  // Four soft-edged bright dashes per tile; seamless across the tile seam.
+  for (let i = 0; i < 4; i++) {
+    const cx = i * 32 + 16;
+    const g = x.createLinearGradient(cx - 10, 0, cx + 10, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0.95)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g;
+    x.fillRect(cx - 10, 0, 20, Hh);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.ClampToEdgeWrapping;
+  _alertLineTex = t;
+  return t;
+}
 
 // ── Shared smoke particle texture (created once, kept for the session) ──────
 export default class LevelManager {
@@ -184,6 +249,9 @@ export default class LevelManager {
 
     /** Dust-mote Points clouds with a slow drift (rebuilt each load). */
     this._dustFields = [];
+
+    /** Animated emergency guide lines {mesh, tex, mat, ...} (rebuilt each load). */
+    this._alertLines = [];
 
     /** Meshes the dissolve shader fades during the L3 collapse. */
     this._dissolveWalls = [];
@@ -354,6 +422,7 @@ export default class LevelManager {
     this._powerNodes = [];
     this._powerLights = [];
     this._dustFields = [];
+    this._alertLines = [];
     this._dissolveWalls = [];
     this._breakablePipes = [];
     this._exitDoor = null;
@@ -364,14 +433,23 @@ export default class LevelManager {
     this._collectedBuf.length = 0;
     this.collapseMode = false;
 
-    // Worker NPCs own their geometries/materials (built fresh per level) —
-    // traverse-dispose them. Shared cached textures (bump map) survive
-    // material.dispose() by design.
+    // Procedural worker NPCs own their geometries/materials (built fresh per
+    // level) — traverse-dispose them. Shared cached textures (bump map)
+    // survive material.dispose() by design. The crowd is entirely these
+    // procedural scientist/engineer figures; no skinned soldier clones are
+    // placed here (soldier.glb is reserved for the player operator only).
     for (const w of this._walkers) {
       this.scene.remove(w.npc.group);
       if (w.npc.dispose) { w.npc.dispose(); continue; }
       w.npc.group.traverse((child) => {
         if (!child.isMesh) return;
+        if (child.userData.kitShared) {
+          if (child.userData.ownsMaterial && child.material) {
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            for (const m of mats) m?.dispose();
+          }
+          return;
+        }
         if (child.geometry) child.geometry.dispose();
         const mat = child.material;
         if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
@@ -966,6 +1044,73 @@ export default class LevelManager {
   }
 
   /**
+   * Soot stain on a ceiling above a fire (own geometry/material, disposed on
+   * teardown). rotZ spins the plume within the ceiling plane.
+   */
+  _ceilingSoot(x, y, z, size, rotZ = 0) {
+    const mat = new THREE.MeshBasicMaterial({
+      map: sootTexture(), transparent: true, opacity: 0.9,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(Math.PI / 2, 0, rotZ); // face downward
+    mesh.userData.ownsGeometry = true;
+    mesh.userData.ownsMaterial = true;
+    this.scene.add(mesh);
+    this._track(mesh);
+    return mesh;
+  }
+
+  /**
+   * Animated emergency guide line — a flat additive strip whose texture
+   * scrolls so bright dashes march along it, while its colour slowly cycles
+   * between an amber advisory and a red alarm. Not flagged staticScenery, so
+   * the StaticBatch leaves it out and update() can drive it every frame.
+   *
+   * @param {number} x    centre x
+   * @param {number} z    centre z
+   * @param {number} len  run length (along the chosen axis)
+   * @param {object} [o]  {axis:'x'|'z', width, color, opacity, speed, pulseRate}
+   */
+  _createAlertLine(x, z, len, o = {}) {
+    const axis = o.axis === 'x' ? 'x' : 'z';
+    const width = o.width || 0.16;
+    const tex = alertLineTexture().clone();
+    tex.needsUpdate = true;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.repeat.set(Math.max(1, Math.round(len / 1.2)), 1);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: o.opacity ?? 0.8,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+      color: o.color ?? 0xffa020,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(len, width), mat);
+    mesh.position.set(x, 0.022, z);
+    // Lay flat, with the texture's U (dash march) running along the line.
+    if (axis === 'x') mesh.rotation.set(-Math.PI / 2, 0, 0);
+    else mesh.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+    mesh.renderOrder = 3;
+    mesh.userData.ownsGeometry = true;
+    mesh.userData.ownsMaterial = true;
+    this.scene.add(mesh);
+    this._track(mesh);
+    this._alertLines.push({
+      mesh, tex, mat,
+      t: Math.random() * 6.283,
+      speed: o.speed ?? 0.6,
+      pulseRate: o.pulseRate ?? 1.6,
+      base: o.opacity ?? 0.8,
+      // Colour cycles between these two; a custom colour (e.g. a green exit
+      // lane) uses it for both so the line pulses without changing hue.
+      advisory: new THREE.Color(o.color ?? 0xffa020),
+      alarm: new THREE.Color(o.alarm ?? (o.color !== undefined ? o.color : 0xff2a10)),
+    });
+    return mesh;
+  }
+
+  /**
    * Register a heat-haze volume. The mesh is a kit box (so teardown skips
    * its shared resources); ShaderManager.wireLevelVisuals() replaces the
    * placeholder material with the real haze shader on level load.
@@ -1196,6 +1341,20 @@ export default class LevelManager {
       d.rotation.y += dt * 0.04;
     }
 
+    // Animated emergency guide lines: scroll the dashes so they march along
+    // the line, pulse their brightness, and cycle the colour between an amber
+    // advisory and a red alarm — the alerts visibly change. Everything speeds
+    // up while the Level-3 collapse is underway.
+    const alertHaste = this.collapseMode ? 2.2 : 1;
+    for (const a of this._alertLines) {
+      a.t += dt * alertHaste;
+      a.tex.offset.x = (a.tex.offset.x + dt * a.speed * alertHaste) % 1;
+      const blink = 0.5 + 0.5 * Math.sin(a.t * a.pulseRate);
+      a.mat.opacity = a.base * (0.45 + 0.55 * blink);
+      const mix = 0.5 + 0.5 * Math.sin(a.t * 0.5); // 1 = advisory, 0 = alarm
+      a.mat.color.copy(a.alarm).lerp(a.advisory, mix);
+    }
+
     // Pickups: slow spin + gentle bob until collected.
     this._time += dt;
     for (const p of this.pickups) {
@@ -1250,7 +1409,7 @@ export default class LevelManager {
    *
    * @param {'tech'|'coat'|'supervisor'|'security'} variant
    * @param {{x:number,z:number}[]} path  patrol loop, ≥2 points
-   * @param {{speed?:number}} [o]
+   * @param {{speed?:number, npc?:object}} [o]  explicit npc overrides the default
    */
   _addWalker(variant, path, o = {}) {
     const npc = new StaffModel(variant);
@@ -1659,6 +1818,11 @@ export default class LevelManager {
     this._addWalker('coat', [
       { x: 2.4, z: -41.2 }, { x: -1.6, z: -41.2 },
       { x: -1.6, z: -36.6 }, { x: 2.4, z: -36.6 },
+    ]);
+    // Reception: scientist escorting visitors across the entrance lane.
+    this._addWalker('coat', [
+      { x: -1.9, z: -2.0 }, { x: -1.9, z: -6.4 },
+      { x: 0.9, z: -6.4 }, { x: 0.9, z: -2.0 },
     ]);
     // Reception: security guard walking the entrance lane by the desk.
     this._addWalker('security', [
@@ -2485,6 +2649,13 @@ export default class LevelManager {
     this._scorchDecal(0.5, 0, -26.0, 2.2);
     this._scorchDecal(-6.0, 0, -33.0, 1.4);
     this._scorchDecal(5.0, 0, -19.0, 1.2);
+    // Animated emergency guide lines — dashes march along them and the colour
+    // cycles amber↔red, so the alert lines visibly change. The two long red
+    // lines get an overlay; a fresh centre lane guides the player to the exit.
+    this._createAlertLine(-12.6, -26, 28, { axis: 'z', speed: 0.5 });
+    this._createAlertLine(12.6, -26, 28, { axis: 'z', speed: 0.5 });
+    this._createAlertLine(0, -16, 12, { axis: 'z', speed: 0.75, opacity: 0.7 });
+    this._createAlertLine(0, -36, 10, { axis: 'z', speed: 0.75, opacity: 0.7 });
     // Wall beacon lights (visual, no extra PointLights).
     for (const [bx, bz, face] of [
       [13.94, -16, 'w'], [-13.94, -30, 'e'], [13.94, -36, 'w'], [-13.94, -14, 'e'],
@@ -2582,6 +2753,18 @@ export default class LevelManager {
     buildEscapeRoute(this);
     this.expansion = new CollapseExpansion(this);
 
+    // ── Injured staff — casualties of the containment breach ─────────────
+    const injured = [
+      { variant: 'tech', x: 1.5, z: -12.5, rotY: 0.4 },
+      { variant: 'coat', x: -3.5, z: -13.5, rotY: -0.3 },
+      { variant: 'tech', x: 4.0, z: -15.0, rotY: 0.6 },
+      { variant: 'coat', x: -5.5, z: -16.5, rotY: -0.5 },
+      { variant: 'tech', x: 0.0, z: -13.0, rotY: 0.2 },
+      { variant: 'coat', x: 2.5, z: -35.0, rotY: 0.3 },
+    ];
+    injured.forEach((c) => this._addCasualty(c.variant, c.x, c.z, c.rotY));
+
+    // ── Fog ──────────────────────────────────────────────────────────────
     this.fogColor = 0x10131a;
     this.fogNear = 12;
     this.fogFar = 58;

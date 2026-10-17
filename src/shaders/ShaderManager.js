@@ -55,7 +55,7 @@ export default class ShaderManager {
     // Soft sky/ground fill so unlit surfaces are never pure black.
     this._addLight(new THREE.HemisphereLight(0xc7e3e5, 0x111d22, 0.28));
 
-    // Cool white ambient — well-lit, no harsh shadows.
+    // Cool white ambient.
     this._addLight(new THREE.AmbientLight(0xe7f0e9, 0.16));
 
     // Main directional light (overhead fluorescents feel).
@@ -92,10 +92,10 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    this._addLight(new THREE.HemisphereLight(0x8baab7, 0x080e17, 0.3));
+    this._addLight(new THREE.HemisphereLight(0x8baab7, 0x080e17, 0.22));
 
     // Dim amber ambient.
-    this._addLight(new THREE.AmbientLight(0x667c89, 0.2));
+    this._addLight(new THREE.AmbientLight(0x667c89, 0.13));
 
     // Flickering point lights (simulating failing fixtures). Only one casts
     // a shadow — four shadow-casting point lights would tank frame rate.
@@ -131,10 +131,10 @@ export default class ShaderManager {
     this._clearLights();
     this._flickerLights = [];
 
-    this._addLight(new THREE.HemisphereLight(0x8cb8c8, 0x100707, 0.25));
+    this._addLight(new THREE.HemisphereLight(0x8cb8c8, 0x100707, 0.17));
 
     // Dark red ambient.
-    this._addLight(new THREE.AmbientLight(0xadc3ca, 0.16));
+    this._addLight(new THREE.AmbientLight(0xadc3ca, 0.1));
 
     // Pulsing red point lights — heartbeat-like, in sync-ish but not
     // identical, so the room feels alive rather than strobing uniformly.

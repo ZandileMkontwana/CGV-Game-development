@@ -15,6 +15,7 @@ export default class UIManager {
       'energy-bar-fill', 'energy-bar-bg', 'energy-bar-wrap', 'energy-value',
       'objective', 'level-indicator', 'collapse-timer', 'collapse-timer-value',
       'stealth-vignette', 'stealth-warning', 'stealth-hidden', 'boss-phase', 'boss-status', 'boss-cue',
+      'scope-overlay',
       'tutorial', 'tutorial-text', 'tutorial-sub', 'hit-marker', 'mute-indicator',
       'loading-bar', 'loading-bar-container', 'loading-status', 'asset-warning',
       'transition-text', 'transition-objective', 'pa-caption',
@@ -98,6 +99,11 @@ export default class UIManager {
     if (this.elements['stealth-hidden']) this.elements['stealth-hidden'].style.opacity = mode === 'searching' || mode === 'hidden' || (!seeing && threat > 0.2) ? 1 : 0;
   }
 
+  setScoped(active) {
+    this.elements['scope-overlay']?.classList.toggle('active', active);
+    this.elements.hud?.classList.toggle('scoped', active);
+  }
+
   setBossPhase(phase, escaping = false) {
     const el = this.elements['boss-phase'];
     if (!el) return;
@@ -155,6 +161,7 @@ export default class UIManager {
   reset() {
     this.map.clear();
     this.setBossStatus(null);
+    this.setScoped(false);
     this._pickupTime = 0;
     if (this.elements['pickup-notice']) this.elements['pickup-notice'].hidden = true;
     this.setStealth(0, false, false);
