@@ -34,6 +34,9 @@
  */
 
 const MIN_GAIN = 0.0001;
+// Seconds skipped past the home/menu theme's intro (plus the silence-trimmed
+// lead-in) so it starts the instant the app is first interacted with.
+const SUSPENSE_HEAD_TRIM = 0.65;
 const CALM_NOTES = [329.63, 392, 493.88, 440, 392, 329.63, 293.66, 392];
 const HUNT_NOTES = [220, 233.08, 220, 207.65];
 const BOSS_NOTES = [130.81, 155.56, 146.83, 110];
@@ -1630,7 +1633,8 @@ export default class AudioManager {
       const res = await fetch('/assets/audio/music/suspense_intro.mp3');
       if (!res.ok) { this._suspenseFailed = true; return; }
       const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
-      this._suspense = { buffer: audio };
+      // Trim the lead-in/tail silence so the home theme starts immediately.
+      this._suspense = { buffer: audio, range: this._trimRange(audio) };
       // A cue requested while the sample was still decoding starts now.
       if (this._suspenseWanted && (this._menuActive || this._playing)) {
         this._suspenseWanted = false;
@@ -1659,13 +1663,17 @@ export default class AudioManager {
     src.buffer = sample.buffer;
     const g = this._gain(MIN_GAIN);
     const t = ctx.currentTime;
-    const dur = sample.buffer.duration;
+    // Skip the (silence-trimmed) lead-in plus a small head cut so the theme is
+    // already sounding the moment playback can start.
+    const range = sample.range;
+    const startAt = Math.min(range.offset + SUSPENSE_HEAD_TRIM, sample.buffer.duration - 1);
+    const dur = Math.max(0.5, range.duration - SUSPENSE_HEAD_TRIM);
     g.gain.setValueAtTime(MIN_GAIN, t);
-    g.gain.exponentialRampToValueAtTime(0.85, t + 0.25);
+    g.gain.exponentialRampToValueAtTime(0.85, t + 0.12);
     g.gain.setValueAtTime(0.85, t + Math.max(0.5, dur - 1.5));
     g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + dur);
     src.connect(g).connect(this.music);
-    src.start(t);
+    src.start(t, startAt, dur);
     this._suspenseSrc = src;
     this.duck(0.6, dur * 1000);
     src.onended = () => {

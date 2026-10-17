@@ -1412,7 +1412,9 @@ export default class Game {
 
     // Show the collapse timer HUD.
     this.ui.setCountdown(this._collapseTime, true);
-    this._announce('demolition');
+    // Caption only — the recorded EAS alarm (playEasAlarm below) is the sole
+    // alarm for the escape; the synthesized demolition klaxon is not used.
+    this.ui.showAnnouncement(PA_ANNOUNCEMENTS.demolition.text);
 
     // Screen shake for dramatic effect.
     this.camera.shake(0.5);
