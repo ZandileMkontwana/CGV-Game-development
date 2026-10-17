@@ -1292,6 +1292,8 @@ export default class Game {
       this.monster.model.scale.setScalar(0.6 * this.monster._modelScale);
       this.monster.model.rotation.y = Math.atan2(this.player.position.x - reveal.spawn.x, this.player.position.z - reveal.spawn.z);
       this.audio.play('roar');
+      this.audio.playClipSequence(['sectorIsolatedL1']);
+      this.ui.showAnnouncement(PA_ANNOUNCEMENTS.sectorIsolated.text);
       this.audio.duck(0.65);
       this.camera.shake(0.45);
     } else if (phase === 'flee') {
