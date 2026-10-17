@@ -556,14 +556,12 @@ export default class Game {
         // Fresh gameplay entry also silences any lingering escape alarm.
         this.audio.stopEasAlarm();
         this.audio.stopL1Alarm();
-        this.audio.stopFireBed();
         this._loadLevel(reason === 'restart' ? this.gameState.currentLevel : 1);
       }
       if (newState === 'levelTransition') {
         // Build the next level NOW, behind the black transition overlay, so
         // the level-load shader warm-up stall never shows as a frozen frame.
         this.audio.stopL1Alarm();
-        this.audio.stopFireBed();
         this.audio.playSuspense();
         this._loadLevel(this.gameState.currentLevel);
         this._transitionNeedsRender = true;
@@ -578,7 +576,6 @@ export default class Game {
           this.audio.playClipSequence(['emergencyIntercom']);
           this.ui.showAnnouncement(PA_ANNOUNCEMENTS.failsafe.text);
           this.audio.startChaos();
-          this.audio.playFireBed();
           // The reactor finally goes critical: detonate as Level 3 opens.
           this.audio.playExplosion();
         }
@@ -590,7 +587,6 @@ export default class Game {
         this.audio.stopChaos();
         this.audio.stopEasAlarm();
         this.audio.stopL1Alarm();
-        this.audio.stopFireBed();
         this.audio.stopSuspense(0.6);
       }
       if (newState === 'victory' || newState === 'menu') {
@@ -605,7 +601,6 @@ export default class Game {
         // returning to the menu finally silences it.
         if (newState === 'menu') {
           this.audio.stopChaos();
-          this.audio.stopFireBed();
         }
       }
       if (newState === 'menu' || newState === 'gameover' || newState === 'victory') {

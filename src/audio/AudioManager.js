@@ -21,8 +21,6 @@
  *                          countdown until the game ends (stopEasAlarm() to fade)
  *   playL1Alarm()          looping recorded red-alert buzzer from the Level-1
  *                          containment breach until the level ends (stopL1Alarm)
- *   playFireBed()          looping recorded fire bed for Level-3 fire/smoke
- *                          (stopFireBed() to fade)
  *   setLevel(n)            switch the ambient bed (1 calm lab, 2 dark hunt,
  *                          3 alarm/collapse)
  *   setGameState(state)    'menu' plays the thriller title theme; the
@@ -99,12 +97,6 @@ export default class AudioManager {
     this._chaosBed = null;  // { gain, nodes[] } Level-3 collapse chaos bed
     this._chaosOn = false;  // is the chaos layer running?
     this._chaosT = { boom: 3, machine: 2, scream: 5, rumble: 4 };
-    this._fireBed = null;        // { buffer } recorded Level-3 fire/smoke loop
-    this._fireBedFailed = false;
-    this._fireBedWanted = false; // loop requested before the sample decoded
-    this._fireBedSrc = null;     // currently looping fire bed source
-    this._fireBedGain = null;    // its gain node (for the fade-out)
-    this._fireBedOn = false;
     this._duckTO = 0;
 
     // Per-frame schedulers (seconds until next event).
@@ -175,7 +167,6 @@ export default class AudioManager {
     this._loadExplosionSample();
     this._loadEasAlarmSample();
     this._loadL1AlarmSample();
-    this._loadFireBedSample();
     this._syncContextState();
     if (this._playing) this._startBed(this._level);
     else if (this._menuActive) { this._startMenuBed(); this.playSuspense(); }
@@ -780,82 +771,7 @@ export default class AudioManager {
     this._updateChaos(dt);
   }
 
-  /**
-   * Positional fire crackle is now handled by a single recorded fire bed;
-   * this method is kept as a no-op so existing callers do not need changes.
-   */
-  setFireEmitters(fires) {
-    // Intentionally empty — the recorded fire bed plays globally via playFireBed().
-  }
-
-  stopFireEmitters() {
-    // Intentionally empty — stopFireBed() handles the recorded loop.
-  }
-
-  /**
-   * Loop the recorded fire bed while Level-3 fire/smoke is present.
-   */
-  playFireBed(vol = 0.55) {
-    if (!this._unlocked || this.muted || this._fireBedOn) return;
-    if (!this._fireBed) {
-      if (!this._fireBedFailed) this._fireBedWanted = true;
-      return;
-    }
-    this._fireBedWanted = false;
-    this._fireBedOn = true;
-    const ctx = this.ctx;
-    const src = ctx.createBufferSource();
-    src.buffer = this._fireBed.buffer;
-    src.loop = true;
-    const g = this._gain(MIN_GAIN);
-    const t = ctx.currentTime;
-    g.gain.setValueAtTime(MIN_GAIN, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.8);   // fade in
-    src.connect(g).connect(this.master);
-    src.start(t);
-    this._fireBedSrc = src;
-    this._fireBedGain = g;
-  }
-
-  /** Fade out and stop the looping Level-3 fire bed. */
-  stopFireBed(fade = 1.2) {
-    const src = this._fireBedSrc;
-    const g = this._fireBedGain;
-    this._fireBedOn = false;
-    this._fireBedWanted = false;
-    this._fireBedSrc = null;
-    this._fireBedGain = null;
-    if (!src) return;
-    const t = this.ctx.currentTime;
-    try {
-      g.gain.cancelScheduledValues(t);
-      g.gain.setValueAtTime(Math.max(g.gain.value, MIN_GAIN), t);
-      g.gain.exponentialRampToValueAtTime(MIN_GAIN, t + Math.max(0, fade));
-      src.stop(t + Math.max(0, fade) + 0.05);
-    } catch (e) { /* already stopped */ }
-    setTimeout(() => {
-      try { src.disconnect(); } catch (e) { /* noop */ }
-      try { g.disconnect(); } catch (e) { /* noop */ }
-    }, (Math.max(0, fade) + 0.1) * 1000);
-  }
-
-  /** Fetch + decode the recorded Level-3 fire/smoke bed loop. */
-  async _loadFireBedSample() {
-    if (!this.ctx || this._fireBed || this._fireBedFailed) return;
-    try {
-      const res = await fetch('/assets/audio/environment/fire_bed.mp3');
-      if (!res.ok) { this._fireBedFailed = true; return; }
-      const audio = await this.ctx.decodeAudioData(await res.arrayBuffer());
-      this._fireBed = { buffer: audio };
-      // A loop requested while the sample was still decoding starts now.
-      if (this._fireBedWanted && this._playing) {
-        this._fireBedWanted = false;
-        this.playFireBed();
-      }
-    } catch (e) { this._fireBedFailed = true; }
-  }
-
-  /** Park the Web Audio listener on the camera so panned fires sound correct. */
+  /** Park the Web Audio listener on the camera so panned sounds read correctly. */
   updateListener(pos, fwd) {
     const L = this.ctx && this.ctx.listener;
     if (!L) return;

@@ -101,71 +101,6 @@ function steamTexture() {
   _steamTex = new THREE.CanvasTexture(canvas);
   return _steamTex;
 }
-let _fireTex = null;
-function fireTexture() {
-  if (_fireTex) return _fireTex;
-  const S = 128;
-  const c = document.createElement('canvas');
-  c.width = c.height = S;
-  const x = c.getContext('2d');
-  // Broad outer glow: a hot core cooling to deep orange at the edge.
-  let g = x.createRadialGradient(64, 64, 1, 64, 64, 63);
-  g.addColorStop(0, 'rgba(255,244,214,0.98)');
-  g.addColorStop(0.28, 'rgba(255,196,110,0.72)');
-  g.addColorStop(0.62, 'rgba(255,132,44,0.28)');
-  g.addColorStop(1, 'rgba(180,50,10,0)');
-  x.fillStyle = g;
-  x.fillRect(0, 0, S, S);
-  // Off-centre white-hot core so the flame is not a symmetric disc.
-  x.globalCompositeOperation = 'lighter';
-  g = x.createRadialGradient(60, 72, 1, 60, 72, 30);
-  g.addColorStop(0, 'rgba(255,255,244,0.95)');
-  g.addColorStop(0.5, 'rgba(255,222,150,0.45)');
-  g.addColorStop(1, 'rgba(255,180,90,0)');
-  x.fillStyle = g;
-  x.fillRect(0, 0, S, S);
-  // A few warm lobes break the smooth falloff into an organic silhouette.
-  for (let i = 0; i < 10; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 10 + Math.random() * 34;
-    const px = 64 + Math.cos(a) * r, py = 60 + Math.sin(a) * r * 0.8;
-    const rr = 8 + Math.random() * 20;
-    const lg = x.createRadialGradient(px, py, 0, px, py, rr);
-    lg.addColorStop(0, 'rgba(255,168,70,0.22)');
-    lg.addColorStop(1, 'rgba(255,168,70,0)');
-    x.fillStyle = lg;
-    x.fillRect(0, 0, S, S);
-  }
-  x.globalCompositeOperation = 'source-over';
-  _fireTex = new THREE.CanvasTexture(c);
-  return _fireTex;
-}
-let _fireSmokeTex = null;
-function _fireSmokeTexture() {
-  if (_fireSmokeTex) return _fireSmokeTex;
-  // Node tests have no DOM; fall back to the shared DataTexture smoke map.
-  if (typeof document === 'undefined') return smokeTexture();
-  const S = 128;
-  const c = document.createElement('canvas');
-  c.width = c.height = S;
-  const x = c.getContext('2d');
-  // A billowy puff built from overlapping soft blobs, so smoke reads as a
-  // roiling cloud rather than a single hard disc.
-  const blobs = [
-    [64, 58, 48], [46, 70, 34], [84, 68, 33], [64, 42, 30],
-    [54, 90, 26], [80, 92, 24], [40, 50, 22], [90, 52, 22],
-  ];
-  for (const [bx, by, br] of blobs) {
-    const g = x.createRadialGradient(bx, by, 0, bx, by, br);
-    g.addColorStop(0, 'rgba(255,255,255,0.34)');
-    g.addColorStop(0.6, 'rgba(255,255,255,0.13)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    x.fillStyle = g;
-    x.fillRect(0, 0, S, S);
-  }
-  _fireSmokeTex = new THREE.CanvasTexture(c);
-  return _fireSmokeTex;
-}
 function scorchTexture() {
   if (_scorchTex) return _scorchTex;
   const c = document.createElement('canvas');
@@ -299,9 +234,6 @@ export default class LevelManager {
 
     /** Steam/spark vent emitters with pre-allocated sprite pools. */
     this._steamVents = [];
-
-    /** Fire + smoke emitters {id, x, y, z, flames, smoke, light...} (rebuilt each load). */
-    this._fires = [];
 
     /** Rotating hazard meshes {mesh, speed} (rebuilt each load). */
     this._rotatingHazards = [];
@@ -486,7 +418,6 @@ export default class LevelManager {
     this.mapFloors = [];
     this._doors = [];
     this._steamVents = [];
-    this._fires = [];
     this._rotatingHazards = [];
     this._powerNodes = [];
     this._powerLights = [];
@@ -817,74 +748,6 @@ export default class LevelManager {
       lifeSpan,
       alpha: o.alpha ?? 0.32,
       isSmoke,
-    });
-  }
-
-  /**
-   * Fire + smoke emitter. Additive flames sit at the base while a separate
-   * pool of dark smoke sprites billows up and away; an optional flicker
-   * PointLight throws the burning glow onto nearby geometry.
-   */
-  _createFire(id, x, y, z, o = {}) {
-    const nf = o.flames === undefined ? 10 : o.flames;
-    const ns = o.smoke === undefined ? 12 : o.smoke;
-    const flames = [];
-    for (let i = 0; i < nf; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: fireTexture(), color: 0xffffff, transparent: true, opacity: 0,
-        depthWrite: false, blending: THREE.AdditiveBlending,
-      });
-      const s = new THREE.Sprite(mat);
-      s.scale.set(0.4, 0.4, 1);
-      s.position.set(x, y, z);
-      s.visible = false;
-      s.userData.ownsMaterial = true; // Sprite shares its geometry — do not dispose it
-      this.scene.add(s);
-      this._track(s);
-      flames.push(s);
-    }
-    const smoke = [];
-    for (let i = 0; i < ns; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: _fireSmokeTexture(), color: 0x2b2b2c, transparent: true, opacity: 0,
-        depthWrite: false, blending: THREE.NormalBlending,
-      });
-      const s = new THREE.Sprite(mat);
-      s.scale.set(0.7, 0.7, 1);
-      s.position.set(x, y, z);
-      s.visible = false;
-      s.userData.ownsMaterial = true;
-      this.scene.add(s);
-      this._track(s);
-      smoke.push(s);
-    }
-    const ne = o.embers === undefined ? 8 : o.embers;
-    const embers = [];
-    for (let i = 0; i < ne; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: fireTexture(), color: 0xffb24a, transparent: true, opacity: 0,
-        depthWrite: false, blending: THREE.AdditiveBlending,
-      });
-      const s = new THREE.Sprite(mat);
-      s.scale.set(0.05, 0.05, 1);
-      s.position.set(x, y, z);
-      s.visible = false;
-      s.userData.ownsMaterial = true;
-      this.scene.add(s);
-      this._track(s);
-      embers.push(s);
-    }
-    if (o.light !== false) {
-      this._flickerLight(x, y + 0.7, z, o.color ?? 0xff7020, o.intensity ?? 1.1, o.range ?? 10);
-    }
-    this._fires.push({
-      id, x, y, z, flames, smoke, embers,
-      fIdx: 0, sIdx: 0, eIdx: 0, ft: 0, st: 0, et: 0, t: Math.random() * 10,
-      fRate: o.fRate || 0.07, sRate: o.sRate || 0.17, eRate: o.eRate || 0.05,
-      rise: o.rise || 2.1, scale: o.scale || 1,
-      fLife: new Float32Array(nf), fVy: new Float32Array(nf), fMax: new Float32Array(nf),
-      sLife: new Float32Array(ns), sVy: new Float32Array(ns), sMax: new Float32Array(ns),
-      eLife: new Float32Array(ne), eVy: new Float32Array(ne), eMax: new Float32Array(ne),
     });
   }
 
@@ -1465,84 +1328,6 @@ export default class LevelManager {
           s.scale.set(size, size, 1);
         }
         s.position.y += v.vy[i] * dt;
-      }
-    }
-
-    // Fire + smoke: flames rise and cool to red; smoke billows and fades;
-    // embers pop off the base and flicker as they climb. A slow per-fire
-    // turbulence term sways the whole column so it never looks like a jet.
-    for (const f of this._fires) {
-      const sc = f.scale;
-      f.t += dt;
-      const turb = Math.min(dt, 0.05);
-      f.ft += dt;
-      while (f.flames.length && f.ft >= f.fRate) {
-        f.ft -= f.fRate;
-        const i = f.fIdx = (f.fIdx + 1) % f.flames.length;
-        const s = f.flames[i];
-        f.fLife[i] = f.fMax[i] = 0.5 + Math.random() * 0.35;
-        f.fVy[i] = f.rise * (0.8 + Math.random() * 0.5);
-        s.position.set(f.x + (Math.random() - 0.5) * 0.5 * sc, f.y + Math.random() * 0.15, f.z + (Math.random() - 0.5) * 0.5 * sc);
-        s.visible = true;
-      }
-      f.st += dt;
-      while (f.smoke.length && f.st >= f.sRate) {
-        f.st -= f.sRate;
-        const i = f.sIdx = (f.sIdx + 1) % f.smoke.length;
-        const s = f.smoke[i];
-        f.sLife[i] = f.sMax[i] = 1.4 + Math.random() * 1.1;
-        f.sVy[i] = f.rise * (0.4 + Math.random() * 0.3);
-        s.position.set(f.x + (Math.random() - 0.5) * 0.7 * sc, f.y + 0.5 * sc, f.z + (Math.random() - 0.5) * 0.7 * sc);
-        s.visible = true;
-      }
-      f.et += dt;
-      while (f.embers.length && f.et >= f.eRate) {
-        f.et -= f.eRate;
-        const i = f.eIdx = (f.eIdx + 1) % f.embers.length;
-        const s = f.embers[i];
-        f.eLife[i] = f.eMax[i] = 0.7 + Math.random() * 0.9;
-        f.eVy[i] = (1.6 + Math.random() * 1.8) * sc;
-        s.position.set(f.x + (Math.random() - 0.5) * 0.5 * sc, f.y + 0.1, f.z + (Math.random() - 0.5) * 0.5 * sc);
-        s.visible = true;
-      }
-      for (let i = 0; i < f.flames.length; i++) {
-        if (f.fLife[i] <= 0) continue;
-        f.fLife[i] -= dt;
-        const s = f.flames[i];
-        if (f.fLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
-        s.position.y += f.fVy[i] * dt;
-        s.position.x += Math.sin(f.t * 1.8 + i) * turb * sc * 0.6;
-        s.position.z += Math.cos(f.t * 1.4 + i * 1.3) * turb * sc * 0.6;
-        const t = f.fLife[i] / f.fMax[i];
-        s.material.opacity = t * 0.55;
-        s.material.color.setRGB(0.85 + 0.15 * t, 0.18 + 0.62 * t, 0.03 + 0.25 * t * t);
-        const p = (0.24 + (1 - t) * 0.4) * sc;
-        s.scale.set(p, p, 1);
-      }
-      for (let i = 0; i < f.smoke.length; i++) {
-        if (f.sLife[i] <= 0) continue;
-        f.sLife[i] -= dt;
-        const s = f.smoke[i];
-        if (f.sLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
-        s.position.y += f.sVy[i] * dt;
-        s.position.x += Math.sin(f.t * 0.9 + i * 0.7) * turb * sc * 1.1;
-        s.position.z += Math.cos(f.t * 0.7 + i * 1.1) * turb * sc * 1.1;
-        const t = f.sLife[i] / f.sMax[i];
-        s.material.opacity = t * (1 - t) * 2.4;
-        const p = (0.7 + (1 - t) * 1.5) * sc;
-        s.scale.set(p, p, 1);
-      }
-      for (let i = 0; i < f.embers.length; i++) {
-        if (f.eLife[i] <= 0) continue;
-        f.eLife[i] -= dt;
-        const s = f.embers[i];
-        if (f.eLife[i] <= 0) { s.visible = false; s.material.opacity = 0; continue; }
-        s.position.y += f.eVy[i] * dt;
-        s.position.x += Math.sin(f.t * 6 + i) * turb * sc * 0.5;
-        const t = f.eLife[i] / f.eMax[i];
-        s.material.opacity = t * (0.55 + 0.4 * Math.sin(f.t * 40 + i));
-        const p = (0.03 + (1 - t) * 0.05) * sc;
-        s.scale.set(p, p, 1);
       }
     }
 
@@ -2988,37 +2773,7 @@ export default class LevelManager {
     buildEscapeRoute(this);
     this.expansion = new CollapseExpansion(this);
 
-    // ── Burning wreckage — the arena and its side rooms are on fire ──────
-    this._createFire('l3-fire-arena', 0.5, 0.2, -26.0, { scale: 1.5, flames: 14, smoke: 24, intensity: 1.5, range: 14 });
-    this._createFire('l3-fire-arena2', -6.0, 0.2, -33.0, { scale: 1.1, intensity: 1.2 });
-    this._createFire('l3-fire-gen', -11.5, 0.2, -30.6, { scale: 1.3, intensity: 1.2, light: false });
-    this._createFire('l3-fire-entry', 0.9, 0.2, -3.0, { scale: 0.9, light: false });
-    this._createFire('l3-fire-arena3', 5.0, 0.2, -19.0, { scale: 1.0, light: false });
-    this._createFire('l3-fire-gallery', -19.5, 0.2, -23.0, { scale: 1.0, light: false });
-    this._createFire('l3-fire-escape', 0.5, 0.2, -44.0, { scale: 1.0, light: false });
-    // Thick smoke columns billowing up where there are no flames.
-    this._createFire('l3-smoke-arena', 3.2, 0.5, -30.0, { flames: 0, smoke: 22, scale: 2.0, sRate: 0.11, light: false });
-    this._createFire('l3-smoke-escape', -1.6, 0.5, -48.0, { flames: 0, smoke: 16, scale: 1.6, sRate: 0.14, light: false });
-
-    // ── Fire damage — scorch on the floor and soot blackening the ceiling
-    //    above each blaze, so the burning rooms read as burned. ───────────
-    const fireDamage = [
-      { x: 0.5, z: -26.0, s: 3.4, cy: 3.9 },
-      { x: -6.0, z: -33.0, s: 2.6, cy: 3.9 },
-      { x: -11.5, z: -30.6, s: 2.4, cy: 3.9 },
-      { x: 0.9, z: -3.0, s: 1.8, cy: 2.9 },
-      { x: 5.0, z: -19.0, s: 2.2, cy: 3.9 },
-      { x: -19.5, z: -23.0, s: 2.2, cy: 3.9 },
-      { x: 0.5, z: -44.0, s: 2.2, cy: 2.9 },
-      { x: 3.2, z: -30.0, s: 3.0, cy: 3.9 },
-      { x: -1.6, z: -48.0, s: 2.4, cy: 2.9 },
-    ];
-    for (const d of fireDamage) {
-      this._scorchDecal(d.x, 0, d.z, d.s, Math.random() * Math.PI);
-      this._ceilingSoot(d.x, d.cy, d.z, d.s * 0.9, Math.random() * Math.PI);
-    }
-
-    // ── Panicked crowd — staff fleeing through the burning arena ─────────
+    // ── Panicked crowd — staff fleeing through the arena ────────────────
     const panicRoutes = [
       [{ x: 1.5, z: -12.5 }, { x: 1.0, z: -40.5 }],
       [{ x: -3.5, z: -13.5 }, { x: -3.0, z: -39.5 }],
