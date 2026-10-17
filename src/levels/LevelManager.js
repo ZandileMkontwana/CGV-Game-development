@@ -30,7 +30,7 @@
  * LevelKit 'n/e/s/w' convention (front direction).
  */
 import * as THREE from 'three';
-import { dustTexture } from '../shaders/AtmosphereTextures.js';
+import { smokeTexture, dustTexture } from '../shaders/AtmosphereTextures.js';
 import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import LevelKit from './LevelKit.js';
@@ -140,9 +140,11 @@ function fireTexture() {
   _fireTex = new THREE.CanvasTexture(c);
   return _fireTex;
 }
-let _smokeTex = null;
-function smokeTexture() {
-  if (_smokeTex) return _smokeTex;
+let _fireSmokeTex = null;
+function _fireSmokeTexture() {
+  if (_fireSmokeTex) return _fireSmokeTex;
+  // Node tests have no DOM; fall back to the shared DataTexture smoke map.
+  if (typeof document === 'undefined') return smokeTexture();
   const S = 128;
   const c = document.createElement('canvas');
   c.width = c.height = S;
@@ -161,8 +163,8 @@ function smokeTexture() {
     x.fillStyle = g;
     x.fillRect(0, 0, S, S);
   }
-  _smokeTex = new THREE.CanvasTexture(c);
-  return _smokeTex;
+  _fireSmokeTex = new THREE.CanvasTexture(c);
+  return _fireSmokeTex;
 }
 function scorchTexture() {
   if (_scorchTex) return _scorchTex;
@@ -844,7 +846,7 @@ export default class LevelManager {
     const smoke = [];
     for (let i = 0; i < ns; i++) {
       const mat = new THREE.SpriteMaterial({
-        map: smokeTexture(), color: 0x2b2b2c, transparent: true, opacity: 0,
+        map: _fireSmokeTexture(), color: 0x2b2b2c, transparent: true, opacity: 0,
         depthWrite: false, blending: THREE.NormalBlending,
       });
       const s = new THREE.Sprite(mat);
